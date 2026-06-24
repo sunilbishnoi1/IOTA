@@ -49,7 +49,7 @@ export const ShipScreen: React.FC<ShipScreenProps> = ({ user, activeCodespace, b
       const response = await fetch(`${bridgeUrl}/api/git/diff`, {
         headers: {
           'Authorization': `Bearer ${user.token}`,
-          'X-Github-Token': user.token,
+          'X-GitHub-Token': user.token,
           'Accept': 'application/json',
         },
       });
@@ -110,7 +110,7 @@ export const ShipScreen: React.FC<ShipScreenProps> = ({ user, activeCodespace, b
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${user.token}`,
-          'X-Github-Token': user.token,
+          'X-GitHub-Token': user.token,
           'Content-Type': 'application/json',
           'Accept': 'application/json',
         },

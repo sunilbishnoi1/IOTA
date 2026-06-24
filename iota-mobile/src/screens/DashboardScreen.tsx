@@ -379,6 +379,50 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
     }
   };
 
+  // Delete a codespace permanently
+  const handleDeleteCodespace = async (id: string) => {
+    // Optimistically remove from list
+    setCodespaces((prev) => prev.filter((cs) => cs.id !== id));
+
+    // Clear any active polling for this codespace
+    if (pollingIntervals.current[id]) {
+      clearInterval(pollingIntervals.current[id]);
+      delete pollingIntervals.current[id];
+    }
+
+    try {
+      const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces/${id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'Accept': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        let errMsg = 'Delete call failed';
+        try {
+          const errData = await response.json();
+          errMsg = errData.error || errMsg;
+          if (errData.status) {
+            errMsg += ` (Status: ${errData.status})`;
+          }
+          if (errData.response && errData.response.message) {
+            errMsg += `: ${errData.response.message}`;
+          }
+        } catch (parseErr) {
+          // ignore parsing error
+        }
+        throw new Error(errMsg);
+      }
+    } catch (err: any) {
+      console.warn(`Failed to delete codespace ${id}:`, err);
+      Alert.alert('Delete Failed', err.message || 'Could not delete the codespace. Please try again.');
+      // Re-fetch actual list to restore
+      fetchCodespaces(true);
+    }
+  };
+
   // Compute stats helper
   const freeHours = 12.0; // matching test expectation
   const totalHours = 60.0;
@@ -492,6 +536,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
               <BentoCard
                 item={item}
                 onPowerToggle={handlePowerToggle}
+                onDelete={handleDeleteCodespace}
                 onPress={onSelectCodespace}
               />
             )}

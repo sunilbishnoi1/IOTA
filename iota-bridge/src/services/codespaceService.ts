@@ -40,7 +40,7 @@ async function checkBridgeReachable(url: string, token: string): Promise<boolean
     const response = await fetch(`${url}/api/status`, {
       headers: {
         'Authorization': `Bearer ${token}`,
-        'X-Github-Token': token,
+        'X-GitHub-Token': token,
         'Accept': 'application/json',
       },
       signal: controller.signal,
@@ -216,6 +216,18 @@ export const createCodespace = async (
 export const stopCodespace = async (token: string, codespaceName: string): Promise<void> => {
   const octokit = getOctokitClient(token);
   await octokit.rest.codespaces.stopForAuthenticatedUser({
+    codespace_name: codespaceName,
+  });
+};
+
+/**
+ * Permanently deletes a codespace. This is irreversible.
+ * The codespace must be stopped or in a non-running state for some providers,
+ * but GitHub's API handles deletion of running codespaces by stopping first.
+ */
+export const deleteCodespace = async (token: string, codespaceName: string): Promise<void> => {
+  const octokit = getOctokitClient(token);
+  await octokit.rest.codespaces.deleteForAuthenticatedUser({
     codespace_name: codespaceName,
   });
 };

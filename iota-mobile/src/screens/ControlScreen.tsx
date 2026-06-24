@@ -65,7 +65,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           auth: { credentials: apiKeys, token: user.token },
           extraHeaders: {
             'Authorization': `Bearer ${user.token}`,
-            'X-Github-Token': user.token,
+            'X-GitHub-Token': user.token,
           },
           transports: ['websocket'],
           reconnection: true,
@@ -172,7 +172,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
                   method: 'POST',
                   headers: {
                     'Authorization': `Bearer ${user.token}`,
-                    'X-Github-Token': user.token,
+                    'X-GitHub-Token': user.token,
                   },
                 });
                 

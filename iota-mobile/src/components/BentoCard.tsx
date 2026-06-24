@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   Animated,
   Easing,
+  Alert,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { CodespaceVM } from '../types';
@@ -15,10 +16,11 @@ import { Theme } from '../styles/theme';
 interface BentoCardProps {
   item: CodespaceVM;
   onPowerToggle: (name: string) => void;
+  onDelete: (name: string) => void;
   onPress: (item: CodespaceVM) => void;
 }
 
-export const BentoCard: React.FC<BentoCardProps> = ({ item, onPowerToggle, onPress }) => {
+export const BentoCard: React.FC<BentoCardProps> = ({ item, onPowerToggle, onDelete, onPress }) => {
   const pulseAnim = useRef(new Animated.Value(0.4)).current;
 
   // Pulse animation for starting state
@@ -115,26 +117,53 @@ export const BentoCard: React.FC<BentoCardProps> = ({ item, onPowerToggle, onPre
           </Text>
         </View>
         
-        {/* Power Toggle Button */}
-        <TouchableOpacity
-          style={[
-            styles.powerButton,
-            isActive && styles.powerButtonActive,
-            isStarting && styles.powerButtonDisabled,
-          ]}
-          onPress={() => !isStarting && !isStopping && onPowerToggle(item.id)}
-          disabled={isStarting || isStopping}
-        >
-          {isStarting || isStopping ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
+        <View style={styles.cardActions}>
+          {/* Delete Button */}
+          <TouchableOpacity
+            style={styles.deleteButton}
+            onPress={() => {
+              Alert.alert(
+                'Delete Codespace',
+                `Are you sure you want to permanently delete the codespace for "${item.repositoryName}"?\n\nThis action cannot be undone.`,
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  {
+                    text: 'Delete',
+                    style: 'destructive',
+                    onPress: () => onDelete(item.id),
+                  },
+                ]
+              );
+            }}
+          >
             <MaterialIcons
-              name={isActive ? "power-settings-new" : "play-arrow"}
-              size={18}
-              color={isActive ? '#fff' : Theme.colors.text.primary}
+              name="delete-outline"
+              size={16}
+              color={'#ef4444'}
             />
-          )}
-        </TouchableOpacity>
+          </TouchableOpacity>
+
+          {/* Power Toggle Button */}
+          <TouchableOpacity
+            style={[
+              styles.powerButton,
+              isActive && styles.powerButtonActive,
+              isStarting && styles.powerButtonDisabled,
+            ]}
+            onPress={() => !isStarting && !isStopping && onPowerToggle(item.id)}
+            disabled={isStarting || isStopping}
+          >
+            {isStarting || isStopping ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <MaterialIcons
+                name={isActive ? "power-settings-new" : "play-arrow"}
+                size={18}
+                color={isActive ? '#fff' : Theme.colors.text.primary}
+              />
+            )}
+          </TouchableOpacity>
+        </View>
       </View>
 
       <Text style={styles.repoName} numberOfLines={1} ellipsizeMode="tail">
@@ -188,6 +217,21 @@ const styles = StyleSheet.create({
   },
   statusIndicator: {
     flexDirection: 'row',
+    alignItems: 'center',
+  },
+  cardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  deleteButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+    borderColor: 'rgba(239, 68, 68, 0.2)',
+    borderWidth: 1,
+    justifyContent: 'center',
     alignItems: 'center',
   },
   statusDot: {

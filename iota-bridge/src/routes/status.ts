@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
-import { listUserCodespaces, startUserCodespace, getUserCodespace, listUserRepos, createCodespace, stopCodespace } from '../services/codespaceService';
+import { listUserCodespaces, startUserCodespace, getUserCodespace, listUserRepos, createCodespace, stopCodespace, deleteCodespace } from '../services/codespaceService';
 import { getOctokitClient } from '../services/github';
 
 const router = Router();
@@ -82,7 +82,7 @@ router.post('/repos/setup-devcontainer', requireAuth, async (req: AuthenticatedR
           "visibility": "private"
         }
       },
-      postStartCommand: "git clone https://github.com/sunilbishnoi1/IOTA.git /tmp/iota && cd /tmp/iota/iota-bridge && npm install && npm run dev &"
+      postStartCommand: "nohup bash -c 'git clone https://github.com/sunilbishnoi1/IOTA.git /tmp/iota && cd /tmp/iota/iota-bridge && npm install && npm run dev' > /tmp/bridge.log 2>&1 &"
     };
 
     const contentStr = JSON.stringify(devcontainerContent, null, 2);
@@ -169,6 +169,24 @@ router.get('/codespaces/:name', requireAuth, async (req: AuthenticatedRequest, r
   } catch (error: any) {
     console.error(`Failed to get codespace ${req.params.name}:`, error);
     res.status(error.status || 500).json({ error: error.message || 'Failed to get codespace' });
+  }
+});
+
+// DELETE /api/codespaces/:name - Permanently delete a codespace
+router.delete('/codespaces/:name', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const token = req.userToken!;
+    const name = req.params.name;
+    await deleteCodespace(token, name);
+    res.json({ success: true, message: `Codespace ${name} deleted successfully` });
+  } catch (error: any) {
+    console.error(`Failed to delete codespace ${req.params.name}:`, error);
+    res.status(error.status || 500).json({ 
+      error: error.message || 'Failed to delete codespace',
+      status: error.status,
+      request: error.request,
+      response: error.response?.data
+    });
   }
 });
 
