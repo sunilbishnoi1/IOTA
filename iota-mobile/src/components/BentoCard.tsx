@@ -73,6 +73,13 @@ export const BentoCard: React.FC<BentoCardProps> = ({ item, onPowerToggle, onPre
       case 'active':
         return 'Active';
       case 'starting':
+        if (item.rawState) {
+          const raw = item.rawState.charAt(0).toUpperCase() + item.rawState.slice(1).toLowerCase();
+          if (raw === 'Available') {
+            return 'Starting Bridge...';
+          }
+          return `Booting (${raw})...`;
+        }
         return 'Booting...';
       case 'stopping':
         return 'Stopping...';

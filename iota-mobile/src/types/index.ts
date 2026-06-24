@@ -9,6 +9,14 @@ export interface UserSession {
 
 export type CodespaceStatus = 'sleeping' | 'starting' | 'active' | 'stopping';
 
+export interface GitHubRepository {
+  id: number;
+  name: string;
+  fullName: string;
+  description: string;
+  defaultBranch: string;
+}
+
 export interface CodespaceVM {
   id: string;
   repositoryName: string;
@@ -16,6 +24,7 @@ export interface CodespaceVM {
   status: CodespaceStatus;
   freeHoursRemaining: number;
   connectionUrl: string;
+  rawState?: string;
 }
 
 export type TerminalStatus = 'idle' | 'running' | 'disconnected';

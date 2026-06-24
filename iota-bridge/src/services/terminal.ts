@@ -1,9 +1,20 @@
 import * as pty from 'node-pty';
 import * as os from 'os';
+import * as path from 'path';
 
 export interface TerminalSession {
   ptyProcess: pty.IPty;
   logBuffer: string[];
+}
+
+/**
+ * Resolves the parent repository workspace root directory.
+ */
+function getWorkspaceRoot(): string {
+  if (process.env.CODESPACE_VSCODE_FOLDER) {
+    return process.env.CODESPACE_VSCODE_FOLDER;
+  }
+  return path.resolve(process.cwd(), '..');
 }
 
 class TerminalManager {
@@ -51,7 +62,7 @@ class TerminalManager {
       name: 'xterm-color',
       cols: 80,
       rows: 24,
-      cwd: process.cwd(),
+      cwd: getWorkspaceRoot(),
       env: mergedEnv,
     });
 

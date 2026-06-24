@@ -10,6 +10,7 @@ import {
 import { LoginScreen } from './src/screens/LoginScreen';
 import { DashboardScreen } from './src/screens/DashboardScreen';
 import { ControlScreen } from './src/screens/ControlScreen';
+import { ShipScreen } from './src/screens/ShipScreen';
 import { Navigation, TabType } from './src/components/Navigation';
 import { secureStoreService } from './src/services/secureStore';
 import { Theme } from './src/styles/theme';
@@ -23,10 +24,16 @@ export default function App() {
   // Navigation & Workspace State
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
   const [activeCodespace, setActiveCodespace] = useState<CodespaceVM | null>(null);
+  const [bridgeUrl, setBridgeUrl] = useState<string>('http://localhost:3000');
 
   useEffect(() => {
-    async function checkAuth() {
+    async function init() {
       try {
+        const savedUrl = await secureStoreService.getBridgeUrl();
+        if (savedUrl) {
+          setBridgeUrl(savedUrl);
+        }
+
         const token = await secureStoreService.getGithubToken();
         if (token) {
           const userResponse = await fetch('https://api.github.com/user', {
@@ -53,7 +60,7 @@ export default function App() {
         setIsLoading(false);
       }
     }
-    checkAuth();
+    init();
   }, []);
 
   const handleLoginSuccess = (token: string, username: string, avatarUrl: string) => {
@@ -74,8 +81,15 @@ export default function App() {
     }
   };
 
-  const handleSelectCodespace = (vm: CodespaceVM) => {
+  const handleSelectCodespace = async (vm: CodespaceVM) => {
     setActiveCodespace(vm);
+    if (vm.connectionUrl) {
+      if (bridgeUrl && !bridgeUrl.includes('app.github.dev')) {
+        await secureStoreService.saveOriginalBridgeUrl(bridgeUrl);
+      }
+      setBridgeUrl(vm.connectionUrl);
+      await secureStoreService.saveBridgeUrl(vm.connectionUrl);
+    }
     setActiveTab('terminal'); // Auto-navigate to terminal view when workspace is entered
   };
 
@@ -104,6 +118,11 @@ export default function App() {
         return (
           <DashboardScreen
             user={user}
+            bridgeUrl={bridgeUrl}
+            onChangeBridgeUrl={async (url) => {
+              setBridgeUrl(url);
+              await secureStoreService.saveBridgeUrl(url);
+            }}
             onSelectCodespace={handleSelectCodespace}
             onLogout={handleLogout}
           />
@@ -114,21 +133,24 @@ export default function App() {
           <ControlScreen
             user={user}
             activeCodespace={activeCodespace}
-            onBackToDashboard={() => setActiveTab('dashboard')}
+            onBackToDashboard={async () => {
+              const orig = await secureStoreService.getOriginalBridgeUrl();
+              if (orig) {
+                setBridgeUrl(orig);
+                await secureStoreService.saveBridgeUrl(orig);
+              }
+              setActiveTab('dashboard');
+            }}
           />
         );
       case 'ship':
+        if (!activeCodespace) return null;
         return (
-          <View style={styles.placeholderContainer}>
-            <View style={styles.placeholderCard}>
-              <MaterialIcons name="unarchive" size={48} color={Theme.colors.secondary.glow} style={styles.placeholderIcon} />
-              <Text style={styles.placeholderTitle}>Pre-Flight Diff & Ship</Text>
-              <Text style={styles.placeholderSubtitle}>Workspace: {activeCodespace?.repositoryName}</Text>
-              <Text style={styles.placeholderDescription}>
-                Review git modifications, hunk diffs, configure env variables, and push commits back to GitHub.
-              </Text>
-            </View>
-          </View>
+          <ShipScreen
+            user={user}
+            activeCodespace={activeCodespace}
+            bridgeUrl={bridgeUrl}
+          />
         );
       default:
         return null;

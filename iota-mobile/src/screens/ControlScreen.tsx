@@ -47,11 +47,11 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
 
     async function connectSocket() {
       try {
-        const bridgeUrl = await secureStoreService.getBridgeUrl();
+        const targetUrl = activeCodespace.connectionUrl;
         if (!active) return;
-        if (!bridgeUrl) {
+        if (!targetUrl) {
           setSocketStatus('disconnected');
-          setStatusDetails('Bridge URL not configured.');
+          setStatusDetails('Codespace connection URL not available.');
           return;
         }
 
@@ -60,9 +60,13 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
 
         const apiKeys = await secureStoreService.getAllApiKeys();
         
-        socket = io(bridgeUrl, {
+        socket = io(targetUrl, {
           query: { token: user.token },
-          auth: { credentials: apiKeys },
+          auth: { credentials: apiKeys, token: user.token },
+          extraHeaders: {
+            'Authorization': `Bearer ${user.token}`,
+            'X-Github-Token': user.token,
+          },
           transports: ['websocket'],
           reconnection: true,
           reconnectionAttempts: 10,
@@ -161,13 +165,14 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           onPress: async () => {
             try {
               handleStopAgent();
-              const bridgeUrl = await secureStoreService.getBridgeUrl();
-              if (bridgeUrl) {
+              const targetUrl = activeCodespace.connectionUrl;
+              if (targetUrl) {
                 // Call stop endpoint
-                const response = await fetch(`${bridgeUrl}/api/codespaces/${activeCodespace.id}/stop`, {
+                const response = await fetch(`${targetUrl}/api/codespaces/${activeCodespace.id}/stop`, {
                   method: 'POST',
                   headers: {
                     'Authorization': `Bearer ${user.token}`,
+                    'X-Github-Token': user.token,
                   },
                 });
                 
@@ -373,7 +378,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingTop: Platform.OS === 'ios' ? 50 : 20,
+    paddingTop: Platform.OS === 'ios' ? 60 : 40,
     paddingBottom: 12,
     paddingHorizontal: 16,
     borderBottomWidth: 1,

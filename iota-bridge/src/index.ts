@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { initSocketIO } from './services/socket';
 import { requireAuth } from './middleware/auth';
 import statusRouter from './routes/status';
+import gitRouter from './routes/git';
 
 dotenv.config();
 
@@ -23,8 +24,9 @@ app.use((req, res, next) => {
   next();
 });
 
-// Register status and codespace routes
+// Register status, codespace and git routes
 app.use('/api', statusRouter);
+app.use('/api', gitRouter);
 
 
 // Initialize Socket.io

@@ -16,7 +16,21 @@ export const initSocketIO = (server: HttpServer) => {
 
   // Authentication Middleware
   io.use(async (socket: Socket, next: (err?: Error) => void) => {
-    const token = socket.handshake.query.token as string;
+    let token = socket.handshake.query.token as string;
+    
+    if (!token && socket.handshake.headers['authorization']) {
+      const authHeader = socket.handshake.headers['authorization'];
+      if (authHeader.startsWith('Bearer ')) {
+        token = authHeader.substring(7);
+      } else {
+        token = authHeader;
+      }
+    }
+    
+    if (!token && socket.handshake.auth?.token) {
+      token = socket.handshake.auth.token;
+    }
+
     if (!token) {
       return next(new Error('Authentication error: Token is required'));
     }

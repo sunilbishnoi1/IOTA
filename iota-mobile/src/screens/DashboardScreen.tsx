@@ -11,16 +11,21 @@ import {
   Platform,
   TextInput,
   Animated,
+  Modal,
+  Alert,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { BentoCard } from '../components/BentoCard';
 import { ShaderGradient } from '../components/ShaderGradient';
-import { CodespaceVM } from '../types';
+import { RepositoryList } from '../components/RepositoryList';
+import { CodespaceVM, GitHubRepository } from '../types';
 import { Theme } from '../styles/theme';
 import { secureStoreService } from '../services/secureStore';
 
 interface DashboardScreenProps {
   user: { token: string; username?: string; avatarUrl?: string };
+  bridgeUrl: string;
+  onChangeBridgeUrl: (url: string) => void;
   onSelectCodespace: (vm: CodespaceVM) => void;
   onLogout: () => void;
 }
@@ -33,7 +38,7 @@ const DEFAULT_BRIDGE_URL = Platform.select({
 });
 
 // A helper to perform fetch requests with an abortable timeout
-const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs = 5000): Promise<Response> => {
+const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs = 15000): Promise<Response> => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -54,18 +59,167 @@ const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs = 5
 
 export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   user,
+  bridgeUrl,
+  onChangeBridgeUrl,
   onSelectCodespace,
   onLogout,
 }) => {
   const [codespaces, setCodespaces] = useState<CodespaceVM[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
-  const [bridgeUrl, setBridgeUrl] = useState<string>(DEFAULT_BRIDGE_URL);
-  const [urlInput, setUrlInput] = useState<string>(DEFAULT_BRIDGE_URL);
+  const [urlInput, setUrlInput] = useState<string>(bridgeUrl);
   const [showConfig, setShowConfig] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [repositories, setRepositories] = useState<GitHubRepository[]>([]);
+  const [reposLoading, setReposLoading] = useState<boolean>(false);
+  const [repoModalVisible, setRepoModalVisible] = useState<boolean>(false);
 
   const pollingIntervals = useRef<Record<string, NodeJS.Timeout>>({});
+
+  const fetchRepositories = useCallback(async () => {
+    setReposLoading(true);
+    try {
+      const response = await fetchWithTimeout(`${bridgeUrl}/api/repos`, {
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'Accept': 'application/json',
+        },
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setRepositories(data);
+      } else {
+        throw new Error('Failed to fetch repositories');
+      }
+    } catch (err) {
+      console.warn('Failed to fetch repositories:', err);
+    } finally {
+      setReposLoading(false);
+    }
+  }, [bridgeUrl, user.token]);
+
+  const handleOpenRepoModal = () => {
+    setRepoModalVisible(true);
+    fetchRepositories();
+  };
+
+  const triggerCodespaceCreation = async (repo: GitHubRepository) => {
+    // Add an optimistic "starting" codespace item
+    const tempId = `temp-${repo.name}-${Date.now()}`;
+    const optimisticCodespace: CodespaceVM = {
+      id: tempId,
+      repositoryName: repo.fullName,
+      branchName: repo.defaultBranch,
+      status: 'starting',
+      freeHoursRemaining: 12.0,
+      connectionUrl: '',
+    };
+    
+    setCodespaces((prev) => [optimisticCodespace, ...prev]);
+    
+    try {
+      const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify({
+          repository: repo.fullName,
+          branch: repo.defaultBranch,
+        }),
+      });
+
+      if (response.ok) {
+        const createdCs: CodespaceVM = await response.json();
+        // Replace optimistic codespace with real created codespace
+        setCodespaces((prev) =>
+          prev.map((cs) => (cs.id === tempId ? createdCs : cs))
+        );
+        if (createdCs.status === 'starting') {
+          startPollingCodespace(createdCs.id);
+        }
+      } else {
+        throw new Error('Failed to create codespace');
+      }
+    } catch (err) {
+      console.warn('Failed to create codespace:', err);
+      // Remove optimistic item and fetch actual list
+      setCodespaces((prev) => prev.filter((cs) => cs.id !== tempId));
+      fetchCodespaces(true);
+    }
+  };
+
+  const handleCreateCodespace = async (repo: GitHubRepository) => {
+    setRepoModalVisible(false);
+    setLoading(true);
+    setErrorMsg(null);
+    
+    try {
+      // Check if devcontainer exists in the repository
+      const checkResponse = await fetchWithTimeout(`${bridgeUrl}/api/repos/${repo.fullName}/check-devcontainer`, {
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'Accept': 'application/json',
+        },
+      });
+
+      if (!checkResponse.ok) {
+        throw new Error('Failed to check devcontainer configuration');
+      }
+
+      const checkData = await checkResponse.json();
+      setLoading(false);
+
+      if (!checkData.exists) {
+        Alert.alert(
+          'Add IOTA Devcontainer?',
+          'The selected repository does not contain an IOTA devcontainer configuration, which is required to start the bridge server in the Codespace.\n\nWould you like IOTA to automatically commit the devcontainer configuration to your repository?',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Add & Create Codespace',
+              onPress: async () => {
+                setLoading(true);
+                try {
+                  const setupResponse = await fetchWithTimeout(`${bridgeUrl}/api/repos/setup-devcontainer`, {
+                    method: 'POST',
+                    headers: {
+                      'Authorization': `Bearer ${user.token}`,
+                      'Content-Type': 'application/json',
+                      'Accept': 'application/json',
+                    },
+                    body: JSON.stringify({
+                      repository: repo.fullName,
+                      branch: repo.defaultBranch,
+                    }),
+                  });
+
+                  if (!setupResponse.ok) {
+                    throw new Error('Failed to setup devcontainer configuration');
+                  }
+
+                  // Successfully added devcontainer, now trigger creation
+                  await triggerCodespaceCreation(repo);
+                } catch (setupErr: any) {
+                  Alert.alert('Setup Failed', setupErr.message || 'Failed to commit devcontainer configuration.');
+                } finally {
+                  setLoading(false);
+                }
+              },
+            },
+          ]
+        );
+      } else {
+        await triggerCodespaceCreation(repo);
+      }
+    } catch (err: any) {
+      console.warn('Error checking repository setup:', err);
+      setLoading(false);
+      Alert.alert('Connection Error', 'Could not verify repository devcontainer configuration. Make sure your local bridge server is connected.');
+    }
+  };
 
   // Fetch codespaces list from bridge
   const fetchCodespaces = useCallback(async (isSilent = false, customUrl?: string) => {
@@ -105,23 +259,11 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   }, [bridgeUrl, user.token]);
 
   useEffect(() => {
-    async function initUrl() {
-      try {
-        const savedUrl = await secureStoreService.getBridgeUrl();
-        if (savedUrl) {
-          setBridgeUrl(savedUrl);
-          setUrlInput(savedUrl);
-          fetchCodespaces(false, savedUrl);
-        } else {
-          fetchCodespaces();
-        }
-      } catch (err) {
-        console.warn('Failed to load saved bridge URL:', err);
-        fetchCodespaces();
-      }
-    }
-    initUrl();
+    setUrlInput(bridgeUrl);
+    fetchCodespaces(false);
+  }, [bridgeUrl]);
 
+  useEffect(() => {
     // Cleanup polling on unmount
     return () => {
       Object.values(pollingIntervals.current).forEach(clearInterval);
@@ -168,7 +310,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
     pollingIntervals.current[id] = timer;
   };
 
-  // Trigger wake up request
+  // Trigger wake up or stop request
   const handlePowerToggle = async (id: string) => {
     const target = codespaces.find((cs) => cs.id === id);
     if (!target) return;
@@ -205,6 +347,33 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
       } catch (err) {
         console.warn(`Failed to wake up codespace ${id}:`, err);
         // Revert status
+        fetchCodespaces(true);
+      }
+    } else if (target.status === 'active') {
+      // Optimistically set stopping state
+      setCodespaces((prev) =>
+        prev.map((cs) =>
+          cs.id === id ? { ...cs, status: 'stopping' } : cs
+        )
+      );
+
+      try {
+        const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces/${id}/stop`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${user.token}`,
+            'Accept': 'application/json',
+          },
+        });
+
+        if (response.ok) {
+          // Poll or refresh status to confirm sleep
+          fetchCodespaces(true);
+        } else {
+          throw new Error('Stop call failed');
+        }
+      } catch (err) {
+        console.warn(`Failed to stop codespace ${id}:`, err);
         fetchCodespaces(true);
       }
     }
@@ -259,11 +428,9 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
             />
             <TouchableOpacity
               style={styles.saveButton}
-              onPress={async () => {
-                setBridgeUrl(urlInput);
+              onPress={() => {
+                onChangeBridgeUrl(urlInput);
                 setShowConfig(false);
-                await secureStoreService.saveBridgeUrl(urlInput);
-                fetchCodespaces(false, urlInput);
               }}
             >
               <Text style={styles.saveButtonText}>Connect</Text>
@@ -317,36 +484,70 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
           </View>
         </View>
       ) : (
-        <FlatList
-          data={codespaces}
-          keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <BentoCard
-              item={item}
-              onPowerToggle={handlePowerToggle}
-              onPress={onSelectCodespace}
-            />
-          )}
-          ListHeaderComponent={renderHeader}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={handleRefresh}
-              tintColor={Theme.colors.primary.default}
-              colors={[Theme.colors.primary.default]}
-            />
-          }
-          ListEmptyComponent={
-            <View style={styles.emptyContainer}>
-              <MaterialIcons name="layers-clear" size={48} color={Theme.colors.text.muted} />
-              <Text style={styles.emptyText}>No active or sleeping containers found.</Text>
-              <Text style={styles.emptySubText}>Create a codespace on GitHub to get started.</Text>
-            </View>
-          }
-        />
+        <>
+          <FlatList
+            data={codespaces}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => (
+              <BentoCard
+                item={item}
+                onPowerToggle={handlePowerToggle}
+                onPress={onSelectCodespace}
+              />
+            )}
+            ListHeaderComponent={renderHeader}
+            contentContainerStyle={styles.listContent}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefresh}
+                tintColor={Theme.colors.primary.default}
+                colors={[Theme.colors.primary.default]}
+              />
+            }
+            ListEmptyComponent={
+              <View style={styles.emptyContainer}>
+                <MaterialIcons name="layers-clear" size={48} color={Theme.colors.text.muted} />
+                <Text style={styles.emptyText}>No active or sleeping containers found.</Text>
+                <Text style={styles.emptySubText}>Create a codespace on GitHub to get started.</Text>
+              </View>
+            }
+          />
+
+          {/* Floating Action Button (FAB) */}
+          <TouchableOpacity
+            style={styles.fab}
+            onPress={handleOpenRepoModal}
+            activeOpacity={0.8}
+          >
+            <MaterialIcons name="add" size={28} color="#fff" />
+          </TouchableOpacity>
+        </>
       )}
+
+      {/* Repository Selection Modal */}
+      <Modal
+        visible={repoModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setRepoModalVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalBackdrop}
+          activeOpacity={1}
+          onPress={() => setRepoModalVisible(false)}
+        >
+          <View style={styles.modalContent} onStartShouldSetResponder={() => true}>
+            <RepositoryList
+              repositories={repositories}
+              loading={reposLoading}
+              onSelectRepository={handleCreateCodespace}
+              onClose={() => setRepoModalVisible(false)}
+            />
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </View>
   );
 };
@@ -582,5 +783,34 @@ const styles = StyleSheet.create({
   emptySubText: {
     fontSize: 13,
     color: Theme.colors.text.muted,
+  },
+  fab: {
+    position: 'absolute',
+    bottom: 110,
+    right: 24,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: Theme.colors.primary.default,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: Theme.colors.primary.glow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 6,
+    zIndex: 10,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    height: '80%',
+    backgroundColor: Theme.colors.background,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    overflow: 'hidden',
   },
 });

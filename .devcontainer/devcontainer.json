@@ -1,0 +1,14 @@
+{
+  "name": "IOTA Codespace",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:20",
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": {
+      "label": "IOTA Bridge",
+      "onAutoForward": "silent",
+      "visibility": "private"
+    }
+  },
+  "postCreateCommand": "npm install",
+  "postStartCommand": "npm run bridge:dev &"
+}

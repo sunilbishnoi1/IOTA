@@ -41,6 +41,14 @@ export const secureStoreService = {
     await SecureStore.deleteItemAsync(BRIDGE_URL_KEY);
   },
 
+  async saveOriginalBridgeUrl(url: string): Promise<void> {
+    await SecureStore.setItemAsync('iota_original_bridge_url', url);
+  },
+
+  async getOriginalBridgeUrl(): Promise<string | null> {
+    return await SecureStore.getItemAsync('iota_original_bridge_url');
+  },
+
   async getAllApiKeys(): Promise<Record<string, string>> {
     const keys: Record<string, string> = {};
     const providers = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'];
