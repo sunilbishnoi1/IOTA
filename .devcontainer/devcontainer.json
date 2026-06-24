@@ -10,5 +10,5 @@
     }
   },
   "postCreateCommand": "npm install",
-  "postStartCommand": "nohup npm run bridge:dev > ./bridge.log 2>&1 &"
+  "postStartCommand": "node -e \"const { spawn } = require('child_process'); const fs = require('fs'); const out = fs.openSync('./bridge.log', 'a'); const child = spawn('npm', ['run', 'bridge:dev'], { detached: true, stdio: ['ignore', out, out] }); child.unref();\""
 }
