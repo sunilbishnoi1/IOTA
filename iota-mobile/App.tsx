@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { DashboardScreen } from './src/screens/DashboardScreen';
+import { ControlScreen } from './src/screens/ControlScreen';
 import { Navigation, TabType } from './src/components/Navigation';
 import { secureStoreService } from './src/services/secureStore';
 import { Theme } from './src/styles/theme';
@@ -108,17 +109,13 @@ export default function App() {
           />
         );
       case 'terminal':
+        if (!activeCodespace) return null;
         return (
-          <View style={styles.placeholderContainer}>
-            <View style={styles.placeholderCard}>
-              <MaterialIcons name="terminal" size={48} color={Theme.colors.primary.glow} style={styles.placeholderIcon} />
-              <Text style={styles.placeholderTitle}>Interactive Agent Terminal</Text>
-              <Text style={styles.placeholderSubtitle}>Active Workspace: {activeCodespace?.repositoryName}</Text>
-              <Text style={styles.placeholderDescription}>
-                Ready to stream CLI coding agent processes. Natural language prompt inputs and shell logs will stream here.
-              </Text>
-            </View>
-          </View>
+          <ControlScreen
+            user={user}
+            activeCodespace={activeCodespace}
+            onBackToDashboard={() => setActiveTab('dashboard')}
+          />
         );
       case 'ship':
         return (
@@ -143,11 +140,13 @@ export default function App() {
       {renderActiveScreen()}
       
       {/* Floating Bottom Navigation Tab Bar */}
-      <Navigation
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        hasActiveCodespace={!!activeCodespace}
-      />
+      {activeTab !== 'terminal' && (
+        <Navigation
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          hasActiveCodespace={!!activeCodespace}
+        />
+      )}
       <StatusBar style="light" />
     </View>
   );

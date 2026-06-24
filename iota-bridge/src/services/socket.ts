@@ -3,6 +3,8 @@ import { Server as HttpServer } from 'http';
 import { validateCodespaceOwner } from './github';
 import { terminalManager } from './terminal';
 
+let ioInstance: Server | null = null;
+
 export const initSocketIO = (server: HttpServer) => {
   const io = new Server(server, {
     cors: {
@@ -10,6 +12,8 @@ export const initSocketIO = (server: HttpServer) => {
       methods: ['GET', 'POST'],
     },
   });
+  ioInstance = io;
+
   // Authentication Middleware
   io.use(async (socket: Socket, next: (err?: Error) => void) => {
     const token = socket.handshake.query.token as string;
@@ -31,6 +35,23 @@ export const initSocketIO = (server: HttpServer) => {
     // Retrieve credentials from handshake auth
     const credentials = (socket.handshake.auth?.credentials || {}) as Record<string, string>;
 
+    // Send current status and log buffer immediately upon connection
+    if (terminalManager.isActive()) {
+      socket.emit('agent:status', {
+        status: 'running',
+        details: 'Active terminal session restored',
+      });
+      const existingLogs = terminalManager.getLogs();
+      if (existingLogs) {
+        socket.emit('terminal:log', { chunk: existingLogs });
+      }
+    } else {
+      socket.emit('agent:status', {
+        status: 'idle',
+        details: 'No active session',
+      });
+    }
+
     socket.on('agent:start', (payload: { agent: string; prompt: string }) => {
       const { agent, prompt } = payload;
       if (!agent || !prompt) {
@@ -41,7 +62,7 @@ export const initSocketIO = (server: HttpServer) => {
         return;
       }
 
-      socket.emit('agent:status', {
+      io.emit('agent:status', {
         status: 'running',
         details: `Starting agent ${agent}...`,
       });
@@ -52,21 +73,21 @@ export const initSocketIO = (server: HttpServer) => {
           prompt,
           credentials,
           (chunk) => {
-            socket.emit('terminal:log', { chunk });
+            io.emit('terminal:log', { chunk });
           },
           (exitCode) => {
-            socket.emit('terminal:exit', {
+            io.emit('terminal:exit', {
               exitCode,
               completed: exitCode === 0,
             });
-            socket.emit('agent:status', {
+            io.emit('agent:status', {
               status: 'idle',
               details: 'Terminal session completed',
             });
           }
         );
       } catch (err: any) {
-        socket.emit('agent:status', {
+        io.emit('agent:status', {
           status: 'error',
           details: `Failed to spawn agent: ${err.message}`,
         });
@@ -82,7 +103,7 @@ export const initSocketIO = (server: HttpServer) => {
 
     socket.on('agent:stop', () => {
       terminalManager.killActiveSession();
-      socket.emit('agent:status', {
+      io.emit('agent:status', {
         status: 'idle',
         details: 'Agent execution manually stopped',
       });
@@ -90,7 +111,7 @@ export const initSocketIO = (server: HttpServer) => {
 
     socket.on('disconnect', () => {
       console.log(`Socket client disconnected: ${socket.id}`);
-      terminalManager.killActiveSession();
+      // DO NOT kill terminal session here to allow reconnection
     });
   });
 

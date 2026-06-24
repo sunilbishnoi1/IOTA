@@ -25,12 +25,20 @@ class TerminalManager {
 
     const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
     
+    let packageSpec = '@anthropic-ai/claude-code';
+    if (agentName === 'opencode') {
+      packageSpec = 'opencode';
+    } else if (agentName === 'cline') {
+      packageSpec = 'cline';
+    }
+
     // Construct command arguments depending on the agent
     let args: string[] = [];
+    const escapedPrompt = prompt.replace(/"/g, '\\"');
     if (os.platform() === 'win32') {
-      args = ['-Command', `Write-Host 'Spawning ${agentName}...'; npx @anthropic-ai/claude-code "${prompt.replace(/"/g, '\\"')}"`];
+      args = ['-Command', `Write-Host 'Spawning ${agentName}...'; npx -y ${packageSpec} "${escapedPrompt}"`];
     } else {
-      args = ['-c', `npx @anthropic-ai/claude-code "${prompt.replace(/"/g, '\\"')}"`];
+      args = ['-c', `npx -y ${packageSpec} "${escapedPrompt}"`];
     }
 
     const mergedEnv = {
