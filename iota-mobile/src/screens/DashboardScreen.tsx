@@ -277,6 +277,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
 
   // Poll a single codespace's status until it's active or sleeping
   const startPollingCodespace = (id: string) => {
+    console.log(`[Codespace Poller] Started polling for codespace: ${id}`);
     if (pollingIntervals.current[id]) {
       clearInterval(pollingIntervals.current[id]);
     }
@@ -292,18 +293,22 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
 
         if (response.ok) {
           const updatedCs: CodespaceVM = await response.json();
+          console.log(`[Codespace Poller] Poll response for ${id}: status=${updatedCs.status}, rawState=${updatedCs.rawState}, connectionUrl=${updatedCs.connectionUrl}`);
           
           setCodespaces((prev) =>
             prev.map((cs) => (cs.id === id ? updatedCs : cs))
           );
 
           if (updatedCs.status === 'active' || updatedCs.status === 'sleeping') {
+            console.log(`[Codespace Poller] Polling finished for ${id} (final status: ${updatedCs.status})`);
             clearInterval(pollingIntervals.current[id]);
             delete pollingIntervals.current[id];
           }
+        } else {
+          console.warn(`[Codespace Poller] Poll failed for ${id} with status ${response.status}`);
         }
       } catch (err) {
-        console.warn(`Polling failed for codespace ${id}:`, err);
+        console.warn(`[Codespace Poller] Polling failed for codespace ${id}:`, err);
       }
     }, 3000);
 

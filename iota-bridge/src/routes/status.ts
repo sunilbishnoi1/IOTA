@@ -82,7 +82,7 @@ router.post('/repos/setup-devcontainer', requireAuth, async (req: AuthenticatedR
           "visibility": "private"
         }
       },
-      postStartCommand: "nohup bash -c 'git clone https://github.com/sunilbishnoi1/IOTA.git /tmp/iota && cd /tmp/iota/iota-bridge && npm install && npm run dev' > /tmp/bridge.log 2>&1 &"
+      postStartCommand: "nohup bash -c 'git clone https://github.com/sunilbishnoi1/IOTA.git /tmp/iota && cd /tmp/iota/iota-bridge && npm install && npm run dev' > ./bridge.log 2>&1 &"
     };
 
     const contentStr = JSON.stringify(devcontainerContent, null, 2);

@@ -10,5 +10,5 @@
     }
   },
   "postCreateCommand": "npm install",
-  "postStartCommand": "nohup npm run bridge:dev > /tmp/bridge.log 2>&1 &"
+  "postStartCommand": "nohup npm run bridge:dev > ./bridge.log 2>&1 &"
 }

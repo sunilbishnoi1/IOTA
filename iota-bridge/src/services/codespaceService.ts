@@ -34,10 +34,13 @@ function getConnectionUrl(codespaceName: string): string {
  */
 async function checkBridgeReachable(url: string, token: string): Promise<boolean> {
   let timeoutId: NodeJS.Timeout | null = null;
+  const targetUrl = `${url}/api/status`;
+  console.log(`[Reachability Checker] Pinging bridge status endpoint: ${targetUrl}`);
   try {
     const controller = new AbortController();
-    timeoutId = setTimeout(() => controller.abort(), 1000);
-    const response = await fetch(`${url}/api/status`, {
+    // Use 3000ms timeout for more tolerance during codespace cold starts
+    timeoutId = setTimeout(() => controller.abort(), 3000);
+    const response = await fetch(targetUrl, {
       headers: {
         'Authorization': `Bearer ${token}`,
         'X-GitHub-Token': token,
@@ -46,13 +49,21 @@ async function checkBridgeReachable(url: string, token: string): Promise<boolean
       signal: controller.signal,
     });
     if (timeoutId) clearTimeout(timeoutId);
+    
+    console.log(`[Reachability Checker] Response from ${targetUrl}: HTTP ${response.status} ${response.statusText}`);
+    
     if (response.ok) {
       const data = await response.json();
+      console.log(`[Reachability Checker] Bridge is online! Payload:`, JSON.stringify(data));
       return data.status === 'online';
+    } else {
+      const text = await response.text().catch(() => '');
+      console.warn(`[Reachability Checker] Ping failed with non-OK status. Response body snippet (first 150 chars): "${text.substring(0, 150)}"`);
+      return false;
     }
-    return false;
-  } catch (error) {
+  } catch (error: any) {
     if (timeoutId) clearTimeout(timeoutId);
+    console.error(`[Reachability Checker] Connection error to ${targetUrl}:`, error.message || error);
     return false;
   }
 }
