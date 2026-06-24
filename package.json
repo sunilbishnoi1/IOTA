@@ -1,0 +1,15 @@
+{
+  "name": "iota-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "iota-mobile",
+    "iota-bridge"
+  ],
+  "scripts": {
+    "bridge:dev": "npm run dev --workspace=iota-bridge",
+    "bridge:build": "npm run build --workspace=iota-bridge",
+    "bridge:start": "npm run start --workspace=iota-bridge",
+    "mobile:start": "npm run start --workspace=iota-mobile"
+  }
+}

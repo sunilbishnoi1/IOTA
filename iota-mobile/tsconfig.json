@@ -1,0 +1,12 @@
+{
+  "extends": "../node_modules/expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "paths": {
+      "expo-secure-store": ["../node_modules/expo-secure-store/build/SecureStore"]
+    },
+    "skipLibCheck": true
+  }
+}
