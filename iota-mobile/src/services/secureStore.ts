@@ -2,6 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 
 const GITHUB_TOKEN_KEY = 'iota_github_token';
 const API_KEYS_PREFIX = 'iota_api_key_';
+const BRIDGE_URL_KEY = 'iota_bridge_url';
 
 export const secureStoreService = {
   async saveGithubToken(token: string): Promise<void> {
@@ -26,6 +27,18 @@ export const secureStoreService = {
 
   async deleteApiKey(provider: string): Promise<void> {
     await SecureStore.deleteItemAsync(`${API_KEYS_PREFIX}${provider}`);
+  },
+
+  async saveBridgeUrl(url: string): Promise<void> {
+    await SecureStore.setItemAsync(BRIDGE_URL_KEY, url);
+  },
+
+  async getBridgeUrl(): Promise<string | null> {
+    return await SecureStore.getItemAsync(BRIDGE_URL_KEY);
+  },
+
+  async deleteBridgeUrl(): Promise<void> {
+    await SecureStore.deleteItemAsync(BRIDGE_URL_KEY);
   },
 
   async getAllApiKeys(): Promise<Record<string, string>> {

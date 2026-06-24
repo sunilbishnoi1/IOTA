@@ -2,6 +2,8 @@ import express from 'express';
 import { createServer } from 'http';
 import dotenv from 'dotenv';
 import { initSocketIO } from './services/socket';
+import { requireAuth } from './middleware/auth';
+import statusRouter from './routes/status';
 
 dotenv.config();
 
@@ -21,16 +23,9 @@ app.use((req, res, next) => {
   next();
 });
 
-// GET /api/status
-app.get('/api/status', (req, res) => {
-  res.json({
-    status: 'online',
-    repository: process.env.GITHUB_REPOSITORY || 'sunilbishnoi1/IOTA',
-    branch: 'main',
-    activeAgent: 'claude-code',
-    agentInstalled: true,
-  });
-});
+// Register status and codespace routes
+app.use('/api', statusRouter);
+
 
 // Initialize Socket.io
 initSocketIO(server);
