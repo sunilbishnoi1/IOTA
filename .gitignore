@@ -1,0 +1,24 @@
+# Universal
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+.vscode/
+.idea/
+docs/
+.agents/
+.specify/
+specs/
+claude.md
+AGENTS.md
+
+# Node.js/JavaScript/TypeScript (Expo & Bridge)
+node_modules/
+dist/
+build/
+*.log
+.env*
+.expo/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
