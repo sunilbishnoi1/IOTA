@@ -123,7 +123,7 @@ export async function getGitDiff(): Promise<GitDiffResponse> {
 /**
  * Extracts owner/repository from the local git remote URL.
  */
-async function getRepoPath(): Promise<string> {
+export async function getRepoPath(): Promise<string> {
   try {
     const { stdout } = await execAsync('git remote get-url origin');
     const url = stdout.trim();
@@ -135,6 +135,19 @@ async function getRepoPath(): Promise<string> {
     console.warn('Could not read git remote origin url:', e);
   }
   return process.env.GITHUB_REPOSITORY || 'sunilbishnoi1/IOTA';
+}
+
+/**
+ * Gets the current local git branch name.
+ */
+export async function getBranch(): Promise<string> {
+  try {
+    const { stdout } = await execAsync('git rev-parse --abbrev-ref HEAD');
+    return stdout.trim();
+  } catch (error: any) {
+    console.warn('Could not read current git branch:', error);
+    return 'main';
+  }
 }
 
 /**

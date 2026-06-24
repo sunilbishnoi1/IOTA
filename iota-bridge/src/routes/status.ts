@@ -2,18 +2,44 @@ import { Router, Response } from 'express';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
 import { listUserCodespaces, startUserCodespace, getUserCodespace, listUserRepos, createCodespace, stopCodespace, deleteCodespace } from '../services/codespaceService';
 import { getOctokitClient } from '../services/github';
+import { getRepoPath, getBranch } from '../services/git';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
+
+async function checkOpencodeInstalled(): Promise<boolean> {
+  try {
+    const cmd = process.platform === 'win32' ? 'where.exe opencode' : 'which opencode';
+    await execAsync(cmd);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
 
 const router = Router();
 
 // GET /api/status - Retrieve bridge/workspace status
-router.get('/status', requireAuth, (req: AuthenticatedRequest, res: Response) => {
-  res.json({
-    status: 'online',
-    repository: process.env.GITHUB_REPOSITORY || 'sunilbishnoi1/IOTA',
-    branch: 'main',
-    activeAgent: 'claude-code',
-    agentInstalled: true,
-  });
+router.get('/status', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const [repository, branch, agentInstalled] = await Promise.all([
+      getRepoPath().catch(() => process.env.GITHUB_REPOSITORY || 'sunilbishnoi1/IOTA'),
+      getBranch().catch(() => 'main'),
+      checkOpencodeInstalled().catch(() => false)
+    ]);
+
+    res.json({
+      status: 'online',
+      repository,
+      branch,
+      activeAgent: 'opencode',
+      agentInstalled,
+    });
+  } catch (error: any) {
+    console.error('Failed to get status:', error);
+    res.status(500).json({ error: 'Failed to get status' });
+  }
 });
 
 // GET /api/repos - List user's actual GitHub repositories

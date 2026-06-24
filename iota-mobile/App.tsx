@@ -83,13 +83,6 @@ export default function App() {
 
   const handleSelectCodespace = async (vm: CodespaceVM) => {
     setActiveCodespace(vm);
-    if (vm.connectionUrl) {
-      if (bridgeUrl && !bridgeUrl.includes('app.github.dev')) {
-        await secureStoreService.saveOriginalBridgeUrl(bridgeUrl);
-      }
-      setBridgeUrl(vm.connectionUrl);
-      await secureStoreService.saveBridgeUrl(vm.connectionUrl);
-    }
     setActiveTab('terminal'); // Auto-navigate to terminal view when workspace is entered
   };
 
@@ -133,12 +126,7 @@ export default function App() {
           <ControlScreen
             user={user}
             activeCodespace={activeCodespace}
-            onBackToDashboard={async () => {
-              const orig = await secureStoreService.getOriginalBridgeUrl();
-              if (orig) {
-                setBridgeUrl(orig);
-                await secureStoreService.saveBridgeUrl(orig);
-              }
+            onBackToDashboard={() => {
               setActiveTab('dashboard');
             }}
           />
@@ -149,7 +137,6 @@ export default function App() {
           <ShipScreen
             user={user}
             activeCodespace={activeCodespace}
-            bridgeUrl={bridgeUrl}
           />
         );
       default:

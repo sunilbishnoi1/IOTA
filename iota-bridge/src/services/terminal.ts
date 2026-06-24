@@ -36,20 +36,33 @@ class TerminalManager {
 
     const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
     
-    let packageSpec = '@anthropic-ai/claude-code';
-    if (agentName === 'opencode') {
-      packageSpec = 'opencode';
-    } else if (agentName === 'cline') {
-      packageSpec = 'cline';
-    }
-
     // Construct command arguments depending on the agent
     let args: string[] = [];
-    const escapedPrompt = prompt.replace(/"/g, '\\"');
-    if (os.platform() === 'win32') {
-      args = ['-Command', `Write-Host 'Spawning ${agentName}...'; npx -y ${packageSpec} "${escapedPrompt}"`];
+    if (agentName === 'install-opencode') {
+      if (os.platform() === 'win32') {
+        args = ['-Command', 'npm install -g opencode-ai'];
+      } else {
+        args = ['-c', 'npm install -g opencode-ai || curl -fsSL https://opencode.ai/install | bash'];
+      }
+    } else if (agentName === 'opencode') {
+      if (os.platform() === 'win32') {
+        args = ['-Command', 'opencode'];
+      } else {
+        args = ['-c', 'opencode'];
+      }
     } else {
-      args = ['-c', `npx -y ${packageSpec} "${escapedPrompt}"`];
+      let packageSpec = '@anthropic-ai/claude-code';
+      if (agentName === 'cline') {
+        packageSpec = 'cline';
+      }
+
+      // Construct command arguments depending on the agent
+      const escapedPrompt = prompt.replace(/"/g, '\\"');
+      if (os.platform() === 'win32') {
+        args = ['-Command', `Write-Host 'Spawning ${agentName}...'; npx -y ${packageSpec} "${escapedPrompt}"`];
+      } else {
+        args = ['-c', `npx -y ${packageSpec} "${escapedPrompt}"`];
+      }
     }
 
     const mergedEnv = {
@@ -65,6 +78,16 @@ class TerminalManager {
       cwd: getWorkspaceRoot(),
       env: mergedEnv,
     });
+
+    if (agentName === 'opencode' && prompt) {
+      setTimeout(() => {
+        try {
+          ptyProcess.write(prompt + '\n');
+        } catch (err) {
+          console.error('Failed to write initial prompt to opencode:', err);
+        }
+      }, 500);
+    }
 
     const session: TerminalSession = {
       ptyProcess,

@@ -271,7 +271,7 @@ const styles = StyleSheet.create({
     alignItems: 'stretch',
   },
   terminalTextContainer: {
-    minWidth: 600,
+    minWidth: 8000,
   },
   logText: {
     fontSize: 11,

@@ -21,10 +21,10 @@ import { Theme } from '../styles/theme';
 interface ShipScreenProps {
   user: { token: string; username?: string; avatarUrl?: string };
   activeCodespace: CodespaceVM;
-  bridgeUrl: string;
 }
 
-export const ShipScreen: React.FC<ShipScreenProps> = ({ user, activeCodespace, bridgeUrl }) => {
+export const ShipScreen: React.FC<ShipScreenProps> = ({ user, activeCodespace }) => {
+  const bridgeUrl = activeCodespace.connectionUrl;
   const [loading, setLoading] = useState<boolean>(true);
   const [pushing, setPushing] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);

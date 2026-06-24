@@ -33,13 +33,54 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
 }) => {
   const [logs, setLogs] = useState<string>('');
   const [inputPrompt, setInputPrompt] = useState<string>('');
-  const [agent, setAgent] = useState<'claude-code' | 'opencode' | 'cline'>('claude-code');
+  const [agent, setAgent] = useState<'claude-code' | 'opencode' | 'cline'>('opencode');
   const [socketStatus, setSocketStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
   const [agentStatus, setAgentStatus] = useState<'idle' | 'running' | 'error'>('idle');
   const [statusDetails, setStatusDetails] = useState<string>('Initializing connection...');
   const [submittedPrompt, setSubmittedPrompt] = useState<string | null>(null);
+  const [opencodeInstalled, setOpencodeInstalled] = useState<boolean>(false);
+  const [checkingInstallation, setCheckingInstallation] = useState<boolean>(true);
 
   const socketRef = useRef<any>(null);
+
+  const checkInstallationStatus = async () => {
+    try {
+      setCheckingInstallation(true);
+      const targetUrl = activeCodespace.connectionUrl;
+      if (!targetUrl) {
+        setOpencodeInstalled(false);
+        return;
+      }
+      const response = await fetch(`${targetUrl}/api/status`, {
+        headers: {
+          'Authorization': `Bearer ${user.token}`,
+          'X-GitHub-Token': user.token,
+          'Accept': 'application/json',
+        },
+      });
+      if (response.ok) {
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const data = await response.json();
+          setOpencodeInstalled(!!data.agentInstalled);
+        } else {
+          // Non-JSON response (e.g. GitHub proxy HTML redirect)
+          setOpencodeInstalled(false);
+        }
+      } else {
+        setOpencodeInstalled(false);
+      }
+    } catch (err) {
+      console.warn('Failed to check OpenCode installation status:', err);
+      setOpencodeInstalled(false);
+    } finally {
+      setCheckingInstallation(false);
+    }
+  };
+
+  useEffect(() => {
+    checkInstallationStatus();
+  }, [activeCodespace.connectionUrl, user.token]);
 
   useEffect(() => {
     let active = true;
@@ -110,6 +151,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
         socket.on('terminal:exit', (payload: { exitCode: number; completed: boolean }) => {
           if (!active) return;
           setLogs((prev) => prev + `\n\n[Process exited with code ${payload.exitCode}]\n`);
+          checkInstallationStatus();
         });
 
       } catch (err: any) {
@@ -137,14 +179,36 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     }
 
     const promptText = inputPrompt;
-    setSubmittedPrompt(promptText);
+    if (agentStatus === 'running') {
+      // Send input directly to active terminal stdin
+      socketRef.current?.emit('terminal:input', { input: promptText + '\n' });
+      setInputPrompt('');
+    } else {
+      // Start a new session
+      setSubmittedPrompt(promptText);
+      setLogs('');
+      setInputPrompt('');
+      Keyboard.dismiss();
+
+      socketRef.current?.emit('agent:start', {
+        agent,
+        prompt: promptText,
+      });
+    }
+  };
+
+  const handleInstallOpencode = () => {
+    if (socketStatus !== 'connected') {
+      Alert.alert('Connection Error', 'Cannot install. Socket is disconnected.');
+      return;
+    }
+
+    setSubmittedPrompt('Installing OpenCode agent...');
     setLogs('');
-    setInputPrompt('');
-    Keyboard.dismiss();
 
     socketRef.current?.emit('agent:start', {
-      agent,
-      prompt: promptText,
+      agent: 'install-opencode',
+      prompt: '',
     });
   };
 
@@ -242,17 +306,13 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
       </View>
 
       {/* Main Terminal Display Area */}
-      <ScrollView
-        style={styles.chatArea}
-        contentContainerStyle={styles.chatContent}
-        keyboardShouldPersistTaps="handled"
-      >
+      <View style={[styles.chatArea, { padding: 16, paddingBottom: 8 }]}>
         {/* Agent selection picker when idle */}
         {agentStatus === 'idle' && (
           <View style={styles.agentSelectorCard}>
             <Text style={styles.selectorLabel}>SELECT ACTIVE AGENT</Text>
             <View style={styles.agentButtonsRow}>
-              {(['claude-code', 'opencode', 'cline'] as const).map((opt) => (
+              {(['opencode'] as const).map((opt) => (
                 <TouchableOpacity
                   key={opt}
                   style={[
@@ -267,11 +327,28 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
                       agent === opt && styles.agentOptTextActive,
                     ]}
                   >
-                    {opt === 'claude-code' ? 'Claude' : opt === 'opencode' ? 'OpenCode' : 'Cline'}
+                    OpenCode {checkingInstallation ? '(Checking...)' : opencodeInstalled ? '(Installed)' : '(Not Installed)'}
                   </Text>
                 </TouchableOpacity>
               ))}
             </View>
+          </View>
+        )}
+
+        {/* Installation shortcut card */}
+        {agentStatus === 'idle' && !checkingInstallation && !opencodeInstalled && (
+          <View style={styles.installationCard}>
+            <View style={styles.installationHeader}>
+              <MaterialIcons name="warning" size={20} color={Theme.colors.accent.glow} style={{ marginRight: 8 }} />
+              <Text style={styles.installationTitle}>OpenCode Not Installed</Text>
+            </View>
+            <Text style={styles.installationText}>
+              The OpenCode CLI is required but not found in this Codespace. Tap below to install it globally via npm.
+            </Text>
+            <TouchableOpacity style={styles.installButton} onPress={handleInstallOpencode}>
+              <MaterialIcons name="file-download" size={18} color="#fff" style={{ marginRight: 6 }} />
+              <Text style={styles.installButtonText}>INSTALL OPENCODE</Text>
+            </TouchableOpacity>
           </View>
         )}
 
@@ -300,28 +377,20 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
         </View>
 
         {/* Chat / Terminal log cards */}
-        {submittedPrompt ? (
-          <View style={styles.messagesContainer}>
-            {/* User message card */}
-            <View style={styles.userMessageCard}>
-              <Text style={styles.userMessageText}>{submittedPrompt}</Text>
-            </View>
-
-            {/* AI Agent Console output */}
-            <View style={styles.consoleWrapper}>
-              <TerminalConsole logs={logs} onClear={handleClearLogs} />
-            </View>
+        {(logs || agentStatus === 'running') ? (
+          <View style={styles.consoleWrapper}>
+            <TerminalConsole logs={logs} onClear={handleClearLogs} />
           </View>
         ) : (
           <View style={styles.emptyContainer}>
             <MaterialIcons name="terminal" size={48} color="rgba(255, 255, 255, 0.1)" style={styles.emptyIcon} />
             <Text style={styles.emptyTitle}>System Ready</Text>
             <Text style={styles.emptySubtitle}>
-              Enter a task prompt command to dynamically provision {agent === 'claude-code' ? 'Claude Code' : agent === 'opencode' ? 'OpenCode' : 'Cline'} in the cloud environment.
+              Enter a task prompt command to dynamically provision OpenCode in the cloud environment.
             </Text>
           </View>
         )}
-      </ScrollView>
+      </View>
 
       {/* Sticky Bottom Input Container */}
       <View style={styles.bottomBar}>
@@ -349,17 +418,22 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             style={styles.textInput}
             value={inputPrompt}
             onChangeText={setInputPrompt}
-            placeholder={`Ask ${agent === 'claude-code' ? 'Claude' : agent === 'opencode' ? 'OpenCode' : 'Cline'} to code...`}
+            placeholder={
+              !opencodeInstalled
+                ? "Please install OpenCode to start..."
+                : `Ask OpenCode to code...`
+            }
             placeholderTextColor="rgba(255, 255, 255, 0.3)"
             multiline
+            editable={opencodeInstalled}
           />
           <TouchableOpacity
             style={[
               styles.submitButton,
-              !inputPrompt.trim() && styles.submitButtonDisabled,
+              (!inputPrompt.trim() || !opencodeInstalled) && styles.submitButtonDisabled,
             ]}
             onPress={handleSubmitPrompt}
-            disabled={!inputPrompt.trim()}
+            disabled={!inputPrompt.trim() || !opencodeInstalled}
           >
             <MaterialIcons name="arrow-upward" size={20} color="#fff" />
           </TouchableOpacity>
@@ -643,5 +717,42 @@ const styles = StyleSheet.create({
   },
   submitButtonDisabled: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  installationCard: {
+    ...Theme.glassmorphism,
+    padding: 16,
+    marginBottom: 16,
+    backgroundColor: 'rgba(244, 63, 94, 0.04)',
+    borderColor: 'rgba(244, 63, 94, 0.15)',
+  },
+  installationHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  installationTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: Theme.colors.accent.glow,
+  },
+  installationText: {
+    fontSize: 13,
+    color: Theme.colors.text.secondary,
+    lineHeight: 18,
+    marginBottom: 12,
+  },
+  installButton: {
+    backgroundColor: Theme.colors.primary.default,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    paddingVertical: 10,
+  },
+  installButtonText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.5,
   },
 });

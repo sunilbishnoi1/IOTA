@@ -68,7 +68,7 @@ export const initSocketIO = (server: HttpServer) => {
 
     socket.on('agent:start', (payload: { agent: string; prompt: string }) => {
       const { agent, prompt } = payload;
-      if (!agent || !prompt) {
+      if (!agent || (!prompt && agent !== 'install-opencode')) {
         socket.emit('agent:status', {
           status: 'error',
           details: 'Agent name and prompt are required',
