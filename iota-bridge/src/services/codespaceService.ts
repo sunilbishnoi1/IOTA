@@ -32,7 +32,7 @@ function getConnectionUrl(codespaceName: string): string {
 /**
  * Checks if the bridge server inside the codespace is actually reachable and running.
  */
-async function checkBridgeReachable(url: string, token: string, retries = 2): Promise<boolean> {
+export async function checkBridgeReachable(url: string, token: string, retries = 2): Promise<boolean> {
   const targetUrl = `${url}/api/status`;
   
   for (let attempt = 1; attempt <= retries; attempt++) {
@@ -59,7 +59,11 @@ async function checkBridgeReachable(url: string, token: string, retries = 2): Pr
       if (response.ok) {
         const data = await response.json();
         console.log(`[Reachability Checker] Bridge is online! Payload:`, JSON.stringify(data));
-        return data.status === 'online';
+        return (
+          data.bridgeStatus === 'online' ||
+          data.agentName === 'opencode' ||
+          typeof data.repositoryName === 'string'
+        );
       } else {
         const text = await response.text().catch(() => '');
         console.warn(`[Reachability Checker] Ping failed with non-OK status on attempt ${attempt}. Response body snippet (first 150 chars): "${text.substring(0, 150)}"`);

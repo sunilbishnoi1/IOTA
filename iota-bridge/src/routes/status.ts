@@ -24,6 +24,7 @@ router.get('/status', requireAuth, async (req: AuthenticatedRequest, res: Respon
       : liveCapability;
 
     res.json({
+      bridgeStatus: 'online',
       agentInstalled: capability.status === 'available',
       agentName: 'opencode',
       repositoryName: repository,
