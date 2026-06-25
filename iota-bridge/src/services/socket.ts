@@ -193,16 +193,20 @@ export const initSocketIO = (server: HttpServer) => {
       opencodeRunner.writeInput(input);
 
       io.emit('opencode:approval_request', { conversationId: payload.conversationId, approval });
+      
+      const approvalStatusMessage = {
+        id: `approval-${Date.now()}`,
+        conversationId: payload.conversationId,
+        role: 'status' as const,
+        content: `Approval ${payload.decision === 'approve' ? 'approved' : 'denied'}.`,
+        createdAt: new Date().toISOString(),
+        status: 'complete' as const,
+      };
+
+      opencodeStore.addMessage(approvalStatusMessage);
       io.emit('opencode:message', {
         conversationId: payload.conversationId,
-        message: {
-          id: `approval-${Date.now()}`,
-          conversationId: payload.conversationId,
-          role: 'status',
-          content: `Approval ${payload.decision === 'approve' ? 'approved' : 'denied'}.`,
-          createdAt: new Date().toISOString(),
-          status: 'complete',
-        },
+        message: approvalStatusMessage,
       });
     });
 
@@ -218,16 +222,20 @@ export const initSocketIO = (server: HttpServer) => {
     socket.on('opencode:stop', (payload: OpenCodeStopRequest) => {
       opencodeRunner.stopActiveRun();
       opencodeStore.finishRequest(payload.conversationId, true);
+
+      const stopMessage = {
+        id: `stop-${Date.now()}`,
+        conversationId: payload.conversationId,
+        role: 'status' as const,
+        content: 'OpenCode run stopped.',
+        createdAt: new Date().toISOString(),
+        status: 'complete' as const,
+      };
+
+      opencodeStore.addMessage(stopMessage);
       io.emit('opencode:message', {
         conversationId: payload.conversationId,
-        message: {
-          id: `stop-${Date.now()}`,
-          conversationId: payload.conversationId,
-          role: 'status',
-          content: 'OpenCode run stopped.',
-          createdAt: new Date().toISOString(),
-          status: 'complete',
-        },
+        message: stopMessage,
       });
     });
 

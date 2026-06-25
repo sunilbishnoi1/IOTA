@@ -329,6 +329,10 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const renderMessage = (message: OpenCodeMessage) => {
     const isUser = message.role === 'user';
     const isSystem = message.role === 'system' || message.role === 'status';
+
+    if (!message.content.trim() && message.status !== 'streaming') {
+      return null;
+    }
     return (
       <View style={[styles.messageBubble, isUser && styles.userBubble, isSystem && styles.systemBubble]}>
         <Text style={styles.messageLabel}>{isUser ? 'You' : isSystem ? 'System' : 'OpenCode'}</Text>

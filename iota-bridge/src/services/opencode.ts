@@ -1,8 +1,49 @@
 import { ChildProcess, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as net from 'net';
 import { OpenCodeCapabilityState } from '../types/opencode';
 import { opencodeStore } from './opencodeStore';
+
+/**
+ * Promise-based TCP port scanner.
+ * Polls the given port until it accepts a connection or the timeout expires.
+ */
+const checkPortReady = (port: number, host = '127.0.0.1', timeout = 3000): Promise<boolean> => {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const check = () => {
+      const socket = new net.Socket();
+      socket.setTimeout(200);
+
+      socket.on('connect', () => {
+        socket.destroy();
+        resolve(true);
+      });
+
+      socket.on('error', () => {
+        socket.destroy();
+        if (Date.now() - start > timeout) {
+          resolve(false);
+        } else {
+          setTimeout(check, 200);
+        }
+      });
+
+      socket.on('timeout', () => {
+        socket.destroy();
+        if (Date.now() - start > timeout) {
+          resolve(false);
+        } else {
+          setTimeout(check, 200);
+        }
+      });
+
+      socket.connect(port, host);
+    };
+    check();
+  });
+};
 
 export interface OpenCodeRunOptions {
   prompt: string;
@@ -122,6 +163,7 @@ class OpenCodeRunner {
       cwd: this.getWorkspaceRootSync(),
       env: { ...process.env, ...options.env, PATH: this.buildInstallerPath() },
       shell: true,
+      detached: process.platform !== 'win32', // Create a separate process group on Linux/macOS
     });
 
     this.activeRun = child;
@@ -167,18 +209,48 @@ class OpenCodeRunner {
     });
 
     return {
-      stop: () => child.kill(),
+      stop: () => {
+        if (child.pid) {
+          if (process.platform !== 'win32') {
+            try {
+              process.kill(-child.pid, 'SIGKILL'); // Terminate full shell process group
+            } catch {
+              child.kill();
+            }
+          } else {
+            child.kill();
+          }
+        }
+      },
       done,
     };
   }
 
   public stopActiveRun() {
-    this.activeRun?.kill();
+    if (this.activeRun && this.activeRun.pid) {
+      if (process.platform !== 'win32') {
+        try {
+          process.kill(-this.activeRun.pid, 'SIGKILL'); // Terminate full shell process group
+        } catch {
+          this.activeRun.kill();
+        }
+      } else {
+        this.activeRun.kill();
+      }
+    }
     this.activeRun = null;
   }
 
   public async ensureServer(): Promise<boolean> {
-    if (this.serveProcess) return true;
+    if (this.serveProcess) {
+      // Verify the existing process is actually listening
+      const warm = await checkPortReady(4096, '127.0.0.1', 500);
+      if (warm) return true;
+      // Pointer exists but port is dead — clean it out
+      try { this.serveProcess.kill(); } catch { /* already dead */ }
+      this.serveProcess = null;
+    }
+
     const available = await this.commandExists('opencode');
     if (!available) return false;
 
@@ -187,12 +259,15 @@ class OpenCodeRunner {
         cwd: await this.getWorkspaceRoot(),
         env: { ...process.env, PATH: this.buildInstallerPath() },
         shell: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: 'ignore', // Discard unread streams to prevent backpressure freezes
       });
+
       this.serveProcess.on('close', () => {
         this.serveProcess = null;
       });
-      return true;
+
+      // Block until port 4096 is actually accepting connections (up to 3s)
+      return await checkPortReady(4096, '127.0.0.1', 3000);
     } catch {
       this.serveProcess = null;
       return false;
