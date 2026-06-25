@@ -101,7 +101,6 @@ export const initSocketIO = (server: HttpServer) => {
       }));
 
     socket.on('opencode:install', async () => {
-      const conversation = opencodeStore.getOrCreateConversation();
       socket.emit('opencode:capability', {
         status: 'installing',
         details: 'Installing OpenCode...',
@@ -111,16 +110,12 @@ export const initSocketIO = (server: HttpServer) => {
       });
 
       const capability = await opencodeRunner.install((message) => {
-        socket.emit('opencode:message', {
-          conversationId: conversation.id,
-          message: {
-            id: `setup-${Date.now()}`,
-            conversationId: conversation.id,
-            role: 'status',
-            content: message,
-            createdAt: new Date().toISOString(),
-            status: 'complete',
-          },
+        socket.emit('opencode:capability', {
+          status: 'installing',
+          details: message,
+          canSubmit: false,
+          canInstall: false,
+          lastCheckedAt: new Date().toISOString(),
         });
       });
       io.emit('opencode:capability', capability);

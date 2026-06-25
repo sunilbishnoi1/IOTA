@@ -51,6 +51,9 @@ export interface FileDiff {
   additions: number;
   deletions: number;
   hunks: DiffHunk[];
+  staged?: boolean;
+  workingTreeStatus?: string;
+  indexStatus?: string;
 }
 
 // WebSocket Payloads

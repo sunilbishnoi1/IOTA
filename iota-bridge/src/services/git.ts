@@ -1,4 +1,4 @@
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
 
@@ -9,9 +9,14 @@ function getWorkspaceRoot(): string {
   return path.resolve(process.cwd(), '..');
 }
 
-const execAsync = (cmd: string) => {
-  return promisify(exec)(cmd, { cwd: getWorkspaceRoot() });
-};
+const execFileAsync = promisify(execFile);
+
+async function git(args: string[]): Promise<{ stdout: string; stderr: string }> {
+  return await execFileAsync('git', args, {
+    cwd: getWorkspaceRoot(),
+    maxBuffer: 20 * 1024 * 1024,
+  });
+}
 
 export interface DiffLine {
   type: 'context' | 'addition' | 'deletion';
@@ -28,121 +33,162 @@ export interface ChangedFile {
   additions: number;
   deletions: number;
   hunks: DiffHunk[];
+  staged?: boolean;
+  workingTreeStatus?: string;
+  indexStatus?: string;
 }
 
 export interface GitDiffResponse {
   changedFiles: ChangedFile[];
 }
 
-/**
- * Parses raw git diff text into structured JSON hunks.
- */
+interface GitStatusEntry {
+  file: string;
+  indexStatus: string;
+  workingTreeStatus: string;
+  staged: boolean;
+}
+
 export function parseGitDiff(diffText: string): GitDiffResponse {
   const changedFiles: ChangedFile[] = [];
   const lines = diffText.split(/\r?\n/);
-  
   let currentFile: ChangedFile | null = null;
   let currentHunk: DiffHunk | null = null;
-  
+
   for (const line of lines) {
     if (line.startsWith('diff --git a/')) {
-      // Parse file path. Git diff format: diff --git a/path b/path
-      // We can use a regex to capture the paths accurately
       const match = line.match(/^diff --git a\/(.+?) b\/(.+?)$/);
       if (match) {
-        const filePath = match[2];
         currentFile = {
-          file: filePath,
+          file: match[2],
           additions: 0,
           deletions: 0,
-          hunks: []
+          hunks: [],
         };
         changedFiles.push(currentFile);
         currentHunk = null;
       }
+    } else if (line.startsWith('+++ ') && currentFile) {
+      const nextPath = line.replace(/^\+\+\+\s+b\//, '').trim();
+      if (nextPath && nextPath !== '/dev/null') currentFile.file = nextPath;
     } else if (line.startsWith('@@ ') && currentFile) {
-      // Hunk header e.g. @@ -42,9 +42,12 @@
-      currentHunk = {
-        header: line.trim(),
-        lines: []
-      };
+      currentHunk = { header: line.trim(), lines: [] };
       currentFile.hunks.push(currentHunk);
-    } else if (currentHunk) {
-      if (line.startsWith('+')) {
-        currentHunk.lines.push({
-          type: 'addition',
-          content: line
-        });
-        currentFile!.additions++;
-      } else if (line.startsWith('-')) {
-        currentHunk.lines.push({
-          type: 'deletion',
-          content: line
-        });
-        currentFile!.deletions++;
+    } else if (currentHunk && currentFile) {
+      if (line.startsWith('+') && !line.startsWith('+++')) {
+        currentHunk.lines.push({ type: 'addition', content: line.substring(1) });
+        currentFile.additions++;
+      } else if (line.startsWith('-') && !line.startsWith('---')) {
+        currentHunk.lines.push({ type: 'deletion', content: line.substring(1) });
+        currentFile.deletions++;
       } else if (line.startsWith(' ') || line === '') {
-        const content = line.startsWith(' ') ? line.substring(1) : line;
-        currentHunk.lines.push({
-          type: 'context',
-          content
-        });
-      } else if (line.startsWith('\\')) {
-        // Ignore "\ No newline at end of file"
+        currentHunk.lines.push({ type: 'context', content: line.startsWith(' ') ? line.substring(1) : line });
       }
     }
   }
-  
+
   return { changedFiles };
 }
 
-/**
- * Fetches the current uncommitted git diff of the repository workspace.
- */
+function parseStatusPorcelain(output: string): GitStatusEntry[] {
+  const records = output.split('\0').filter(Boolean);
+  const entries: GitStatusEntry[] = [];
+
+  for (let index = 0; index < records.length; index++) {
+    const entry = records[index];
+    const indexStatus = entry[0] || ' ';
+    const workingTreeStatus = entry[1] || ' ';
+    const file = entry.slice(3);
+
+    entries.push({
+      file,
+      indexStatus,
+      workingTreeStatus,
+      staged: indexStatus !== ' ' && indexStatus !== '?',
+    });
+
+    if (indexStatus === 'R' || indexStatus === 'C') index += 1;
+  }
+
+  return entries;
+}
+
+async function getFileDiff(file: string): Promise<ChangedFile> {
+  try {
+    const { stdout } = await git(['diff', 'HEAD', '--', file]);
+    const parsed = parseGitDiff(stdout).changedFiles[0];
+    if (parsed) return parsed;
+  } catch (error: any) {
+    if (!String(error?.message || '').includes('bad revision')) throw error;
+  }
+
+  try {
+    const { stdout } = await git(['diff', '--no-index', '--', '/dev/null', file]);
+    const parsed = parseGitDiff(stdout).changedFiles[0];
+    if (parsed) return { ...parsed, file };
+  } catch (error: any) {
+    const parsed = parseGitDiff(error.stdout || '').changedFiles[0];
+    if (parsed) return { ...parsed, file };
+  }
+
+  return { file, additions: 0, deletions: 0, hunks: [] };
+}
+
 export async function getGitDiff(): Promise<GitDiffResponse> {
   try {
-    // Run git diff HEAD to get both staged and unstaged uncommitted changes.
-    const { stdout } = await execAsync('git diff HEAD');
-    return parseGitDiff(stdout);
+    const { stdout } = await git(['status', '--porcelain=v1', '-z']);
+    const statusEntries = parseStatusPorcelain(stdout);
+    const files = await Promise.all(statusEntries.map(async (entry) => ({
+      ...(await getFileDiff(entry.file)),
+      file: entry.file,
+      staged: entry.staged,
+      workingTreeStatus: entry.workingTreeStatus,
+      indexStatus: entry.indexStatus,
+    })));
+    return { changedFiles: files };
   } catch (error: any) {
-    // If git diff returns a non-zero exit code due to no commits yet (e.g. empty repo),
-    // or if git diff is successful but output is empty, we handle it.
-    if (error.message && error.message.includes("bad revision 'HEAD'")) {
-      // No initial commit yet. Try git diff relative to empty tree or just return empty.
-      try {
-        const { stdout } = await execAsync('git diff --cached');
-        return parseGitDiff(stdout);
-      } catch (innerErr) {
-        return { changedFiles: [] };
-      }
-    }
-    console.error('Failed to run git diff:', error);
+    console.error('Failed to read git changes:', error);
     throw new Error(`Git diff failed: ${error.message}`);
   }
 }
 
-/**
- * Extracts owner/repository from the local git remote URL.
- */
+export async function stageFiles(files: string[]): Promise<GitDiffResponse> {
+  const normalized = files.map((file) => file.trim()).filter(Boolean);
+  if (normalized.length === 0) throw new Error('At least one file must be selected for staging.');
+  await git(['add', '--', ...normalized]);
+  return await getGitDiff();
+}
+
+export async function unstageFiles(files: string[]): Promise<GitDiffResponse> {
+  const normalized = files.map((file) => file.trim()).filter(Boolean);
+  if (normalized.length === 0) throw new Error('At least one file must be selected for unstaging.');
+  try {
+    await git(['restore', '--staged', '--', ...normalized]);
+  } catch (error: any) {
+    if (String(error?.message || '').includes('unknown switch')) {
+      await git(['reset', 'HEAD', '--', ...normalized]);
+    } else {
+      throw error;
+    }
+  }
+  return await getGitDiff();
+}
+
 export async function getRepoPath(): Promise<string> {
   try {
-    const { stdout } = await execAsync('git remote get-url origin');
+    const { stdout } = await git(['remote', 'get-url', 'origin']);
     const url = stdout.trim();
     const match = url.match(/(?:github\.com[:/])([^/]+)\/([^/.]+)(?:\.git)?$/);
-    if (match) {
-      return `${match[1]}/${match[2]}`;
-    }
+    if (match) return `${match[1]}/${match[2]}`;
   } catch (e) {
     console.warn('Could not read git remote origin url:', e);
   }
   return process.env.GITHUB_REPOSITORY || 'sunilbishnoi1/IOTA';
 }
 
-/**
- * Gets the current local git branch name.
- */
 export async function getBranch(): Promise<string> {
   try {
-    const { stdout } = await execAsync('git rev-parse --abbrev-ref HEAD');
+    const { stdout } = await git(['rev-parse', '--abbrev-ref', 'HEAD']);
     return stdout.trim();
   } catch (error: any) {
     console.warn('Could not read current git branch:', error);
@@ -150,55 +196,29 @@ export async function getBranch(): Promise<string> {
   }
 }
 
-/**
- * Stages, commits, and pushes uncommitted changes to the remote repository branch.
- */
+async function hasStagedChanges(): Promise<boolean> {
+  try {
+    await git(['diff', '--cached', '--quiet']);
+    return false;
+  } catch (error: any) {
+    return error.code === 1;
+  }
+}
+
 export async function commitAndPush(token: string, message: string): Promise<{ commitHash: string }> {
   try {
-    // 1. Get current branch name
-    let branch = '';
-    try {
-      const { stdout } = await execAsync('git rev-parse --abbrev-ref HEAD');
-      branch = stdout.trim();
-    } catch (branchErr: any) {
-      throw new Error(`Failed to determine current branch: ${branchErr.message}`);
-    }
+    const branch = await getBranch();
+    if (!branch || branch === 'HEAD') throw new Error('Detached HEAD state. Cannot push changes.');
+    if (!(await hasStagedChanges())) throw new Error('No staged changes to commit. Stage at least one file first.');
 
-    if (!branch || branch === 'HEAD') {
-      throw new Error('Detached HEAD state. Cannot push changes.');
-    }
+    await git(['commit', '-m', message]);
 
-    // 2. Stage all modifications and additions
-    await execAsync('git add -A');
-
-    // 3. Commit changes
-    try {
-      // Properly escape the commit message to prevent shell injection issues
-      const escapedMsg = message.replace(/"/g, '\\"');
-      await execAsync(`git commit -m "${escapedMsg}"`);
-    } catch (commitErr: any) {
-      // If there was nothing to commit, return the current HEAD
-      if (commitErr.stdout && (commitErr.stdout.includes('nothing to commit') || commitErr.stdout.includes('no changes added to commit'))) {
-        const { stdout: headStdout } = await execAsync('git rev-parse HEAD');
-        return { commitHash: headStdout.trim() };
-      }
-      throw new Error(`Git commit failed: ${commitErr.message}`);
-    }
-
-    // 4. Get the resulting commit hash
-    const { stdout: hashStdout } = await execAsync('git rev-parse HEAD');
+    const { stdout: hashStdout } = await git(['rev-parse', 'HEAD']);
     const commitHash = hashStdout.trim();
 
-    // 5. Push to remote tracking branch using the authenticated GitHub Token.
-    // This avoids writing credentials to local git configurations.
     const repoPath = await getRepoPath();
     const pushUrl = `https://x-access-token:${token}@github.com/${repoPath}.git`;
-    
-    try {
-      await execAsync(`git push "${pushUrl}" ${branch}`);
-    } catch (pushErr: any) {
-      throw new Error(`Git push failed: ${pushErr.message}`);
-    }
+    await git(['push', pushUrl, branch]);
 
     return { commitHash };
   } catch (error: any) {

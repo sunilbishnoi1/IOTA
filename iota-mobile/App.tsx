@@ -83,7 +83,7 @@ export default function App() {
 
   const handleSelectCodespace = async (vm: CodespaceVM) => {
     setActiveCodespace(vm);
-    setActiveTab('terminal'); // Auto-navigate to terminal view when workspace is entered
+    setActiveTab('terminal'); // Auto-navigate to control view when workspace is entered
   };
 
   if (isLoading) {

@@ -1,10 +1,9 @@
 import { Router, Response } from 'express';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
-import { getGitDiff, commitAndPush } from '../services/git';
+import { getGitDiff, commitAndPush, stageFiles, unstageFiles } from '../services/git';
 
 const router = Router();
 
-// GET /api/git/diff - Retrieve uncommitted workspace changes as structured hunks
 router.get('/git/diff', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const diff = await getGitDiff();
@@ -15,7 +14,28 @@ router.get('/git/diff', requireAuth, async (req: AuthenticatedRequest, res: Resp
   }
 });
 
-// POST /api/git/commit - Commit and push staged/unstaged changes to remote GitHub repo
+router.post('/git/stage', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const files = Array.isArray(req.body?.files) ? req.body.files : [];
+    const diff = await stageFiles(files);
+    res.json(diff);
+  } catch (error: any) {
+    console.error('Failed to stage files:', error);
+    res.status(400).json({ error: error.message || 'Failed to stage selected files' });
+  }
+});
+
+router.post('/git/unstage', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const files = Array.isArray(req.body?.files) ? req.body.files : [];
+    const diff = await unstageFiles(files);
+    res.json(diff);
+  } catch (error: any) {
+    console.error('Failed to unstage files:', error);
+    res.status(400).json({ error: error.message || 'Failed to unstage selected files' });
+  }
+});
+
 router.post('/git/commit', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { message } = req.body;
@@ -29,7 +49,7 @@ router.post('/git/commit', requireAuth, async (req: AuthenticatedRequest, res: R
     res.json({
       status: 'success',
       commitHash: result.commitHash,
-      message: 'Pushed changes successfully to remote.',
+      message: 'Committed and pushed staged changes successfully.',
     });
   } catch (error: any) {
     console.error('Failed to commit and push changes:', error);

@@ -79,6 +79,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const [running, setRunning] = useState(false);
 
   const socketRef = useRef<Socket | null>(null);
+  const isInstallingRef = useRef(false);
 
   const timelineItems = useMemo<TimelineItem[]>(() => {
     const items: TimelineItem[] = [
@@ -276,6 +277,12 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
       Alert.alert('Connection Error', 'Cannot install OpenCode while disconnected.');
       return;
     }
+    if (isInstallingRef.current) return;
+    isInstallingRef.current = true;
+    setMessages([]);
+    setTools([]);
+    setFileChanges([]);
+    setApprovals([]);
     setCapability({ status: 'installing', details: 'Installing OpenCode...', canSubmit: false, canInstall: false });
     emitOpenCodeInstall(socketRef.current);
   };
@@ -406,6 +413,67 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     );
   };
 
+  // Reset the installing guard when capability leaves the installing state
+  useEffect(() => {
+    if (capability.status !== 'installing') {
+      isInstallingRef.current = false;
+    }
+  }, [capability.status]);
+
+  const isOpenCodeReady = capability.status === 'available';
+
+  const renderSetupPanel = () => {
+    const isInstalling = capability.status === 'installing';
+    const isFailed = capability.status === 'install_failed';
+    const isChecking = capability.status === 'checking';
+
+    return (
+      <View style={styles.setupPanel}>
+        <View style={styles.setupIconCircle}>
+          {isInstalling || isChecking ? (
+            <ActivityIndicator size="large" color={Theme.colors.primary.glow} />
+          ) : isFailed ? (
+            <MaterialIcons name="error-outline" size={48} color={Theme.colors.accent.glow} />
+          ) : (
+            <MaterialIcons name="download" size={48} color={Theme.colors.primary.glow} />
+          )}
+        </View>
+
+        <Text style={styles.setupHeading}>
+          {isInstalling ? 'Installing OpenCode...' : isFailed ? 'Installation Failed' : isChecking ? 'Checking OpenCode...' : 'OpenCode Setup Required'}
+        </Text>
+
+        <Text style={styles.setupDescription}>
+          {isInstalling
+            ? capability.details || 'Setting up OpenCode in this Codespace...'
+            : isFailed
+              ? capability.errorSummary || capability.details || 'OpenCode installation could not complete.'
+              : isChecking
+                ? 'Verifying OpenCode availability...'
+                : 'OpenCode is not installed in this Codespace. Install it to start coding with AI.'}
+        </Text>
+
+        {capability.canInstall && (
+          <TouchableOpacity
+            style={[styles.installButton, isInstalling && styles.installButtonDisabled]}
+            onPress={handleInstallOpenCode}
+            disabled={isInstalling}
+            activeOpacity={0.8}
+          >
+            {isInstalling ? (
+              <ActivityIndicator size="small" color="#ffffff" />
+            ) : (
+              <>
+                <MaterialIcons name="download" size={18} color="#ffffff" />
+                <Text style={styles.installButtonText}>{isFailed ? 'Retry Install' : 'Install OpenCode'}</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        )}
+      </View>
+    );
+  };
+
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.container}>
       <View style={styles.header}>
@@ -441,47 +509,42 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
         )}
       </View>
 
-      {capability.canInstall && (
-        <View style={styles.setupBand}>
-          <Text style={styles.setupTitle}>OpenCode setup required</Text>
-          <Text style={styles.setupText}>{capability.errorSummary || capability.details}</Text>
-          <TouchableOpacity style={styles.installButton} onPress={handleInstallOpenCode}>
-            <MaterialIcons name="download" size={18} color="#ffffff" />
-            <Text style={styles.installButtonText}>Install OpenCode</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      <FlatList
-        data={timelineItems}
-        keyExtractor={(item) => item.key}
-        renderItem={renderItem}
-        contentContainerStyle={timelineItems.length ? styles.timelineContent : styles.emptyContent}
-        ListEmptyComponent={(
-          <View style={styles.emptyState}>
-            <MaterialIcons name="chat-bubble-outline" size={44} color="rgba(255,255,255,0.18)" />
-            <Text style={styles.emptyTitle}>Ready for an OpenCode task</Text>
-            <Text style={styles.emptySubtitle}>Send a coding request when the bridge reports OpenCode is ready.</Text>
-          </View>
-        )}
-      />
-
-      <View style={styles.bottomBar}>
-        <View style={styles.inputWrapper}>
-          <TextInput
-            style={styles.textInput}
-            value={inputPrompt}
-            onChangeText={setInputPrompt}
-            placeholder={capability.canSubmit ? 'Ask OpenCode to change code...' : 'OpenCode is not ready'}
-            placeholderTextColor="rgba(255, 255, 255, 0.35)"
-            multiline
-            editable={socketStatus === 'connected' && capability.canSubmit && !running}
+      {isOpenCodeReady ? (
+        <>
+          <FlatList
+            data={timelineItems}
+            keyExtractor={(item) => item.key}
+            renderItem={renderItem}
+            contentContainerStyle={timelineItems.length ? styles.timelineContent : styles.emptyContent}
+            ListEmptyComponent={(
+              <View style={styles.emptyState}>
+                <MaterialIcons name="chat-bubble-outline" size={44} color="rgba(255,255,255,0.18)" />
+                <Text style={styles.emptyTitle}>Ready for an OpenCode task</Text>
+                <Text style={styles.emptySubtitle}>Send a coding request when the bridge reports OpenCode is ready.</Text>
+              </View>
+            )}
           />
-          <TouchableOpacity style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]} onPress={handleSubmitPrompt} disabled={!canSubmit}>
-            <MaterialIcons name="arrow-upward" size={20} color="#ffffff" />
-          </TouchableOpacity>
-        </View>
-      </View>
+
+          <View style={styles.bottomBar}>
+            <View style={styles.inputWrapper}>
+              <TextInput
+                style={styles.textInput}
+                value={inputPrompt}
+                onChangeText={setInputPrompt}
+                placeholder={capability.canSubmit ? 'Ask OpenCode to change code...' : 'OpenCode is not ready'}
+                placeholderTextColor="rgba(255, 255, 255, 0.35)"
+                multiline
+                editable={socketStatus === 'connected' && capability.canSubmit && !running}
+              />
+              <TouchableOpacity style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]} onPress={handleSubmitPrompt} disabled={!canSubmit}>
+                <MaterialIcons name="arrow-upward" size={20} color="#ffffff" />
+              </TouchableOpacity>
+            </View>
+          </View>
+        </>
+      ) : (
+        renderSetupPanel()
+      )}
     </KeyboardAvoidingView>
   );
 };
@@ -599,14 +662,48 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    minHeight: 40,
-    borderRadius: 8,
+    minHeight: 44,
+    borderRadius: 10,
     backgroundColor: Theme.colors.primary.default,
+    width: '100%',
+  },
+  installButtonDisabled: {
+    backgroundColor: 'rgba(99, 102, 241, 0.4)',
   },
   installButtonText: {
     color: '#ffffff',
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '700',
+  },
+  setupPanel: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 32,
+  },
+  setupIconCircle: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    backgroundColor: 'rgba(99, 102, 241, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 24,
+  },
+  setupHeading: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: Theme.colors.text.primary,
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  setupDescription: {
+    fontSize: 14,
+    color: Theme.colors.text.secondary,
+    lineHeight: 22,
+    textAlign: 'center',
+    marginBottom: 28,
+    maxWidth: 300,
   },
   timelineContent: {
     padding: 16,

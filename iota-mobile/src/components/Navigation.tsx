@@ -32,8 +32,8 @@ export const Navigation: React.FC<NavigationProps> = ({
     },
     {
       id: 'terminal' as TabType,
-      label: 'Terminal',
-      icon: 'terminal',
+      label: 'Control',
+      icon: 'chat',
       requiresActive: true,
     },
     {

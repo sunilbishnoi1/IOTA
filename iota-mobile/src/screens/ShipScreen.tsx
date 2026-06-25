@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -10,135 +10,227 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
-  Dimensions,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { DiffViewer } from '../components/DiffViewer';
-import { secureStoreService } from '../services/secureStore';
 import { CodespaceVM, FileDiff } from '../types';
 import { Theme } from '../styles/theme';
 
 interface ShipScreenProps {
   user: { token: string; username?: string; avatarUrl?: string };
   activeCodespace: CodespaceVM;
+  onSelectCodespace?: (codespace: CodespaceVM) => void;
 }
 
-export const ShipScreen: React.FC<ShipScreenProps> = ({ user, activeCodespace }) => {
-  const bridgeUrl = activeCodespace.connectionUrl;
+export const ShipScreen: React.FC<ShipScreenProps> = ({ user, activeCodespace, onSelectCodespace }) => {
+  const [selectedCodespace, setSelectedCodespace] = useState<CodespaceVM>(activeCodespace);
+  const bridgeUrl = selectedCodespace.connectionUrl;
+  const [codespaces, setCodespaces] = useState<CodespaceVM[]>([activeCodespace]);
+  const [loadingCodespaces, setLoadingCodespaces] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
+  const [stagingFile, setStagingFile] = useState<string | null>(null);
   const [pushing, setPushing] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [changedFiles, setChangedFiles] = useState<FileDiff[]>([]);
   const [selectedFile, setSelectedFile] = useState<FileDiff | null>(null);
   const [commitMessage, setCommitMessage] = useState<string>('');
-  
-  // Env status states
-  const [envStatus, setEnvStatus] = useState({
-    ANTHROPIC_API_KEY: false,
-    OPENAI_API_KEY: false,
-  });
+
+  const stagedCount = useMemo(() => changedFiles.filter((file) => file.staged).length, [changedFiles]);
+
+  const authHeaders = useMemo(() => ({
+    Authorization: `Bearer ${user.token}`,
+    'X-GitHub-Token': user.token,
+    Accept: 'application/json',
+  }), [user.token]);
+
+  const applyDiffPayload = useCallback((data: any) => {
+    const files: FileDiff[] = data.changedFiles || [];
+    setChangedFiles(files);
+    setSelectedFile((current) => {
+      if (!files.length) return null;
+      const stillPresent = current ? files.find((file) => file.file === current.file) : undefined;
+      return stillPresent || files[0];
+    });
+  }, []);
+
+  const fetchCodespaces = useCallback(async () => {
+    if (!activeCodespace.connectionUrl) return;
+    setLoadingCodespaces(true);
+    try {
+      const response = await fetch(`${activeCodespace.connectionUrl}/api/codespaces`, { headers: authHeaders });
+      if (!response.ok) throw new Error(`Codespaces request failed with ${response.status}`);
+      const data: CodespaceVM[] = await response.json();
+      const active = data.filter((item) => item.status === 'active' && item.connectionUrl);
+      const merged = [activeCodespace, ...active.filter((item) => item.id !== activeCodespace.id)];
+      setCodespaces(merged);
+    } catch (error) {
+      console.warn('Failed to list active codespaces:', error);
+      setCodespaces([activeCodespace]);
+    } finally {
+      setLoadingCodespaces(false);
+    }
+  }, [activeCodespace, authHeaders]);
 
   const fetchDiffs = useCallback(async () => {
     setLoading(true);
     setErrorMsg(null);
     try {
-      if (!bridgeUrl) {
-        throw new Error('Bridge URL is not configured. Please configure it on the Matrix tab.');
-      }
+      if (!bridgeUrl) throw new Error('Bridge URL is not configured for this codespace.');
 
-      const response = await fetch(`${bridgeUrl}/api/git/diff`, {
-        headers: {
-          'Authorization': `Bearer ${user.token}`,
-          'X-GitHub-Token': user.token,
-          'Accept': 'application/json',
-        },
-      });
-
+      const response = await fetch(`${bridgeUrl}/api/git/diff`, { headers: authHeaders });
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
         throw new Error(errData.error || `Server returned code ${response.status}`);
       }
 
-      const data = await response.json();
-      const files: FileDiff[] = data.changedFiles || [];
-      setChangedFiles(files);
-      
-      // Auto-select first file if available and not already selected
-      if (files.length > 0) {
-        setSelectedFile(files[0]);
-      } else {
-        setSelectedFile(null);
-      }
+      applyDiffPayload(await response.json());
     } catch (error: any) {
       console.warn('Error fetching diffs:', error);
       setErrorMsg(error.message || 'Unable to retrieve workspace changes.');
     } finally {
       setLoading(false);
     }
-  }, [user.token]);
+  }, [bridgeUrl, authHeaders, applyDiffPayload]);
 
-  const checkEnvConfig = useCallback(async () => {
-    try {
-      const keys = await secureStoreService.getAllApiKeys();
-      setEnvStatus({
-        ANTHROPIC_API_KEY: !!keys.ANTHROPIC_API_KEY,
-        OPENAI_API_KEY: !!keys.OPENAI_API_KEY,
-      });
-    } catch (e) {
-      console.warn('Failed to read env status:', e);
-    }
-  }, []);
+  useEffect(() => {
+    setSelectedCodespace(activeCodespace);
+  }, [activeCodespace.id]);
+
+  useEffect(() => {
+    fetchCodespaces();
+  }, [fetchCodespaces]);
 
   useEffect(() => {
     fetchDiffs();
-    checkEnvConfig();
-  }, [fetchDiffs, checkEnvConfig]);
+  }, [fetchDiffs]);
 
-  const handlePush = async () => {
+  const selectCodespace = (codespace: CodespaceVM) => {
+    setSelectedCodespace(codespace);
+    onSelectCodespace?.(codespace);
+  };
+
+  const updateFileStage = async (file: FileDiff, shouldStage: boolean) => {
+    if (!bridgeUrl) return;
+    setStagingFile(file.file);
+    try {
+      const response = await fetch(`${bridgeUrl}/api/git/${shouldStage ? 'stage' : 'unstage'}`, {
+        method: 'POST',
+        headers: {
+          ...authHeaders,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ files: [file.file] }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `Failed to ${shouldStage ? 'stage' : 'unstage'} file.`);
+      applyDiffPayload(data);
+    } catch (error: any) {
+      Alert.alert('Git staging failed', error.message || 'Unable to update staged files.');
+    } finally {
+      setStagingFile(null);
+    }
+  };
+
+  const handleCommitAndPush = async () => {
     if (!commitMessage.trim()) {
-      Alert.alert('Commit Required', 'Please enter a commit message describing your changes.');
+      Alert.alert('Commit message required', 'Enter a commit message describing the staged changes.');
+      return;
+    }
+    if (stagedCount === 0) {
+      Alert.alert('No staged files', 'Stage at least one changed file before committing.');
       return;
     }
 
     setPushing(true);
     try {
-      if (!bridgeUrl) {
-        throw new Error('Bridge URL not configured.');
-      }
+      if (!bridgeUrl) throw new Error('Bridge URL not configured.');
 
       const response = await fetch(`${bridgeUrl}/api/git/commit`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${user.token}`,
-          'X-GitHub-Token': user.token,
+          ...authHeaders,
           'Content-Type': 'application/json',
-          'Accept': 'application/json',
         },
-        body: JSON.stringify({
-          message: commitMessage.trim(),
-        }),
+        body: JSON.stringify({ message: commitMessage.trim() }),
       });
-
       const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Commit failed on bridge server.');
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Commit failed on bridge server.');
-      }
-
-      Alert.alert(
-        'Code Shipped!',
-        `Successfully committed & pushed to GitHub!\nCommit: ${data.commitHash?.substring(0, 7)}`,
-        [{ text: 'OK', onPress: () => {
-          setCommitMessage('');
-          fetchDiffs();
-        }}]
-      );
+      Alert.alert('Changes pushed', `Commit ${data.commitHash?.substring(0, 7) || ''} was pushed to GitHub.`, [
+        { text: 'OK', onPress: () => { setCommitMessage(''); fetchDiffs(); } },
+      ]);
     } catch (error: any) {
-      console.error('Push error:', error);
-      Alert.alert('Push Failed', error.message || 'An error occurred during git push.');
+      Alert.alert('Push failed', error.message || 'An error occurred during git push.');
     } finally {
       setPushing(false);
     }
+  };
+
+  const renderCodespaceSelector = () => (
+    <View style={styles.selectorBlock}>
+      <View style={styles.selectorHeader}>
+        <Text style={styles.sectionHeader}>Active Codespace</Text>
+        {loadingCodespaces && <ActivityIndicator size="small" color={Theme.colors.primary.glow} />}
+      </View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.codespaceList}>
+        {codespaces.map((codespace) => {
+          const selected = selectedCodespace.id === codespace.id;
+          return (
+            <TouchableOpacity
+              key={codespace.id}
+              style={[styles.codespaceChip, selected && styles.codespaceChipSelected]}
+              onPress={() => selectCodespace(codespace)}
+              activeOpacity={0.75}
+            >
+              <MaterialIcons name="developer-board" size={15} color={selected ? Theme.colors.primary.glow : Theme.colors.text.secondary} />
+              <View style={styles.codespaceTextBlock}>
+                <Text style={[styles.codespaceRepo, selected && styles.codespaceRepoSelected]} numberOfLines={1}>
+                  {codespace.repositoryName}
+                </Text>
+                <Text style={styles.codespaceBranch} numberOfLines={1}>{codespace.branchName}</Text>
+              </View>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+
+  const renderFileRow = (item: FileDiff, index: number) => {
+    const isSelected = selectedFile?.file === item.file;
+    const isBusy = stagingFile === item.file;
+    return (
+      <TouchableOpacity
+        key={item.file}
+        style={[styles.fileItemRow, isSelected && styles.fileItemRowSelected, index < changedFiles.length - 1 && styles.borderBottom]}
+        onPress={() => setSelectedFile(item)}
+      >
+        <View style={styles.fileNameContainer}>
+          <MaterialIcons name={item.staged ? 'check-circle' : 'radio-button-unchecked'} size={17} color={item.staged ? Theme.colors.secondary.glow : Theme.colors.text.secondary} style={styles.fileIcon} />
+          <View style={styles.fileTextBlock}>
+            <Text style={[styles.fileNameText, isSelected && styles.fileNameTextSelected]} numberOfLines={1}>{item.file}</Text>
+            <Text style={styles.fileStateText}>{item.staged ? 'Staged for commit' : 'Not staged'}</Text>
+          </View>
+        </View>
+        <View style={styles.fileActions}>
+          <View style={styles.badgesContainer}>
+            {item.additions > 0 && <Text style={styles.additionBadge}>+{item.additions}</Text>}
+            {item.deletions > 0 && <Text style={styles.deletionBadge}>-{item.deletions}</Text>}
+          </View>
+          <TouchableOpacity
+            style={[styles.stageButton, item.staged && styles.unstageButton]}
+            onPress={() => updateFileStage(item, !item.staged)}
+            disabled={isBusy || pushing}
+          >
+            {isBusy ? (
+              <ActivityIndicator size="small" color={Theme.colors.text.primary} />
+            ) : (
+              <Text style={[styles.stageButtonText, item.staged && styles.unstageButtonText]}>{item.staged ? 'Unstage' : 'Stage'}</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+    );
   };
 
   const renderContent = () => {
@@ -146,7 +238,7 @@ export const ShipScreen: React.FC<ShipScreenProps> = ({ user, activeCodespace })
       return (
         <View style={styles.centerContainer}>
           <ActivityIndicator size="large" color={Theme.colors.primary.default} />
-          <Text style={styles.loadingText}>Retrieving uncommitted modifications...</Text>
+          <Text style={styles.loadingText}>Retrieving workspace changes...</Text>
         </View>
       );
     }
@@ -157,7 +249,7 @@ export const ShipScreen: React.FC<ShipScreenProps> = ({ user, activeCodespace })
           <MaterialIcons name="error-outline" size={48} color={Theme.colors.accent.glow} style={styles.errorIcon} />
           <Text style={styles.errorText}>{errorMsg}</Text>
           <TouchableOpacity style={styles.retryButton} onPress={fetchDiffs}>
-            <Text style={styles.retryButtonText}>Retry Connect</Text>
+            <Text style={styles.retryButtonText}>Retry</Text>
           </TouchableOpacity>
         </View>
       );
@@ -165,86 +257,36 @@ export const ShipScreen: React.FC<ShipScreenProps> = ({ user, activeCodespace })
 
     if (changedFiles.length === 0) {
       return (
-        <ScrollView contentContainerStyle={styles.centerContainer}>
+        <ScrollView contentContainerStyle={styles.cleanScrollContent}>
+          {renderCodespaceSelector()}
           <View style={styles.cleanCard}>
             <View style={styles.checkCircle}>
               <MaterialIcons name="check" size={36} color={Theme.colors.secondary.glow} />
             </View>
             <Text style={styles.cleanTitle}>Workspace Clean</Text>
-            <Text style={styles.cleanSubtitle}>
-              All modifications committed and pushed to remote branch.
-            </Text>
-            <Text style={styles.cleanRepoText}>
-              Branch: {activeCodespace.branchName}
-            </Text>
+            <Text style={styles.cleanSubtitle}>No modified, staged, or newly created files were found in this codespace.</Text>
+            <Text style={styles.cleanRepoText}>{selectedCodespace.repositoryName} - {selectedCodespace.branchName}</Text>
           </View>
-          
-          {/* Active Env Config Box on Clean Page */}
-          {renderEnvConfig()}
         </ScrollView>
       );
     }
 
     return (
-      <KeyboardAvoidingView 
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined} 
-        style={styles.keyboardView}
-      >
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.keyboardView}>
         <ScrollView style={styles.mainScroll} contentContainerStyle={styles.scrollContent}>
-          {/* Files List */}
-          <Text style={styles.sectionHeader}>Modified Files ({changedFiles.length})</Text>
-          <View style={styles.fileListCard}>
-            {changedFiles.map((item, index) => {
-              const isSelected = selectedFile?.file === item.file;
-              return (
-                <TouchableOpacity
-                  key={`file-${index}`}
-                  style={[
-                    styles.fileItemRow,
-                    isSelected && styles.fileItemRowSelected,
-                    index < changedFiles.length - 1 && styles.borderBottom,
-                  ]}
-                  onPress={() => setSelectedFile(item)}
-                >
-                  <View style={styles.fileNameContainer}>
-                    <MaterialIcons 
-                      name="insert-drive-file" 
-                      size={16} 
-                      color={isSelected ? Theme.colors.primary.glow : Theme.colors.text.secondary} 
-                      style={styles.fileIcon}
-                    />
-                    <Text 
-                      style={[
-                        styles.fileNameText,
-                        isSelected && styles.fileNameTextSelected,
-                      ]}
-                      numberOfLines={1}
-                      ellipsizeMode="tail"
-                    >
-                      {item.file}
-                    </Text>
-                  </View>
-                  <View style={styles.badgesContainer}>
-                    {item.additions > 0 && (
-                      <Text style={styles.additionBadge}>+{item.additions}</Text>
-                    )}
-                    {item.deletions > 0 && (
-                      <Text style={styles.deletionBadge}>-{item.deletions}</Text>
-                    )}
-                  </View>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
+          {renderCodespaceSelector()}
 
-          {/* Hunk Diff View */}
+          <View style={styles.diffSummaryRow}>
+            <Text style={styles.sectionHeader}>Changed Files ({changedFiles.length})</Text>
+            <Text style={styles.stagedSummary}>{stagedCount} staged</Text>
+          </View>
+          <View style={styles.fileListCard}>{changedFiles.map(renderFileRow)}</View>
+
           {selectedFile && (
             <>
               <View style={styles.diffHeaderRow}>
-                <Text style={styles.sectionHeader}>Hunk Diff View</Text>
-                <Text style={styles.selectedFileName} numberOfLines={1}>
-                  {selectedFile.file.split('/').pop()}
-                </Text>
+                <Text style={styles.sectionHeader}>Diff Preview</Text>
+                <Text style={styles.selectedFileName} numberOfLines={1}>{selectedFile.file.split('/').pop()}</Text>
               </View>
               <View style={styles.diffViewerContainer}>
                 <DiffViewer hunks={selectedFile.hunks} />
@@ -252,15 +294,11 @@ export const ShipScreen: React.FC<ShipScreenProps> = ({ user, activeCodespace })
             </>
           )}
 
-          {/* Active Env Config Box */}
-          {renderEnvConfig()}
-
-          {/* Staging & Push Control */}
-          <Text style={styles.sectionHeader}>Code Ship Configuration</Text>
+          <Text style={styles.sectionHeader}>Commit</Text>
           <View style={styles.shipCard}>
             <TextInput
               style={styles.commitInput}
-              placeholder="Enter commit message... (e.g. feat: add terminal copy capability)"
+              placeholder="Enter commit message..."
               placeholderTextColor={Theme.colors.text.muted}
               multiline
               numberOfLines={3}
@@ -268,25 +306,21 @@ export const ShipScreen: React.FC<ShipScreenProps> = ({ user, activeCodespace })
               onChangeText={setCommitMessage}
               editable={!pushing}
             />
-
             <TouchableOpacity
-              style={[
-                styles.pushButton,
-                (!commitMessage.trim() || pushing) && styles.pushButtonDisabled,
-              ]}
-              onPress={handlePush}
-              disabled={!commitMessage.trim() || pushing}
+              style={[styles.pushButton, (!commitMessage.trim() || pushing || stagedCount === 0) && styles.pushButtonDisabled]}
+              onPress={handleCommitAndPush}
+              disabled={!commitMessage.trim() || pushing || stagedCount === 0}
               activeOpacity={0.8}
             >
               {pushing ? (
                 <View style={styles.pushBtnLoading}>
                   <ActivityIndicator size="small" color="#fff" />
-                  <Text style={styles.pushBtnText}>Shipping...</Text>
+                  <Text style={styles.pushBtnText}>Committing...</Text>
                 </View>
               ) : (
                 <View style={styles.pushBtnContent}>
-                  <MaterialIcons name="unarchive" size={20} color="#fff" style={styles.pushIcon} />
-                  <Text style={styles.pushBtnText}>Approve & Push Changes</Text>
+                  <MaterialIcons name="cloud-upload" size={20} color="#fff" style={styles.pushIcon} />
+                  <Text style={styles.pushBtnText}>Commit and Push Changes</Text>
                 </View>
               )}
             </TouchableOpacity>
@@ -296,71 +330,17 @@ export const ShipScreen: React.FC<ShipScreenProps> = ({ user, activeCodespace })
     );
   };
 
-  const renderEnvConfig = () => {
-    return (
-      <View style={styles.envCard}>
-        <View style={styles.envHeader}>
-          <MaterialIcons name="vpn-key" size={16} color={Theme.colors.primary.glow} />
-          <Text style={styles.envTitle}>Credentials Vault</Text>
-        </View>
-        <Text style={styles.envDesc}>
-          Keys from local SecureStore are dynamically injected into terminal environments and cleared on teardown.
-        </Text>
-        
-        <View style={styles.envStatusRow}>
-          <View style={styles.envStatusItem}>
-            <View style={[
-              styles.statusDot,
-              envStatus.ANTHROPIC_API_KEY ? styles.statusDotActive : styles.statusDotMissing,
-            ]} />
-            <Text style={styles.envKeyLabel}>Anthropic Key</Text>
-            <Text style={[
-              styles.envStatusText,
-              envStatus.ANTHROPIC_API_KEY ? styles.envTextActive : styles.envTextMissing,
-            ]}>
-              {envStatus.ANTHROPIC_API_KEY ? 'Vaulted' : 'Missing'}
-            </Text>
-          </View>
-
-          <View style={styles.envSeparator} />
-
-          <View style={styles.envStatusItem}>
-            <View style={[
-              styles.statusDot,
-              envStatus.OPENAI_API_KEY ? styles.statusDotActive : styles.statusDotMissing,
-            ]} />
-            <Text style={styles.envKeyLabel}>OpenAI Key</Text>
-            <Text style={[
-              styles.envStatusText,
-              envStatus.OPENAI_API_KEY ? styles.envTextActive : styles.envTextMissing,
-            ]}>
-              {envStatus.OPENAI_API_KEY ? 'Vaulted' : 'Missing'}
-            </Text>
-          </View>
-        </View>
-      </View>
-    );
-  };
-
   return (
     <View style={styles.container}>
-      {/* Top Banner */}
       <View style={styles.header}>
         <View style={styles.headerTitles}>
-          <Text style={styles.headerTitle}>Pre-Flight Diff</Text>
-          <Text style={styles.headerSubtitle} numberOfLines={1}>
-            Repo: {activeCodespace.repositoryName} • {activeCodespace.branchName}
-          </Text>
+          <Text style={styles.headerTitle}>Ship</Text>
+          <Text style={styles.headerSubtitle} numberOfLines={1}>{selectedCodespace.repositoryName} - {selectedCodespace.branchName}</Text>
         </View>
-        <TouchableOpacity 
-          style={styles.refreshButton} 
-          onPress={() => { fetchDiffs(); checkEnvConfig(); }}
-          disabled={loading || pushing}
-        >
+        <TouchableOpacity style={styles.refreshButton} onPress={() => { fetchCodespaces(); fetchDiffs(); }} disabled={loading || pushing}>
           <MaterialIcons name="refresh" size={22} color={Theme.colors.primary.glow} />
         </TouchableOpacity>
       </View>
-
       {renderContent()}
     </View>
   );
@@ -389,7 +369,6 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: '800',
     color: Theme.colors.text.primary,
-    letterSpacing: -0.5,
   },
   headerSubtitle: {
     fontSize: 12,
@@ -442,12 +421,71 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 13,
   },
+  keyboardView: {
+    flex: 1,
+  },
+  mainScroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    padding: 20,
+    paddingBottom: 110,
+  },
+  cleanScrollContent: {
+    flexGrow: 1,
+    padding: 20,
+    paddingBottom: 110,
+  },
+  selectorBlock: {
+    marginBottom: 4,
+  },
+  selectorHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  codespaceList: {
+    gap: 10,
+    paddingRight: 20,
+  },
+  codespaceChip: {
+    width: 220,
+    minHeight: 58,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+  },
+  codespaceChipSelected: {
+    borderColor: 'rgba(129, 140, 248, 0.55)',
+    backgroundColor: 'rgba(99, 102, 241, 0.12)',
+  },
+  codespaceTextBlock: {
+    flex: 1,
+  },
+  codespaceRepo: {
+    color: Theme.colors.text.secondary,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  codespaceRepoSelected: {
+    color: Theme.colors.text.primary,
+  },
+  codespaceBranch: {
+    marginTop: 3,
+    color: Theme.colors.text.muted,
+    fontSize: 11,
+  },
   cleanCard: {
     ...Theme.glassmorphism,
     padding: 32,
     width: '100%',
     alignItems: 'center',
-    marginBottom: 20,
+    marginTop: 18,
   },
   checkCircle: {
     width: 64,
@@ -457,10 +495,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 16,
-    shadowColor: Theme.colors.secondary.default,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.2,
-    shadowRadius: 10,
   },
   cleanTitle: {
     fontSize: 20,
@@ -480,28 +514,29 @@ const styles = StyleSheet.create({
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
     color: Theme.colors.text.muted,
   },
-  keyboardView: {
-    flex: 1,
-  },
-  mainScroll: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: 20,
-    paddingBottom: 110, // leave space for bottom bar
-  },
   sectionHeader: {
     fontSize: 13,
     fontWeight: '700',
     color: Theme.colors.text.secondary,
     textTransform: 'uppercase',
     letterSpacing: 1,
-    marginTop: 20,
+    marginTop: 18,
     marginBottom: 10,
+  },
+  diffSummaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  stagedSummary: {
+    color: Theme.colors.secondary.glow,
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 18,
   },
   fileListCard: {
     ...Theme.glassmorphism,
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
   },
   fileItemRow: {
     flexDirection: 'row',
@@ -509,6 +544,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingVertical: 12,
     paddingHorizontal: 4,
+    gap: 10,
   },
   fileItemRowSelected: {
     backgroundColor: 'rgba(255, 255, 255, 0.02)',
@@ -522,10 +558,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
-    marginRight: 16,
+    minWidth: 0,
   },
   fileIcon: {
     marginRight: 10,
+  },
+  fileTextBlock: {
+    flex: 1,
+    minWidth: 0,
   },
   fileNameText: {
     fontSize: 14,
@@ -535,6 +575,15 @@ const styles = StyleSheet.create({
   fileNameTextSelected: {
     color: Theme.colors.text.primary,
     fontWeight: '700',
+  },
+  fileStateText: {
+    marginTop: 3,
+    fontSize: 11,
+    color: Theme.colors.text.muted,
+  },
+  fileActions: {
+    alignItems: 'flex-end',
+    gap: 8,
   },
   badgesContainer: {
     flexDirection: 'row',
@@ -558,6 +607,27 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 4,
   },
+  stageButton: {
+    minWidth: 72,
+    minHeight: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    backgroundColor: Theme.colors.primary.default,
+  },
+  unstageButton: {
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+  },
+  stageButtonText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  unstageButtonText: {
+    color: Theme.colors.text.secondary,
+  },
   diffHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -566,6 +636,9 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   selectedFileName: {
+    flex: 1,
+    textAlign: 'right',
+    marginLeft: 12,
     fontSize: 11,
     color: Theme.colors.primary.glow,
     fontWeight: '600',
@@ -573,77 +646,6 @@ const styles = StyleSheet.create({
   },
   diffViewerContainer: {
     height: 300,
-  },
-  envCard: {
-    ...Theme.glassmorphism,
-    padding: 16,
-    marginTop: 20,
-  },
-  envHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 8,
-  },
-  envTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: Theme.colors.text.primary,
-  },
-  envDesc: {
-    fontSize: 11,
-    color: Theme.colors.text.muted,
-    lineHeight: 16,
-    marginBottom: 14,
-  },
-  envStatusRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.01)',
-    borderColor: 'rgba(255, 255, 255, 0.03)',
-    borderWidth: 1,
-    borderRadius: 8,
-    paddingVertical: 10,
-  },
-  envStatusItem: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: 6,
-  },
-  envSeparator: {
-    width: 1,
-    height: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  statusDotActive: {
-    backgroundColor: Theme.colors.secondary.glow,
-  },
-  statusDotMissing: {
-    backgroundColor: Theme.colors.accent.default,
-  },
-  envKeyLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: Theme.colors.text.secondary,
-  },
-  envStatusText: {
-    fontSize: 10,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  envTextActive: {
-    color: Theme.colors.secondary.glow,
-  },
-  envTextMissing: {
-    color: Theme.colors.accent.glow,
   },
   shipCard: {
     ...Theme.glassmorphism,
@@ -658,26 +660,19 @@ const styles = StyleSheet.create({
     padding: 12,
     color: Theme.colors.text.primary,
     fontSize: 14,
-    height: 70,
+    height: 76,
     textAlignVertical: 'top',
     marginBottom: 14,
   },
   pushButton: {
     backgroundColor: Theme.colors.primary.default,
     borderRadius: 8,
-    height: 44,
+    minHeight: 44,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: Theme.colors.primary.default,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 10,
-    elevation: 4,
   },
   pushButtonDisabled: {
     backgroundColor: 'rgba(99, 102, 241, 0.3)',
-    shadowOpacity: 0,
-    elevation: 0,
   },
   pushBtnContent: {
     flexDirection: 'row',
@@ -697,6 +692,5 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 14,
     fontWeight: '700',
-    letterSpacing: -0.2,
   },
 });
