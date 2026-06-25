@@ -22,7 +22,8 @@ class TerminalManager {
   private readonly maxLogLines = 2000;
 
   /**
-   * Spawns a new pseudo-terminal process running the specified command/agent
+   * Internal PTY helper retained for maintenance flows only.
+   * Control Screen chat uses services/opencode.ts and normalized opencode:* events.
    */
   public spawn(
     agentName: string,
@@ -31,38 +32,28 @@ class TerminalManager {
     onData: (chunk: string) => void,
     onExit: (exitCode: number) => void
   ): pty.IPty {
-    // Teardown any existing session first
     this.killActiveSession();
 
     const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
-    
-    // Construct command arguments depending on the agent
+    const escapedPrompt = prompt.replace(/"/g, '\\"');
     let args: string[] = [];
+
     if (agentName === 'install-opencode') {
-      if (os.platform() === 'win32') {
-        args = ['-Command', 'npm install -g opencode-ai'];
-      } else {
-        args = ['-c', 'npm install -g opencode-ai || curl -fsSL https://opencode.ai/install | bash'];
-      }
+      args = os.platform() === 'win32'
+        ? ['-Command', 'npm install -g opencode-ai']
+        : ['-c', 'npm install -g opencode-ai || curl -fsSL https://opencode.ai/install | bash'];
     } else if (agentName === 'opencode') {
-      if (os.platform() === 'win32') {
-        args = ['-Command', 'opencode'];
-      } else {
-        args = ['-c', 'opencode'];
-      }
+      args = os.platform() === 'win32'
+        ? ['-Command', `opencode run "${escapedPrompt}" --format json`]
+        : ['-c', `opencode run "${escapedPrompt}" --format json`];
     } else {
       let packageSpec = '@anthropic-ai/claude-code';
       if (agentName === 'cline') {
         packageSpec = 'cline';
       }
-
-      // Construct command arguments depending on the agent
-      const escapedPrompt = prompt.replace(/"/g, '\\"');
-      if (os.platform() === 'win32') {
-        args = ['-Command', `Write-Host 'Spawning ${agentName}...'; npx -y ${packageSpec} "${escapedPrompt}"`];
-      } else {
-        args = ['-c', `npx -y ${packageSpec} "${escapedPrompt}"`];
-      }
+      args = os.platform() === 'win32'
+        ? ['-Command', `Write-Host 'Spawning ${agentName}...'; npx -y ${packageSpec} "${escapedPrompt}"`]
+        : ['-c', `npx -y ${packageSpec} "${escapedPrompt}"`];
     }
 
     const mergedEnv = {
@@ -79,23 +70,12 @@ class TerminalManager {
       env: mergedEnv,
     });
 
-    if (agentName === 'opencode' && prompt) {
-      setTimeout(() => {
-        try {
-          ptyProcess.write(prompt + '\n');
-        } catch (err) {
-          console.error('Failed to write initial prompt to opencode:', err);
-        }
-      }, 500);
-    }
-
     const session: TerminalSession = {
       ptyProcess,
       logBuffer: [],
     };
 
     ptyProcess.onData((data) => {
-      // Maintain rolling buffer of logs
       session.logBuffer.push(data);
       if (session.logBuffer.length > this.maxLogLines) {
         session.logBuffer.shift();

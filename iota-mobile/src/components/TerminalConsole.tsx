@@ -11,6 +11,221 @@ import * as Clipboard from 'expo-clipboard';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Theme } from '../styles/theme';
 
+interface Cell {
+  char: string;
+  style: {
+    color?: string;
+    fontWeight?: '700';
+    opacity?: number;
+  };
+}
+
+type Row = Cell[];
+
+// High-fidelity virtual terminal emulator parser that supports grid-based drawing
+// (cursor positioning, cursor movement, screen/line clearing) and colors.
+function parseTerminalLogs(rawLogs: string, numCols = 80, numRows = 24): Row[] {
+  const rows: Row[] = [];
+  const createEmptyRow = (): Row =>
+    Array.from({ length: numCols }, () => ({ char: ' ', style: {} }));
+
+  // Initialize with at least numRows rows
+  for (let i = 0; i < numRows; i++) {
+    rows.push(createEmptyRow());
+  }
+
+  let cursorRow = 0; // Relative to the top of the visible screen (0 to numRows-1)
+  let cursorCol = 0;
+  let currentStyle: Cell['style'] = {};
+
+  const getAbsoluteRow = () => {
+    return rows.length - numRows + cursorRow;
+  };
+
+  const ensureAbsoluteRowExists = (absRow: number) => {
+    while (absRow >= rows.length) {
+      rows.push(createEmptyRow());
+    }
+    while (absRow < 0) {
+      rows.unshift(createEmptyRow());
+      cursorRow++; // adjust relative cursor row since we prepended a row
+      absRow = rows.length - numRows + cursorRow;
+    }
+  };
+
+  let i = 0;
+  while (i < rawLogs.length) {
+    const char = rawLogs[i];
+
+    if (char === '\u001b') {
+      const next = rawLogs[i + 1];
+      if (next === '[') {
+        let j = i + 2;
+        let seq = '';
+        while (j < rawLogs.length) {
+          const c = rawLogs[j];
+          const code = c.charCodeAt(0);
+          if (code >= 0x40 && code <= 0x7E) {
+            seq = rawLogs.substring(i + 2, j + 1);
+            i = j;
+            break;
+          }
+          j++;
+        }
+        if (seq) {
+          const finalChar = seq[seq.length - 1];
+          const paramsStr = seq.substring(0, seq.length - 1);
+
+          if (finalChar === 'm') {
+            const codes = paramsStr.split(';').map(c => parseInt(c, 10));
+            if (codes.length === 0 || (codes.length === 1 && isNaN(codes[0]))) {
+              currentStyle = {};
+            } else {
+              for (let cIdx = 0; cIdx < codes.length; cIdx++) {
+                const code = codes[cIdx];
+                if (code === 0) {
+                  currentStyle = {};
+                } else if (code === 1) {
+                  currentStyle = { ...currentStyle, fontWeight: '700' };
+                } else if (code === 2) {
+                  currentStyle = { ...currentStyle, opacity: 0.6 };
+                } else if (code === 22) {
+                  currentStyle = { ...currentStyle, fontWeight: undefined, opacity: undefined };
+                } else if (code >= 30 && code <= 37) {
+                  const colors = ['#000000', '#f43f5e', '#34d399', '#fbbf24', '#60a5fa', '#f472b6', '#22d3ee', '#ffffff'];
+                  currentStyle = { ...currentStyle, color: colors[code - 30] };
+                } else if (code >= 90 && code <= 97) {
+                  const colors = ['#475569', '#ef4444', '#10b981', '#f59e0b', '#3b82f6', '#ec4899', '#06b6d4', '#cbd5e1'];
+                  currentStyle = { ...currentStyle, color: colors[code - 90] };
+                } else if (code === 38) {
+                  if (codes[cIdx + 1] === 5) {
+                    const colorIndex = codes[cIdx + 2];
+                    let color = '#cbd5e1';
+                    if (colorIndex === 174) color = '#fca5a5';
+                    else if (colorIndex === 246 || colorIndex === 244 || colorIndex === 239) color = '#94a3b8';
+                    else if (colorIndex === 220) color = '#fbbf24';
+                    currentStyle = { ...currentStyle, color };
+                    cIdx += 2;
+                  } else if (codes[cIdx + 1] === 2) {
+                    const r = codes[cIdx + 2];
+                    const g = codes[cIdx + 3];
+                    const b = codes[cIdx + 4];
+                    currentStyle = { ...currentStyle, color: `rgb(${r},${g},${b})` };
+                    cIdx += 4;
+                  }
+                } else if (code === 39) {
+                  currentStyle = { ...currentStyle, color: undefined };
+                }
+              }
+            }
+          } else if (finalChar === 'H' || finalChar === 'f') {
+            const parts = paramsStr.split(';');
+            const r = parts[0] ? parseInt(parts[0], 10) - 1 : 0;
+            const c = parts[1] ? parseInt(parts[1], 10) - 1 : 0;
+            cursorRow = Math.max(0, Math.min(numRows - 1, r));
+            cursorCol = Math.max(0, Math.min(numCols - 1, c));
+          } else if (finalChar === 'A') {
+            const n = paramsStr ? parseInt(paramsStr, 10) : 1;
+            cursorRow = Math.max(0, cursorRow - n);
+          } else if (finalChar === 'B') {
+            const n = paramsStr ? parseInt(paramsStr, 10) : 1;
+            cursorRow = Math.max(0, Math.min(numRows - 1, cursorRow + n));
+          } else if (finalChar === 'C') {
+            const n = paramsStr ? parseInt(paramsStr, 10) : 1;
+            cursorCol = Math.min(numCols - 1, cursorCol + n);
+          } else if (finalChar === 'D') {
+            const n = paramsStr ? parseInt(paramsStr, 10) : 1;
+            cursorCol = Math.max(0, cursorCol - n);
+          } else if (finalChar === 'J') {
+            const mode = paramsStr ? parseInt(paramsStr, 10) : 0;
+            if (mode === 2) {
+              for (let rIdx = 0; rIdx < numRows; rIdx++) {
+                const targetAbsRow = rows.length - numRows + rIdx;
+                ensureAbsoluteRowExists(targetAbsRow);
+                rows[targetAbsRow] = createEmptyRow();
+              }
+              cursorRow = 0;
+              cursorCol = 0;
+            } else if (mode === 0) {
+              const absRow = getAbsoluteRow();
+              ensureAbsoluteRowExists(absRow);
+              for (let c = cursorCol; c < numCols; c++) {
+                rows[absRow][c] = { char: ' ', style: {} };
+              }
+              for (let rIdx = cursorRow + 1; rIdx < numRows; rIdx++) {
+                const targetAbsRow = rows.length - numRows + rIdx;
+                ensureAbsoluteRowExists(targetAbsRow);
+                rows[targetAbsRow] = createEmptyRow();
+              }
+            }
+          } else if (finalChar === 'K') {
+            const mode = paramsStr ? parseInt(paramsStr, 10) : 0;
+            const absRow = getAbsoluteRow();
+            ensureAbsoluteRowExists(absRow);
+            if (mode === 2) {
+              rows[absRow] = createEmptyRow();
+            } else if (mode === 0) {
+              for (let c = cursorCol; c < numCols; c++) {
+                rows[absRow][c] = { char: ' ', style: {} };
+              }
+            } else if (mode === 1) {
+              for (let c = 0; c <= cursorCol; c++) {
+                rows[absRow][c] = { char: ' ', style: {} };
+              }
+            }
+          }
+        }
+      } else if (next === ']') {
+        // Strip OSC sequences (terminated by BEL or ST)
+        let j = i + 2;
+        while (j < rawLogs.length) {
+          if (rawLogs[j] === '\u0007') {
+            i = j;
+            break;
+          } else if (rawLogs[j] === '\u001b' && rawLogs[j + 1] === '\\') {
+            i = j + 1;
+            break;
+          }
+          j++;
+        }
+      }
+    } else if (char === '\n') {
+      cursorRow++;
+      cursorCol = 0;
+      const absRow = getAbsoluteRow();
+      ensureAbsoluteRowExists(absRow);
+    } else if (char === '\r') {
+      cursorCol = 0;
+    } else if (char === '\b') {
+      cursorCol = Math.max(0, cursorCol - 1);
+    } else if (char.charCodeAt(0) >= 32) {
+      const absRow = getAbsoluteRow();
+      ensureAbsoluteRowExists(absRow);
+
+      if (cursorCol >= numCols) {
+        cursorCol = 0;
+        cursorRow++;
+        const wrappedAbsRow = getAbsoluteRow();
+        ensureAbsoluteRowExists(wrappedAbsRow);
+      }
+
+      const targetAbsRow = getAbsoluteRow();
+      rows[targetAbsRow][cursorCol] = { char, style: currentStyle };
+      cursorCol++;
+    }
+    i++;
+  }
+
+  // Cap total scrollback at 1000 lines
+  const maxScrollback = 1000;
+  if (rows.length > maxScrollback) {
+    const diff = rows.length - maxScrollback;
+    rows.splice(0, diff);
+  }
+
+  return rows;
+}
+
 interface TerminalConsoleProps {
   logs: string;
   onClear?: () => void;
@@ -31,136 +246,62 @@ export const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, onClear 
     const cleanLogs = logs
       .replace(/\r\n/g, '\n')
       .replace(/\u001b\[\d+C/g, (_, count) => ' '.repeat(parseInt(count, 10)))
-      .replace(/\u001b\][0-9];.*?(?:\u0007|\u001b\\)/g, '') // strip OSC
+      .replace(/\u001b\][0-9]+;.*?(?:\u0007|\u001b\\)/g, '') // strip OSC
       .replace(/\u001b\[[0-9:;<=>?]*[a-zA-Z]/g, '') // strip all CSI including color 'm'
       .replace(/\u001b\([a-zA-Z]/g, ''); // strip ISO charset
     await Clipboard.setStringAsync(cleanLogs);
   };
 
-  // Process raw terminal log buffer
-  const processTerminalLogs = (rawLogs: string) => {
-    if (!rawLogs) return [];
+  const parsedRows = React.useMemo(() => {
+    return parseTerminalLogs(logs);
+  }, [logs]);
 
-    // 1. Normalize line endings (CRLF -> LF) to prevent \r\n from clearing lines
-    let clean = rawLogs.replace(/\r\n/g, '\n');
-    
-    // 2. Convert cursor forward (CSI \d+ C) into spaces to preserve visual table layouts
-    clean = clean.replace(/\u001b\[(\d+)C/g, (_, count) => {
-      return ' '.repeat(parseInt(count, 10));
-    });
-
-    // 3. Strip OSC sequences (e.g. \u001b]0;title\u0007)
-    clean = clean.replace(/\u001b\][0-9];.*?(?:\u0007|\u001b\\)/g, '');
-    
-    // 4. Strip CSI control codes except color/formatting 'm'
-    // Pattern [0-9:;<=>?]* matches ANSI parameters, ending with letters a-l, n-z, A-Z (excluding m)
-    clean = clean.replace(/\u001b\[[0-9:;<=>?]*[a-ln-zA-Z]/g, '');
-    
-    // 5. Strip character set selectors (e.g. \u001b(B)
-    clean = clean.replace(/\u001b\([a-zA-Z]/g, '');
-
-    // 6. Handle carriage returns (\r) to overwrite lines in place (progress indicators, etc.)
-    const lines: string[] = [];
-    let currentLine = '';
-
-    for (let i = 0; i < clean.length; i++) {
-      const char = clean[i];
-      if (char === '\n') {
-        lines.push(currentLine);
-        currentLine = '';
-      } else if (char === '\r') {
-        // Carriage return: reset current line buffer (simulate overwrite in place)
-        currentLine = '';
-      } else {
-        currentLine += char;
-      }
-    }
-    if (currentLine) {
-      lines.push(currentLine);
-    }
-
-    return lines;
-  };
-
-  // Simple line parser that converts remaining SGR color codes into styled React Native Spans
-  const renderLogLine = (line: string, index: number) => {
-    // If the line consists only of spaces or is empty, render it as-is to preserve spacing
-    if (!line.replace(/\s/g, '').length) {
-      return <Text key={index} style={styles.logText}>{line}</Text>;
-    }
-
-    const colorRegex = /\u001b\[([0-9;]*)m/g;
-    let lastIndex = 0;
-    let match;
+  const renderRow = (row: Row, rowIndex: number) => {
     const spans: React.ReactNode[] = [];
-    
-    // Dynamic style state
-    let textStyle: any = { ...styles.logText };
+    let currentStyle: Cell['style'] = {};
+    let currentText = '';
 
-    const getStyleForCodes = (codeStr: string) => {
-      const codes = codeStr.split(';');
-      let style: any = { ...styles.logText };
-      
-      for (const code of codes) {
-        if (code === '0' || code === '') {
-          style = { ...styles.logText };
-        } else if (code === '31' || code === '91') { // Red
-          style = { ...style, color: '#f43f5e' };
-        } else if (code === '32' || code === '92') { // Green
-          style = { ...style, color: '#34d399' };
-        } else if (code === '33' || code === '93') { // Yellow
-          style = { ...style, color: '#fbbf24' };
-        } else if (code === '34' || code === '94') { // Blue
-          style = { ...style, color: '#60a5fa' };
-        } else if (code === '35' || code === '95') { // Magenta
-          style = { ...style, color: '#f472b6' };
-        } else if (code === '36' || code === '96') { // Cyan
-          style = { ...style, color: '#22d3ee' };
-        } else if (codeStr.includes('5;174')) { // Extended colors
-          style = { ...style, color: '#fca5a5' };
-        } else if (codeStr.includes('5;246') || codeStr.includes('5;244') || codeStr.includes('5;239')) {
-          style = { ...style, color: '#94a3b8' };
-        } else if (codeStr.includes('5;220')) {
-          style = { ...style, color: '#fbbf24' };
-        } else if (code === '1') { // Bold
-          style = { ...style, fontWeight: '700' };
-        } else if (code === '2') { // Faint/dim
-          style = { ...style, opacity: 0.6 };
-        }
-      }
-      return style;
-    };
-
-    while ((match = colorRegex.exec(line)) !== null) {
-      const textBefore = line.substring(lastIndex, match.index);
-      if (textBefore) {
+    const pushSpan = (key: string) => {
+      if (currentText) {
         spans.push(
-          <Text key={`${index}-${lastIndex}`} style={textStyle}>
-            {textBefore}
+          <Text
+            key={key}
+            style={[
+              styles.logText,
+              currentStyle.color ? { color: currentStyle.color } : null,
+              currentStyle.fontWeight ? { fontWeight: currentStyle.fontWeight } : null,
+              currentStyle.opacity ? { opacity: currentStyle.opacity } : null,
+            ]}
+          >
+            {currentText}
           </Text>
         );
       }
-      textStyle = getStyleForCodes(match[1]);
-      lastIndex = colorRegex.lastIndex;
-    }
+    };
 
-    const remainingText = line.substring(lastIndex);
-    if (remainingText || spans.length === 0) {
-      spans.push(
-        <Text key={`${index}-${lastIndex}`} style={textStyle}>
-          {remainingText}
-        </Text>
-      );
+    for (let colIndex = 0; colIndex < row.length; colIndex++) {
+      const cell = row[colIndex];
+      const isStyleEqual =
+        cell.style.color === currentStyle.color &&
+        cell.style.fontWeight === currentStyle.fontWeight &&
+        cell.style.opacity === currentStyle.opacity;
+
+      if (isStyleEqual) {
+        currentText += cell.char;
+      } else {
+        pushSpan(`${rowIndex}-${colIndex}`);
+        currentStyle = cell.style;
+        currentText = cell.char;
+      }
     }
+    pushSpan(`${rowIndex}-end`);
 
     return (
-      <Text key={index} style={styles.logText}>
+      <Text key={rowIndex} style={styles.logLine}>
         {spans}
       </Text>
     );
   };
-
-  const lines = processTerminalLogs(logs);
 
   return (
     <View style={styles.container}>
@@ -197,7 +338,7 @@ export const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, onClear 
           contentContainerStyle={styles.horizontalScrollContent}
         >
           <View style={styles.terminalTextContainer}>
-            {lines.map((line, idx) => renderLogLine(line, idx))}
+            {parsedRows.map((row, idx) => renderRow(row, idx))}
           </View>
         </ScrollView>
       </ScrollView>
@@ -271,7 +412,10 @@ const styles = StyleSheet.create({
     alignItems: 'stretch',
   },
   terminalTextContainer: {
-    minWidth: 8000,
+    minWidth: 560,
+  },
+  logLine: {
+    height: 14,
   },
   logText: {
     fontSize: 11,

@@ -3,38 +3,36 @@ import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
 import { listUserCodespaces, startUserCodespace, getUserCodespace, listUserRepos, createCodespace, stopCodespace, deleteCodespace } from '../services/codespaceService';
 import { getOctokitClient } from '../services/github';
 import { getRepoPath, getBranch } from '../services/git';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-
-const execAsync = promisify(exec);
-
-async function checkOpencodeInstalled(): Promise<boolean> {
-  try {
-    const cmd = process.platform === 'win32' ? 'where.exe opencode' : 'which opencode';
-    await execAsync(cmd);
-    return true;
-  } catch (error) {
-    return false;
-  }
-}
+import { opencodeRunner } from '../services/opencode';
 
 const router = Router();
 
-// GET /api/status - Retrieve bridge/workspace status
+// GET /api/status - Retrieve bridge/workspace status and OpenCode capability.
 router.get('/status', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const [repository, branch, agentInstalled] = await Promise.all([
+    const [repository, branch, liveCapability] = await Promise.all([
       getRepoPath().catch(() => process.env.GITHUB_REPOSITORY || 'sunilbishnoi1/IOTA'),
       getBranch().catch(() => 'main'),
-      checkOpencodeInstalled().catch(() => false)
+      opencodeRunner.checkCapability(),
     ]);
 
+    // Prefer the cached capability if it carries richer state (e.g. install_failed
+    // with errorSummary), but fall back to the live check for fresh page loads.
+    const cached = opencodeRunner.getLastCapability();
+    const capability = cached && cached.status === 'install_failed' && liveCapability.status === 'missing'
+      ? cached
+      : liveCapability;
+
     res.json({
-      status: 'online',
-      repository,
-      branch,
-      activeAgent: 'opencode',
-      agentInstalled,
+      agentInstalled: capability.status === 'available',
+      agentName: 'opencode',
+      repositoryName: repository,
+      branchName: branch,
+      status: capability.status,
+      details: capability.details,
+      canSubmit: capability.canSubmit,
+      canInstall: capability.canInstall,
+      errorSummary: capability.errorSummary,
     });
   } catch (error: any) {
     console.error('Failed to get status:', error);
@@ -60,7 +58,7 @@ router.get('/repos/:owner/:repo/check-devcontainer', requireAuth, async (req: Au
     const token = req.userToken!;
     const { owner, repo } = req.params;
     const octokit = getOctokitClient(token);
-    
+
     try {
       await octokit.rest.repos.getContent({
         owner,
@@ -95,7 +93,7 @@ router.post('/repos/setup-devcontainer', requireAuth, async (req: AuthenticatedR
     }
 
     const octokit = getOctokitClient(token);
-    
+
     // Default devcontainer content to clone and run the bridge
     const devcontainerContent = {
       name: "IOTA Codespace",
@@ -207,7 +205,7 @@ router.delete('/codespaces/:name', requireAuth, async (req: AuthenticatedRequest
     res.json({ success: true, message: `Codespace ${name} deleted successfully` });
   } catch (error: any) {
     console.error(`Failed to delete codespace ${req.params.name}:`, error);
-    res.status(error.status || 500).json({ 
+    res.status(error.status || 500).json({
       error: error.message || 'Failed to delete codespace',
       status: error.status,
       request: error.request,
@@ -217,4 +215,3 @@ router.delete('/codespaces/:name', requireAuth, async (req: AuthenticatedRequest
 });
 
 export default router;
-
