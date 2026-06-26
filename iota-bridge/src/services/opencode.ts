@@ -99,6 +99,7 @@ class OpenCodeRunner {
     logInfo(`[OpenCodeRunner] checkCapability: --version exitCode=${version.exitCode}, stdout="${(version.stdout || '').trim().slice(0, 80)}", stderr="${(version.stderr || '').trim().slice(0, 120)}"`);
 
     if (version.exitCode !== 0) {
+      logInfo(`[OpenCodeRunner] checkCapability: OpenCode is missing or returned non-zero exit code`);
       const missing: OpenCodeCapabilityState = {
         status: 'missing',
         details: 'OpenCode is not installed in this Codespace',
@@ -112,7 +113,9 @@ class OpenCodeRunner {
     }
 
     const workspaceRoot = this.getWorkspaceRootSync();
+    logInfo(`[OpenCodeRunner] checkCapability: checking workspace root: ${workspaceRoot}`);
     if (!workspaceRoot || !fs.existsSync(workspaceRoot)) {
+      logError(`[OpenCodeRunner] checkCapability: workspace folder is not ready or not found: ${workspaceRoot}`);
       const uninitialized: OpenCodeCapabilityState = {
         status: 'installed_uninitialized',
         details: 'OpenCode is installed, but the workspace folder is not ready',
@@ -125,6 +128,7 @@ class OpenCodeRunner {
       return uninitialized;
     }
 
+    logInfo(`[OpenCodeRunner] checkCapability: OpenCode is ready and available`);
     const available: OpenCodeCapabilityState = {
       status: 'available',
       details: 'OpenCode is ready',
@@ -141,7 +145,9 @@ class OpenCodeRunner {
   }
 
   public async install(onProgress: (message: string) => void): Promise<OpenCodeCapabilityState> {
+    logInfo(`[OpenCodeRunner] install: starting installation`);
     if (this.installing) {
+      logInfo(`[OpenCodeRunner] install: already installing, skipping`);
       return {
         status: 'installing',
         details: 'OpenCode installation is already running',
@@ -157,31 +163,39 @@ class OpenCodeRunner {
     const npmCommand = await this.findNpmCommand();
     let npmResult: CommandResult | undefined;
     if (npmCommand) {
+      logInfo(`[OpenCodeRunner] install: running npm installer using command: ${npmCommand.command}`);
       npmResult = await this.runInstaller(
         npmCommand.command,
         [...npmCommand.prefixArgs, 'install', '-g', 'opencode-ai'],
         onProgress
       );
     } else {
+      logInfo(`[OpenCodeRunner] install: npm not found, will fallback to curl`);
       onProgress('npm was not found. Trying the official OpenCode installer...');
     }
 
     let capability = await this.checkCapability();
+    logInfo(`[OpenCodeRunner] install: capability after npm install attempt is ${capability.status}`);
     if (capability.status === 'available' || capability.status === 'installed_uninitialized') {
       this.installing = false;
+      logInfo(`[OpenCodeRunner] install: installation succeeded after npm install`);
       return capability;
     }
 
+    logInfo(`[OpenCodeRunner] install: npm install did not make OpenCode available. Trying curl script installer...`);
     onProgress('Trying the official OpenCode install script...');
     const curlResult = await this.runInstaller('bash', ['-lc', 'curl -fsSL https://opencode.ai/install | bash'], onProgress);
     capability = await this.checkCapability();
     this.installing = false;
+    logInfo(`[OpenCodeRunner] install: capability after curl install attempt is ${capability.status}`);
 
     if (capability.status === 'available' || capability.status === 'installed_uninitialized') {
+      logInfo(`[OpenCodeRunner] install: installation succeeded after curl script`);
       return capability;
     }
 
     const failureText = this.sanitizeLine(curlResult.stderr || curlResult.stdout || npmResult?.stderr || npmResult?.stdout);
+    logError(`[OpenCodeRunner] install: installation failed. Failure text: "${failureText}"`);
     const failedCapability: OpenCodeCapabilityState = {
       status: 'install_failed',
       details: 'OpenCode installation failed',
@@ -312,8 +326,8 @@ class OpenCodeRunner {
         logInfo(`[OpenCodeRunner] Attempt ${attemptCount} finished: exitCode=${result.exitCode}, jsonCount=${jsonCount}, stdoutBytes=${stdoutBytes}, stderrBytes=${stderrBytes}, attach=${attach}, spawnError=${result.spawnError || 'none'}`);
 
         // Check if fallback is needed
-        if (attach && jsonCount === 0 && (result.exitCode !== 0 || result.spawnError)) {
-          logError(`[OpenCodeRunner] Attached run failed with exitCode=${result.exitCode}, spawnError=${result.spawnError} and 0 JSON outputs. Triggering fallback to direct run.`);
+        if (attach && jsonCount === 0) {
+          logError(`[OpenCodeRunner] Attached run failed/returned with exitCode=${result.exitCode}, spawnError=${result.spawnError || 'none'} and 0 JSON outputs. Triggering fallback to direct run.`);
           
           options.onRunStatus?.({
             conversationId: options.conversationId,
@@ -377,7 +391,9 @@ class OpenCodeRunner {
       this.serveProcess = this.spawnProcess('opencode', ['serve', '--port', String(OPENCODE_PORT)], {
         cwd: await this.getWorkspaceRoot(),
         stdio: 'ignore',
+        detached: true,
       });
+      this.serveProcess.unref();
       logInfo(`[OpenCodeRunner] ensureServer: serve process PID=${this.serveProcess.pid}`);
 
       this.serveProcess.on('close', (code) => {
@@ -414,11 +430,15 @@ class OpenCodeRunner {
   }
 
   public async listSessions(): Promise<unknown[]> {
+    logInfo(`[OpenCodeRunner] listSessions: listing session files`);
     const result = await this.runCommand('opencode', ['session', 'list', '--format', 'json'], 5000);
     try {
       const parsed = JSON.parse(result.stdout);
-      return Array.isArray(parsed) ? parsed : [parsed];
-    } catch {
+      const list = Array.isArray(parsed) ? parsed : [parsed];
+      logInfo(`[OpenCodeRunner] listSessions: successfully retrieved ${list.length} session(s)`);
+      return list;
+    } catch (err: any) {
+      logError(`[OpenCodeRunner] listSessions: failed to parse JSON: ${err.message}. Raw stdout: "${result.stdout}"`);
       return [];
     }
   }
@@ -432,14 +452,17 @@ class OpenCodeRunner {
   }
 
   public async syncFromCliSessions(conversationId?: string): Promise<void> {
+    logInfo(`[OpenCodeRunner] syncFromCliSessions: syncing sessions for conversationId=${conversationId}`);
     const sessions = await this.listSessions();
     if (sessions && sessions.length > 0) {
       const session = sessions[0] as { id?: string; sessionId?: string; session_id?: string; messages?: any[]; status?: string };
       const sessionId = session.id || session.sessionId || session.session_id;
+      logInfo(`[OpenCodeRunner] syncFromCliSessions: target sessionId=${sessionId}`);
       if (sessionId) {
         const conversation = opencodeStore.getOrCreateConversation(conversationId, sessionId);
         if (session.status) conversation.status = session.status as any;
         if (Array.isArray(session.messages) && session.messages.length > 0) {
+          logInfo(`[OpenCodeRunner] syncFromCliSessions: syncing ${session.messages.length} message(s) for conversation ${conversation.id}`);
           conversation.messages = session.messages.map((msg: any) => ({
             id: msg.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             conversationId: conversation.id,
@@ -450,11 +473,13 @@ class OpenCodeRunner {
           }));
         }
       }
+    } else {
+      logInfo(`[OpenCodeRunner] syncFromCliSessions: no CLI sessions to sync`);
     }
   }
 
   private buildRunArgs(prompt: string, sessionId?: string, attach = false): string[] {
-    const args = ['run', '--model', 'opencode/deepseek-v4-flash-free'];
+    const args = ['run', '--model', 'opencode/deepseek-v4-flash-free', '--dangerously-skip-permissions'];
     if (attach) args.push('--attach', OPENCODE_URL);
     if (sessionId) args.push('--continue', '--session', sessionId);
     args.push(prompt, '--format', 'json');
@@ -482,6 +507,7 @@ class OpenCodeRunner {
         env,
         shell: true,
         stdio: options.stdio,
+        detached: options.detached,
       });
     } else {
       const shArgs = ['-c', `exec ${command} "$@"`, '--', ...args];
@@ -552,6 +578,7 @@ class OpenCodeRunner {
 
   private runInstaller(command: string, args: string[], onProgress: (message: string) => void): Promise<CommandResult> {
     return new Promise((resolve) => {
+      logInfo(`[OpenCodeRunner] runInstaller: spawning ${command} ${args.join(' ')}`);
       const child = this.spawnProcess(command, args, {
         cwd: this.getWorkspaceRootSync(),
       });
@@ -568,8 +595,14 @@ class OpenCodeRunner {
         stderr += text;
         onProgress(this.summarizeInstallChunk(text));
       });
-      child.on('close', (exitCode) => resolve({ exitCode, stdout, stderr }));
-      child.on('error', (error) => resolve({ exitCode: null, stdout, stderr: error.message }));
+      child.on('close', (exitCode) => {
+        logInfo(`[OpenCodeRunner] runInstaller: ${command} closed with code=${exitCode}`);
+        resolve({ exitCode, stdout, stderr });
+      });
+      child.on('error', (error) => {
+        logError(`[OpenCodeRunner] runInstaller: ${command} error: ${error.message}`);
+        resolve({ exitCode: null, stdout, stderr: error.message });
+      });
     });
   }
 
@@ -578,6 +611,7 @@ class OpenCodeRunner {
       let settled = false;
       let stdout = '';
       let stderr = '';
+      logInfo(`[OpenCodeRunner] runCommand: spawning ${command} ${args.join(' ')} with timeout=${timeoutMs}ms`);
       const child = this.spawnProcess(command, args, {
         cwd: this.getWorkspaceRootSync(),
       });
@@ -585,6 +619,7 @@ class OpenCodeRunner {
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
+        logError(`[OpenCodeRunner] runCommand: ${command} ${args.join(' ')} timed out after ${timeoutMs}ms. Killing child.`);
         this.killProcess(child);
         resolve({ exitCode: null, stdout, stderr: stderr || 'Command timed out' });
       }, timeoutMs);
@@ -594,12 +629,14 @@ class OpenCodeRunner {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        logInfo(`[OpenCodeRunner] runCommand: ${command} ${args.join(' ')} finished with exitCode=${exitCode}`);
         resolve({ exitCode, stdout, stderr });
       });
       child.on('error', (error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        logError(`[OpenCodeRunner] runCommand: ${command} ${args.join(' ')} encountered error: ${error.message}`);
         resolve({ exitCode: null, stdout, stderr: error.message });
       });
     });
