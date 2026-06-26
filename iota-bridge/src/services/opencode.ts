@@ -94,7 +94,9 @@ class OpenCodeRunner {
 
   public async checkCapability(): Promise<OpenCodeCapabilityState> {
     const timestamp = new Date().toISOString();
+    logInfo(`[OpenCodeRunner] checkCapability: probing opencode --version`);
     const version = await this.runCommand('opencode', ['--version'], 5000);
+    logInfo(`[OpenCodeRunner] checkCapability: --version exitCode=${version.exitCode}, stdout="${(version.stdout || '').trim().slice(0, 80)}", stderr="${(version.stderr || '').trim().slice(0, 120)}"`);
 
     if (version.exitCode !== 0) {
       const missing: OpenCodeCapabilityState = {
@@ -195,7 +197,7 @@ class OpenCodeRunner {
   public async run(options: OpenCodeRunOptions): Promise<OpenCodeRunHandle> {
     this.clearStaleServer();
     
-    logInfo(`[OpenCodeRunner] Starting run request ${options.requestId} for conversation ${options.conversationId}`);
+    logInfo(`[OpenCodeRunner] Starting run request ${options.requestId} for conversation ${options.conversationId}, prompt="${options.prompt.slice(0, 80)}"`);
     
     options.onRunStatus?.({
       conversationId: options.conversationId,
@@ -206,6 +208,7 @@ class OpenCodeRunner {
     });
 
     const server = await this.ensureServer();
+    logInfo(`[OpenCodeRunner] ensureServer result: ready=${server.ready}, details="${server.details}"`);
     const initialAttach = server.ready;
     
     options.onRunStatus?.({
@@ -242,11 +245,14 @@ class OpenCodeRunner {
         let buffer = '';
         let stderr = '';
         let jsonCount = 0;
+        let stdoutBytes = 0;
+        let stderrBytes = 0;
 
         child.stdout?.on('data', (data) => {
           options.onActivity?.();
           const text = String(data);
-          logInfo(`[OpenCode stdout] ${text.trim()}`);
+          stdoutBytes += data.length;
+          logInfo(`[OpenCode stdout] (${data.length}B, total=${stdoutBytes}B) ${text.trim().slice(0, 500)}`);
           options.onText?.(text);
           buffer += text;
           const lines = buffer.split(/\r?\n/);
@@ -266,7 +272,8 @@ class OpenCodeRunner {
         child.stderr?.on('data', (data) => {
           options.onActivity?.();
           const text = String(data);
-          logError(`[OpenCode stderr] ${text.trim()}`);
+          stderrBytes += data.length;
+          logError(`[OpenCode stderr] (${data.length}B, total=${stderrBytes}B) ${text.trim().slice(0, 500)}`);
           stderr += text;
           for (const line of text.split(/\r?\n/)) {
             const clean = this.sanitizeLine(line);
@@ -302,6 +309,7 @@ class OpenCodeRunner {
         });
 
         const result = await childDone;
+        logInfo(`[OpenCodeRunner] Attempt ${attemptCount} finished: exitCode=${result.exitCode}, jsonCount=${jsonCount}, stdoutBytes=${stdoutBytes}, stderrBytes=${stderrBytes}, attach=${attach}, spawnError=${result.spawnError || 'none'}`);
 
         // Check if fallback is needed
         if (attach && jsonCount === 0 && (result.exitCode !== 0 || result.spawnError)) {
@@ -322,6 +330,7 @@ class OpenCodeRunner {
         }
 
         // Otherwise we are done
+        logInfo(`[OpenCodeRunner] Run loop completed after ${attemptCount} attempt(s). Final exitCode=${result.exitCode}, jsonCount=${jsonCount}`);
         resolve(result);
         break;
       }
@@ -350,35 +359,45 @@ class OpenCodeRunner {
   }
 
   public async ensureServer(): Promise<ServerReadinessResult> {
+    logInfo(`[OpenCodeRunner] ensureServer: serveProcess exists=${!!this.serveProcess}`);
     if (this.serveProcess) {
       const warm = await checkPortReady(OPENCODE_PORT, '127.0.0.1', 500);
+      logInfo(`[OpenCodeRunner] ensureServer: existing server warm=${warm}`);
       if (warm) return { ready: true, url: OPENCODE_URL, details: 'OpenCode server is listening' };
+      logInfo(`[OpenCodeRunner] ensureServer: existing server is stale, clearing`);
       this.clearStaleServer();
     }
 
     const available = await this.commandExists('opencode');
+    logInfo(`[OpenCodeRunner] ensureServer: opencode binary available=${available}`);
     if (!available) return { ready: false, details: 'OpenCode binary is missing' };
 
     try {
+      logInfo(`[OpenCodeRunner] ensureServer: spawning opencode serve --port ${OPENCODE_PORT}`);
       this.serveProcess = this.spawnProcess('opencode', ['serve', '--port', String(OPENCODE_PORT)], {
         cwd: await this.getWorkspaceRoot(),
         stdio: 'ignore',
       });
+      logInfo(`[OpenCodeRunner] ensureServer: serve process PID=${this.serveProcess.pid}`);
 
-      this.serveProcess.on('close', () => {
+      this.serveProcess.on('close', (code) => {
+        logInfo(`[OpenCodeRunner] ensureServer: serve process closed with code=${code}`);
         this.serveProcess = null;
       });
-      this.serveProcess.on('error', () => {
+      this.serveProcess.on('error', (err) => {
+        logError(`[OpenCodeRunner] ensureServer: serve process error: ${err.message}`);
         this.serveProcess = null;
       });
 
       const ready = await checkPortReady(OPENCODE_PORT, '127.0.0.1', 3000);
+      logInfo(`[OpenCodeRunner] ensureServer: port probe result ready=${ready}`);
       if (!ready) {
         this.clearStaleServer();
         return { ready: false, details: 'OpenCode server port did not become ready' };
       }
       return { ready: true, url: OPENCODE_URL, details: 'OpenCode server is listening' };
     } catch (error: any) {
+      logError(`[OpenCodeRunner] ensureServer: exception: ${error?.message}`);
       this.clearStaleServer();
       return { ready: false, details: error?.message || 'OpenCode server could not start' };
     }
@@ -439,6 +458,7 @@ class OpenCodeRunner {
     if (attach) args.push('--attach', OPENCODE_URL);
     if (sessionId) args.push('--continue', '--session', sessionId);
     args.push(prompt, '--format', 'json');
+    logInfo(`[OpenCodeRunner] buildRunArgs: attach=${attach}, sessionId=${sessionId || 'none'}, argCount=${args.length}, fullArgs=[${args.join(', ')}]`);
     return args;
   }
 
@@ -464,7 +484,7 @@ class OpenCodeRunner {
         stdio: options.stdio,
       });
     } else {
-      const shArgs = ['-c', `${command} "$@"`, '--', ...args];
+      const shArgs = ['-c', `exec ${command} "$@"`, '--', ...args];
       logInfo(`[OpenCodeRunner] Spawning POSIX process wrapper: /bin/sh ${shArgs.join(' ')}`);
       return spawn('/bin/sh', shArgs, {
         cwd: options.cwd,
@@ -535,6 +555,7 @@ class OpenCodeRunner {
       const child = this.spawnProcess(command, args, {
         cwd: this.getWorkspaceRootSync(),
       });
+      child.stdin?.end();
       let stdout = '';
       let stderr = '';
       child.stdout?.on('data', (data) => {
@@ -560,6 +581,7 @@ class OpenCodeRunner {
       const child = this.spawnProcess(command, args, {
         cwd: this.getWorkspaceRootSync(),
       });
+      child.stdin?.end();
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
@@ -584,13 +606,18 @@ class OpenCodeRunner {
   }
 
   private killProcess(child: ChildProcess) {
-    if (!child.pid) return;
+    if (!child.pid) {
+      logInfo(`[OpenCodeRunner] killProcess: child has no PID, skipping`);
+      return;
+    }
+    logInfo(`[OpenCodeRunner] killProcess: killing PID=${child.pid}, platform=${process.platform}`);
     if (process.platform !== 'win32') {
       try {
         process.kill(-child.pid, 'SIGKILL');
+        logInfo(`[OpenCodeRunner] killProcess: sent SIGKILL to process group -${child.pid}`);
         return;
-      } catch {
-        // Fall through to child.kill().
+      } catch (err: any) {
+        logInfo(`[OpenCodeRunner] killProcess: process group kill failed (${err.message}), falling back to child.kill()`);
       }
     }
     child.kill();

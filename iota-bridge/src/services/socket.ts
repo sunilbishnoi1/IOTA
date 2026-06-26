@@ -152,7 +152,9 @@ export const initSocketIO = (server: HttpServer) => {
 
       logInfo(`[Socket] Received prompt from socket ${socket.id}: "${content.slice(0, 60)}${content.length > 60 ? '...' : ''}"`);
 
+      logInfo(`[Socket] Checking OpenCode capability before processing prompt...`);
       const capability = await opencodeRunner.checkCapability();
+      logInfo(`[Socket] Capability result: status=${capability.status}, canSubmit=${capability.canSubmit}, details="${capability.details}"`);
       if (capability.status !== 'available') {
         logError(`[Socket] OpenCode capability not ready: ${capability.status} - ${capability.details}`);
         socket.emit('opencode:capability', capability);
@@ -166,6 +168,7 @@ export const initSocketIO = (server: HttpServer) => {
       }
 
       const conversation = opencodeStore.getOrCreateConversation(payload.conversationId, payload.sessionId);
+      logInfo(`[Socket] Conversation resolved: id=${conversation.id}, sessionId=${conversation.opencodeSessionId || 'none'}, existingMessages=${conversation.messages.length}`);
       const request = opencodeStore.startRequest(conversation.id);
       if (!request.ok) {
         logError(`[Socket] Active run already exists for conversation ${conversation.id}: ${request.message}`);
@@ -207,6 +210,7 @@ export const initSocketIO = (server: HttpServer) => {
       const markFirstActivity = () => {
         if (firstActivity) return;
         firstActivity = true;
+        logInfo(`[Socket] First activity received for request ${request.requestId} - clearing watchdog and transitioning to streaming`);
         if (watchdog) clearTimeout(watchdog);
         emitRunStatus({
           conversationId: conversation.id,
@@ -218,8 +222,12 @@ export const initSocketIO = (server: HttpServer) => {
       };
 
       const finalize = (failed: boolean, options: { stopped?: boolean; errorSummary?: string } = {}) => {
-        if (finalized) return;
+        if (finalized) {
+          logInfo(`[Socket] finalize called but already finalized for request ${request.requestId}`);
+          return;
+        }
         finalized = true;
+        logInfo(`[Socket] Finalizing request ${request.requestId}: failed=${failed}, stopped=${options.stopped || false}, errorSummary="${(options.errorSummary || '').slice(0, 120)}"`);
         if (watchdog) clearTimeout(watchdog);
         opencodeStore.finishRequest(conversation.id, failed, options);
         const snapshot = opencodeStore.getSnapshot(conversation.id);
@@ -227,6 +235,7 @@ export const initSocketIO = (server: HttpServer) => {
       };
 
       try {
+        logInfo(`[Socket] Calling opencodeRunner.run() for request ${request.requestId}...`);
         handle = await opencodeRunner.run({
           conversationId: conversation.id,
           requestId: request.requestId,
@@ -273,8 +282,12 @@ export const initSocketIO = (server: HttpServer) => {
             }
           },
           onJson: (raw) => {
+            const rawType = (raw as any)?.type || 'unknown';
+            logInfo(`[Socket] onJson received for request ${request.requestId}: type=${rawType}`);
             const message = ensureAssistantMessage();
-            for (const event of normalizeOpenCodePayload(raw, conversation.id, message.id)) {
+            const events = normalizeOpenCodePayload(raw, conversation.id, message.id);
+            logInfo(`[Socket] normalizeOpenCodePayload produced ${events.length} event(s): [${events.map(e => e.type).join(', ')}]`);
+            for (const event of events) {
               emitNormalized(event);
             }
           },
@@ -287,6 +300,8 @@ export const initSocketIO = (server: HttpServer) => {
         finalize(true, { errorSummary: message });
         return;
       }
+
+      logInfo(`[Socket] opencodeRunner.run() returned handle for request ${request.requestId}: mode=${handle.mode}`);
 
       ensureAssistantMessage();
       emitRunStatus({
@@ -304,8 +319,12 @@ export const initSocketIO = (server: HttpServer) => {
         retryable: false,
       });
 
+      logInfo(`[Socket] Setting up watchdog timer (${FIRST_OUTPUT_TIMEOUT_MS}ms) for request ${request.requestId}, mode=${handle.mode}`);
       watchdog = setTimeout(() => {
-        if (firstActivity || finalized) return;
+        if (firstActivity || finalized) {
+          logInfo(`[Socket] Watchdog fired but already handled: firstActivity=${firstActivity}, finalized=${finalized}`);
+          return;
+        }
         
         const message = 'OpenCode started but produced no output before the timeout.';
         logError(`[Socket] Output timeout triggered for request ${request.requestId}`);
@@ -327,7 +346,9 @@ export const initSocketIO = (server: HttpServer) => {
         }
       }, FIRST_OUTPUT_TIMEOUT_MS);
 
+      logInfo(`[Socket] Awaiting handle.done for request ${request.requestId}...`);
       const result = await handle.done;
+      logInfo(`[Socket] handle.done resolved for request ${request.requestId}: exitCode=${result.exitCode}, stderrLength=${result.stderr.length}, spawnError=${result.spawnError || 'none'}, finalized=${finalized}`);
       if (finalized) return;
 
       if (result.spawnError) {
