@@ -98,4 +98,39 @@ describe('normalizeOpenCodePayload', () => {
     expect(normalizeOpenCodePayload(undefined, convId, msgId)[0].type).toBe('error');
     expect(normalizeOpenCodePayload('not-an-object', convId, msgId)[0].type).toBe('error');
   });
+
+  it('respects case-insensitive explicit IDs and nested IDs', () => {
+    // 1. Root level lowercase id
+    const payload1 = { type: 'text', id: 'my-explicit-id-1', content: 'test1' };
+    const events1 = normalizeOpenCodePayload(payload1, convId, msgId);
+    expect(events1[0].type).toBe('message');
+    if (events1[0].type === 'message') {
+      expect(events1[0].message.id).toBe('my-explicit-id-1');
+    }
+
+    // 2. Root level mixed case messageID
+    const payload2 = { type: 'text', messageID: 'my-explicit-id-2', content: 'test2' };
+    const events2 = normalizeOpenCodePayload(payload2, convId, msgId);
+    expect(events2[0].type).toBe('message');
+    if (events2[0].type === 'message') {
+      expect(events2[0].message.id).toBe('my-explicit-id-2');
+    }
+
+    // 3. Nested inside part object
+    const payload3 = { type: 'text', part: { requestid: 'my-explicit-id-3', text: 'test3' } };
+    const events3 = normalizeOpenCodePayload(payload3, convId, msgId);
+    expect(events3[0].type).toBe('message');
+    if (events3[0].type === 'message') {
+      expect(events3[0].message.id).toBe('my-explicit-id-3');
+    }
+  });
+
+  it('falls back to assistantMessageId (msgId) when no explicit ID is present', () => {
+    const payload = { type: 'text', content: 'test without explicit id' };
+    const events = normalizeOpenCodePayload(payload, convId, msgId);
+    expect(events[0].type).toBe('message');
+    if (events[0].type === 'message') {
+      expect(events[0].message.id).toBe(msgId);
+    }
+  });
 });

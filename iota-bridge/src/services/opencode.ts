@@ -2,6 +2,7 @@ import { ChildProcess, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as net from 'net';
+import * as http from 'http';
 import { OpenCodeCapabilityState, OpenCodeRunStatusEvent } from '../types/opencode';
 import { opencodeStore } from './opencodeStore';
 import { logInfo, logError } from './logger';
@@ -14,21 +15,35 @@ const checkPortReady = (port: number, host = '127.0.0.1', timeout = 3000): Promi
   return new Promise((resolve) => {
     const start = Date.now();
     const check = () => {
-      const socket = new net.Socket();
       let settled = false;
-      const finish = (ready: boolean) => {
+      const req = http.request({
+        host,
+        port,
+        path: '/',
+        method: 'GET',
+        timeout: 500,
+      }, (res) => {
         if (settled) return;
         settled = true;
-        socket.destroy();
-        if (ready || Date.now() - start > timeout) resolve(ready);
-        else setTimeout(check, 200);
-      };
+        resolve(true); // Any response means the server is alive
+      });
 
-      socket.setTimeout(200);
-      socket.on('connect', () => finish(true));
-      socket.on('error', () => finish(false));
-      socket.on('timeout', () => finish(false));
-      socket.connect(port, host);
+      req.on('error', () => {
+        if (settled) return;
+        settled = true;
+        if (Date.now() - start > timeout) resolve(false);
+        else setTimeout(check, 200);
+      });
+
+      req.on('timeout', () => {
+        req.destroy();
+        if (settled) return;
+        settled = true;
+        if (Date.now() - start > timeout) resolve(false);
+        else setTimeout(check, 200);
+      });
+
+      req.end();
     };
     check();
   });
@@ -210,7 +225,7 @@ class OpenCodeRunner {
         const child = spawn('opencode', args, {
           cwd: this.getWorkspaceRootSync(),
           env: { ...process.env, ...options.env, PATH: this.buildInstallerPath() },
-          shell: true,
+          shell: process.platform === 'win32',
           detached: process.platform !== 'win32',
         });
 
@@ -337,7 +352,7 @@ class OpenCodeRunner {
       this.serveProcess = spawn('opencode', ['serve', '--port', String(OPENCODE_PORT)], {
         cwd: await this.getWorkspaceRoot(),
         env: { ...process.env, PATH: this.buildInstallerPath() },
-        shell: true,
+        shell: process.platform === 'win32',
         stdio: 'ignore',
       });
 
@@ -477,7 +492,7 @@ class OpenCodeRunner {
       const child = spawn(command, args, {
         cwd: this.getWorkspaceRootSync(),
         env: { ...process.env, PATH: this.buildInstallerPath() },
-        shell: true,
+        shell: process.platform === 'win32',
       });
       let stdout = '';
       let stderr = '';
@@ -504,7 +519,7 @@ class OpenCodeRunner {
       const child = spawn(command, args, {
         cwd: this.getWorkspaceRootSync(),
         env: { ...process.env, PATH: this.buildInstallerPath() },
-        shell: true,
+        shell: process.platform === 'win32',
       });
       const timer = setTimeout(() => {
         if (settled) return;

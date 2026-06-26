@@ -17,7 +17,7 @@ import {
 
 let ioInstance: Server | null = null;
 
-const FIRST_OUTPUT_TIMEOUT_MS = Number(process.env.OPENCODE_FIRST_OUTPUT_TIMEOUT_MS || 20000);
+const FIRST_OUTPUT_TIMEOUT_MS = Number(process.env.OPENCODE_FIRST_OUTPUT_TIMEOUT_MS || 60000);
 const id = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const now = () => new Date().toISOString();
 
@@ -234,7 +234,26 @@ export const initSocketIO = (server: HttpServer) => {
           sessionId: conversation.opencodeSessionId || payload.sessionId,
           env: opencodeStore.getCredentials(socket.id),
           onActivity: markFirstActivity,
-          onRunStatus: emitRunStatus,
+          onRunStatus: (status) => {
+            if (status.phase === 'direct_run') {
+              if (watchdog) clearTimeout(watchdog);
+              watchdog = setTimeout(() => {
+                if (firstActivity || finalized) return;
+                const message = 'OpenCode direct run timed out without producing output.';
+                logError(`[Socket] Output timeout triggered for direct run ${request.requestId}`);
+                handle?.stop();
+                emitRunStatus({ conversationId: conversation.id, requestId: request.requestId, phase: 'failed', message, retryable: true });
+                socket.emit('opencode:error', {
+                  conversationId: conversation.id,
+                  code: 'OPENCODE_FIRST_OUTPUT_TIMEOUT',
+                  message,
+                  retryable: true,
+                });
+                finalize(true, { errorSummary: message });
+              }, FIRST_OUTPUT_TIMEOUT_MS);
+            }
+            emitRunStatus(status);
+          },
           onStderr: (line) => {
             logError(`[Socket] stderr delta: ${line}`);
             emitRunStatus({
@@ -287,17 +306,25 @@ export const initSocketIO = (server: HttpServer) => {
 
       watchdog = setTimeout(() => {
         if (firstActivity || finalized) return;
+        
         const message = 'OpenCode started but produced no output before the timeout.';
         logError(`[Socket] Output timeout triggered for request ${request.requestId}`);
-        handle?.stop();
-        emitRunStatus({ conversationId: conversation.id, requestId: request.requestId, phase: 'failed', message, retryable: true });
-        socket.emit('opencode:error', {
-          conversationId: conversation.id,
-          code: 'OPENCODE_FIRST_OUTPUT_TIMEOUT',
-          message,
-          retryable: true,
-        });
-        finalize(true, { errorSummary: message });
+        
+        if (handle?.mode === 'attached') {
+          logInfo(`[Socket] Attached run timed out. Killing process to force direct run fallback.`);
+          handle.stop(); // This triggers the fallback runner loop in opencode.ts
+        } else {
+          logError(`[Socket] Direct run timed out. Finalizing request as failed.`);
+          handle?.stop();
+          emitRunStatus({ conversationId: conversation.id, requestId: request.requestId, phase: 'failed', message, retryable: true });
+          socket.emit('opencode:error', {
+            conversationId: conversation.id,
+            code: 'OPENCODE_FIRST_OUTPUT_TIMEOUT',
+            message,
+            retryable: true,
+          });
+          finalize(true, { errorSummary: message });
+        }
       }, FIRST_OUTPUT_TIMEOUT_MS);
 
       const result = await handle.done;

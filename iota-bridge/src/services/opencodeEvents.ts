@@ -13,9 +13,33 @@ const valueAsString = (value: unknown): string | undefined => {
   return typeof value === 'string' && value.trim() ? value : undefined;
 };
 
-const stableId = (prefix: string, payload: Record<string, unknown>): string => {
-  const explicit = valueAsString(payload.id) || valueAsString(payload.messageId) || valueAsString(payload.requestId);
-  return explicit || `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const getExplicitId = (payload: Record<string, unknown>): string | undefined => {
+  const checkKeys = ['id', 'messageid', 'requestid'];
+  
+  // Helper to find key case-insensitively
+  const findKey = (obj: Record<string, unknown>): string | undefined => {
+    for (const key of Object.keys(obj)) {
+      if (checkKeys.includes(key.toLowerCase())) {
+        const val = valueAsString(obj[key]);
+        if (val) return val;
+      }
+    }
+    return undefined;
+  };
+
+  const rootId = findKey(payload);
+  if (rootId) return rootId;
+
+  if (payload.part && typeof payload.part === 'object') {
+    return findKey(payload.part as Record<string, unknown>);
+  }
+
+  return undefined;
+};
+
+const stableId = (prefix: string, payload: Record<string, unknown>, fallbackId?: string): string => {
+  const explicit = getExplicitId(payload);
+  return explicit || fallbackId || `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 };
 
 const mapToolKind = (tool?: string): OpenCodeToolKind => {
@@ -125,7 +149,7 @@ export function normalizeOpenCodePayload(
       type: 'message',
       conversationId,
       message: {
-        id: stableId('assistant', event),
+        id: stableId('assistant', event, assistantMessageId),
         conversationId,
         role: 'assistant',
         content,
