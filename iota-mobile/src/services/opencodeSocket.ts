@@ -1,11 +1,12 @@
 import { Socket } from 'socket.io-client';
-import { OpenCodeApprovalRequest, OpenCodeConversation, OpenCodeFileChange, OpenCodeMessage, OpenCodeToolActivity } from '../types/opencode';
+import { OpenCodeApprovalRequest, OpenCodeConversation, OpenCodeFileChange, OpenCodeMessage, OpenCodeRunStatusEvent, OpenCodeToolActivity } from '../types/opencode';
 
 export interface OpenCodeSocketHandlers {
   onCapability?: (payload: unknown) => void;
   onSnapshot?: (payload: { conversation?: OpenCodeConversation }) => void;
   onMessage?: (payload: { conversationId: string; message: OpenCodeMessage }) => void;
   onMessageDelta?: (payload: { conversationId: string; messageId: string; content: string; done?: boolean }) => void;
+  onRunStatus?: (payload: OpenCodeRunStatusEvent) => void;
   onToolActivity?: (payload: { conversationId: string; activity: OpenCodeToolActivity }) => void;
   onFileChange?: (payload: { conversationId: string; change: OpenCodeFileChange }) => void;
   onApprovalRequest?: (payload: { conversationId: string; approval: OpenCodeApprovalRequest }) => void;
@@ -17,6 +18,7 @@ export function registerOpenCodeSocketHandlers(socket: Socket, handlers: OpenCod
   socket.on('opencode:snapshot', handlers.onSnapshot || (() => undefined));
   socket.on('opencode:message', handlers.onMessage || (() => undefined));
   socket.on('opencode:message_delta', handlers.onMessageDelta || (() => undefined));
+  socket.on('opencode:run_status', handlers.onRunStatus || (() => undefined));
   socket.on('opencode:tool_activity', handlers.onToolActivity || (() => undefined));
   socket.on('opencode:file_change', handlers.onFileChange || (() => undefined));
   socket.on('opencode:approval_request', handlers.onApprovalRequest || (() => undefined));

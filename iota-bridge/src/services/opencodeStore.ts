@@ -10,6 +10,18 @@ import {
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+const SUPPORTED_PROVIDER_KEYS = [
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+  'GEMINI_API_KEY',
+  'GROQ_API_KEY',
+];
+
+const sanitizeSummary = (summary?: string): string | undefined => {
+  if (!summary) return undefined;
+  return summary.trim().replace(/[\r\n]+/g, ' ');
+};
+
 class OpenCodeStore {
   private conversations = new Map<string, OpenCodeConversation>();
   private defaultConversationId?: string;
@@ -21,6 +33,11 @@ class OpenCodeStore {
 
   public getCredentials(socketId: string): Record<string, string> {
     return this.credentialsBySocket.get(socketId) || {};
+  }
+
+  public hasTransientCredentials(socketId: string): boolean {
+    const credentials = this.getCredentials(socketId);
+    return SUPPORTED_PROVIDER_KEYS.some((key) => Boolean(credentials[key]?.trim()));
   }
 
   public cleanupCredentials(socketId: string) {
@@ -68,7 +85,9 @@ class OpenCodeStore {
     if (conversation.activeRequestId) return { ok: false, message: 'OpenCode is already running for this conversation.' };
     const requestId = id('request');
     conversation.activeRequestId = requestId;
-    conversation.status = 'running';
+    conversation.status = 'starting';
+    conversation.lastRunPhase = 'preflight';
+    conversation.lastError = undefined;
     conversation.updatedAt = now();
     return { ok: true, requestId };
   }
@@ -155,13 +174,29 @@ class OpenCodeStore {
     conversation.updatedAt = now();
   }
 
-  public finishRequest(conversationId: string, failed = false) {
+  public setRunPhase(conversationId: string, phase: import('../types/opencode').OpenCodeRunPhase) {
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation) return;
+    conversation.lastRunPhase = phase;
+    if (phase === 'awaiting_first_output') conversation.status = 'awaiting_first_output';
+    if (phase === 'streaming') conversation.status = 'running';
+    conversation.updatedAt = now();
+  }
+
+  public finishRequest(conversationId: string, failed = false, options: { stopped?: boolean; errorSummary?: string } = {}) {
     const conversation = this.conversations.get(conversationId);
     if (!conversation) return;
     conversation.activeRequestId = undefined;
-    conversation.status = failed ? 'failed' : 'completed';
+    conversation.status = options.stopped ? 'stopped' : failed ? 'failed' : 'completed';
+    conversation.lastRunPhase = options.stopped ? 'stopped' : failed ? 'failed' : 'completed';
+    conversation.lastError = failed || options.stopped ? sanitizeSummary(options.errorSummary) : undefined;
     for (const message of conversation.messages) {
-      if (message.role === 'assistant' && message.status === 'streaming') message.status = failed ? 'error' : 'complete';
+      if (message.role === 'assistant' && (message.status === 'streaming' || message.status === 'pending')) {
+        message.status = options.stopped ? 'stopped' : failed ? 'error' : 'complete';
+        if (!message.content.trim() && (failed || options.stopped)) {
+          message.content = options.errorSummary || (options.stopped ? 'OpenCode run stopped.' : 'OpenCode run failed.');
+        }
+      }
     }
     conversation.updatedAt = now();
   }

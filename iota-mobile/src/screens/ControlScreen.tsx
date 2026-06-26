@@ -29,6 +29,7 @@ import {
   OpenCodeCapabilityState,
   OpenCodeFileChange,
   OpenCodeMessage,
+  OpenCodeRunStatusEvent,
   OpenCodeToolActivity,
 } from '../types/opencode';
 import { Theme } from '../styles/theme';
@@ -54,12 +55,46 @@ const defaultCapability: OpenCodeCapabilityState = {
 };
 
 const createLocalMessage = (conversationId: string, content: string): OpenCodeMessage => ({
-  id: `local-${Date.now()}`,
+  id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   conversationId,
   role: 'user',
   content,
   createdAt: new Date().toISOString(),
   status: 'pending',
+});
+const sanitizeConversationScope = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+const mergeMessages = (local: OpenCodeMessage[], snapshot: OpenCodeMessage[]) => {
+  const merged = new Map<string, OpenCodeMessage>();
+  for (const message of snapshot) merged.set(message.id, message);
+  for (const message of local) {
+    const duplicateServerMessage = Array.from(merged.values()).some((item) => (
+      message.status === 'pending' &&
+      item.role === message.role &&
+      item.content === message.content
+    ));
+    if (!duplicateServerMessage || ['stopped', 'error', 'streaming'].includes(message.status)) {
+      merged.set(message.id, merged.get(message.id) || message);
+    }
+  }
+  return Array.from(merged.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+};
+
+const mergeById = <T extends { id: string }>(local: T[], snapshot: T[]) => {
+  const merged = new Map<string, T>();
+  for (const item of snapshot) merged.set(item.id, item);
+  for (const item of local) merged.set(item.id, merged.get(item.id) || item);
+  return Array.from(merged.values());
+};
+
+const createRunStatusMessage = (status: OpenCodeRunStatusEvent): OpenCodeMessage => ({
+  id: `runstatus-${status.requestId}-${status.phase}`,
+  conversationId: status.conversationId,
+  role: 'status',
+  content: status.message,
+  createdAt: new Date().toISOString(),
+  status: status.phase === 'failed' ? 'error' : status.phase === 'stopped' ? 'stopped' : 'complete',
+  metadata: { phase: status.phase, requestId: status.requestId, retryable: status.retryable },
 });
 
 export const ControlScreen: React.FC<ControlScreenProps> = ({
@@ -77,8 +112,11 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const [fileChanges, setFileChanges] = useState<OpenCodeFileChange[]>([]);
   const [approvals, setApprovals] = useState<OpenCodeApprovalRequest[]>([]);
   const [running, setRunning] = useState(false);
+  const conversationScope = useMemo(() => sanitizeConversationScope(activeCodespace.id || activeCodespace.repositoryName || activeCodespace.connectionUrl || 'default'), [activeCodespace.id, activeCodespace.repositoryName, activeCodespace.connectionUrl]);
+  const defaultConversationId = useMemo(() => `opencode-${conversationScope}`, [conversationScope]);
 
   const socketRef = useRef<Socket | null>(null);
+  const conversationIdRef = useRef<string | undefined>(conversationId);
   const isInstallingRef = useRef(false);
 
   const timelineItems = useMemo<TimelineItem[]>(() => {
@@ -97,6 +135,25 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
 
   const canSubmit = socketStatus === 'connected' && capability.canSubmit && !running && inputPrompt.trim().length > 0;
   const statusText = socketStatus === 'connected' ? capability.details : socketStatus === 'connecting' ? 'Connecting to bridge...' : 'Disconnected from bridge';
+  useEffect(() => {
+    conversationIdRef.current = conversationId;
+  }, [conversationId]);
+
+  useEffect(() => {
+    let active = true;
+    async function loadConversationId() {
+      const stored = await secureStoreService.getOpenCodeConversationId(conversationScope);
+      if (!active) return;
+      const nextId = stored || defaultConversationId;
+      setConversationId(nextId);
+      conversationIdRef.current = nextId;
+      if (!stored) {
+        await secureStoreService.saveOpenCodeConversationId(conversationScope, nextId);
+      }
+    }
+    loadConversationId();
+    return () => { active = false; };
+  }, [conversationScope, defaultConversationId]);
 
   const checkCapability = async () => {
     try {
@@ -172,7 +229,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
         socket.on('connect', () => {
           if (!active) return;
           setSocketStatus('connected');
-          emitOpenCodeSync(socket, conversationId);
+          emitOpenCodeSync(socket, conversationIdRef.current || defaultConversationId);
         });
 
         socket.on('disconnect', () => {
@@ -193,10 +250,11 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             if (!conversation) return;
             setConversationId(conversation.id);
             setSessionId(conversation.sessionId || conversation.opencodeSessionId);
-            setMessages(conversation.messages || []);
-            setTools(conversation.tools || []);
-            setFileChanges(conversation.fileChanges || []);
-            setApprovals(conversation.approvals || []);
+
+            setMessages((prev) => mergeMessages(prev, conversation.messages || []));
+            setTools((prev) => mergeById(prev, conversation.tools || []));
+            setFileChanges((prev) => mergeById(prev, conversation.fileChanges || []));
+            setApprovals((prev) => mergeById(prev, conversation.approvals || []));
             setRunning(Boolean(conversation.activeRequestId) || conversation.status === 'running');
           },
           onMessage: ({ conversationId: nextConversationId, message }) => {
@@ -216,7 +274,14 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             )));
             if (done) setRunning(false);
           },
-          onToolActivity: ({ activity }) => {
+          onRunStatus: (status) => {
+            setConversationId(status.conversationId);
+            conversationIdRef.current = status.conversationId;
+            secureStoreService.saveOpenCodeConversationId(conversationScope, status.conversationId).catch(() => undefined);
+            setRunning(!['completed', 'failed', 'stopped'].includes(status.phase));
+            const statusMessage = createRunStatusMessage(status);
+            setMessages((prev) => [...prev.filter((item) => item.id !== statusMessage.id), statusMessage]);
+          },          onToolActivity: ({ activity }) => {
             setTools((prev) => [...prev.filter((item) => item.id !== activity.id), activity]);
           },
           onFileChange: ({ change }) => {
@@ -253,7 +318,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
       socket?.disconnect();
       socketRef.current = null;
     };
-  }, [user.token, activeCodespace.id]);
+  }, [user.token, activeCodespace.id, defaultConversationId, conversationScope]);
 
   const handleSubmitPrompt = () => {
     const content = inputPrompt.trim();
@@ -263,8 +328,10 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
       return;
     }
 
-    const targetConversationId = conversationId || `conversation-${Date.now()}`;
+    const targetConversationId = conversationId || defaultConversationId;
     setConversationId(targetConversationId);
+    conversationIdRef.current = targetConversationId;
+    secureStoreService.saveOpenCodeConversationId(conversationScope, targetConversationId).catch(() => undefined);
     setMessages((prev) => [...prev, createLocalMessage(targetConversationId, content)]);
     setInputPrompt('');
     setRunning(true);
@@ -279,10 +346,6 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     }
     if (isInstallingRef.current) return;
     isInstallingRef.current = true;
-    setMessages([]);
-    setTools([]);
-    setFileChanges([]);
-    setApprovals([]);
     setCapability({ status: 'installing', details: 'Installing OpenCode...', canSubmit: false, canInstall: false });
     emitOpenCodeInstall(socketRef.current);
   };

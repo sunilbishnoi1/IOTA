@@ -2,17 +2,25 @@ import { Server, Socket } from 'socket.io';
 import { Server as HttpServer } from 'http';
 import { validateCodespaceOwner } from './github';
 import { normalizeOpenCodePayload } from './opencodeEvents';
-import { opencodeRunner } from './opencode';
+import { opencodeRunner, OpenCodeRunHandle } from './opencode';
 import { opencodeStore } from './opencodeStore';
 import {
   NormalizedOpenCodeEvent,
   OpenCodeApprovalDecision,
+  OpenCodeMessage,
   OpenCodeMessageRequest,
+  OpenCodeRunStatusEvent,
   OpenCodeStopRequest,
   OpenCodeSyncRequest,
 } from '../types/opencode';
 
 let ioInstance: Server | null = null;
+
+const FIRST_OUTPUT_TIMEOUT_MS = Number(process.env.OPENCODE_FIRST_OUTPUT_TIMEOUT_MS || 20000);
+const id = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const now = () => new Date().toISOString();
+
+const isAuthOrConfigFailure = (line: string) => /auth|credential|api[_ -]?key|provider|login|unauthorized|forbidden|config/i.test(line);
 
 export const initSocketIO = (server: HttpServer) => {
   const io = new Server(server, {
@@ -23,31 +31,19 @@ export const initSocketIO = (server: HttpServer) => {
   });
   ioInstance = io;
 
-  // Authentication Middleware
   io.use(async (socket: Socket, next: (err?: Error) => void) => {
     let token = socket.handshake.query.token as string;
 
     if (!token && socket.handshake.headers['authorization']) {
       const authHeader = socket.handshake.headers['authorization'];
-      if (authHeader.startsWith('Bearer ')) {
-        token = authHeader.substring(7);
-      } else {
-        token = authHeader;
-      }
+      token = authHeader.startsWith('Bearer ') ? authHeader.substring(7) : authHeader;
     }
 
-    if (!token && socket.handshake.auth?.token) {
-      token = socket.handshake.auth.token;
-    }
-
-    if (!token) {
-      return next(new Error('Authentication error: Token is required'));
-    }
+    if (!token && socket.handshake.auth?.token) token = socket.handshake.auth.token;
+    if (!token) return next(new Error('Authentication error: Token is required'));
 
     const isValid = await validateCodespaceOwner(token);
-    if (!isValid) {
-      return next(new Error('Authentication error: Unauthorized user token'));
-    }
+    if (!isValid) return next(new Error('Authentication error: Unauthorized user token'));
 
     next();
   });
@@ -57,6 +53,22 @@ export const initSocketIO = (server: HttpServer) => {
 
     const credentials = (socket.handshake.auth?.credentials || {}) as Record<string, string>;
     opencodeStore.setCredentials(socket.id, credentials);
+
+    const emitRunStatus = (status: OpenCodeRunStatusEvent) => {
+      opencodeStore.setRunPhase(status.conversationId, status.phase);
+      const statusMessage: OpenCodeMessage = {
+        id: id(`run-${status.phase}`),
+        conversationId: status.conversationId,
+        role: 'status',
+        content: status.message,
+        createdAt: now(),
+        status: status.phase === 'failed' ? 'error' : status.phase === 'stopped' ? 'stopped' : 'complete',
+        metadata: { phase: status.phase, requestId: status.requestId, retryable: status.retryable },
+      };
+      opencodeStore.addMessage(statusMessage);
+      io.emit('opencode:run_status', status);
+      io.emit('opencode:message', { conversationId: status.conversationId, message: statusMessage });
+    };
 
     const emitNormalized = (event: NormalizedOpenCodeEvent) => {
       switch (event.type) {
@@ -83,6 +95,9 @@ export const initSocketIO = (server: HttpServer) => {
         case 'session':
           opencodeStore.setSession(event.conversationId, event.sessionId);
           break;
+        case 'run_status':
+          emitRunStatus(event.status);
+          break;
         case 'error':
           io.emit('opencode:error', event);
           break;
@@ -97,7 +112,7 @@ export const initSocketIO = (server: HttpServer) => {
         details: 'OpenCode capability could not be checked',
         canSubmit: false,
         canInstall: false,
-        lastCheckedAt: new Date().toISOString(),
+        lastCheckedAt: now(),
       }));
 
     socket.on('opencode:install', async () => {
@@ -106,7 +121,7 @@ export const initSocketIO = (server: HttpServer) => {
         details: 'Installing OpenCode...',
         canSubmit: false,
         canInstall: false,
-        lastCheckedAt: new Date().toISOString(),
+        lastCheckedAt: now(),
       });
 
       const capability = await opencodeRunner.install((message) => {
@@ -115,7 +130,7 @@ export const initSocketIO = (server: HttpServer) => {
           details: message,
           canSubmit: false,
           canInstall: false,
-          lastCheckedAt: new Date().toISOString(),
+          lastCheckedAt: now(),
         });
       });
       io.emit('opencode:capability', capability);
@@ -128,6 +143,18 @@ export const initSocketIO = (server: HttpServer) => {
           code: 'OPENCODE_EMPTY_PROMPT',
           message: 'Enter a task for OpenCode.',
           retryable: true,
+        });
+        return;
+      }
+
+      const capability = await opencodeRunner.checkCapability();
+      if (capability.status !== 'available') {
+        socket.emit('opencode:capability', capability);
+        socket.emit('opencode:error', {
+          conversationId: payload.conversationId,
+          code: capability.status === 'missing' ? 'OPENCODE_NOT_READY' : 'OPENCODE_NOT_READY',
+          message: capability.details,
+          retryable: capability.canInstall || capability.status !== 'installed_uninitialized',
         });
         return;
       }
@@ -145,36 +172,153 @@ export const initSocketIO = (server: HttpServer) => {
       }
 
       const userMessage = opencodeStore.addUserMessage(conversation.id, content);
-      const assistantMessage = opencodeStore.createAssistantMessage(conversation.id);
       io.emit('opencode:message', { conversationId: conversation.id, message: userMessage });
-      io.emit('opencode:message', { conversationId: conversation.id, message: assistantMessage });
-
-      await opencodeRunner.ensureServer();
-      const handle = opencodeRunner.run({
-        prompt: content,
-        sessionId: conversation.opencodeSessionId || payload.sessionId,
-        env: opencodeStore.getCredentials(socket.id),
-        onJson: (raw) => {
-          for (const event of normalizeOpenCodePayload(raw, conversation.id, assistantMessage.id)) {
-            emitNormalized(event);
-          }
-        },
+      emitRunStatus({
+        conversationId: conversation.id,
+        requestId: request.requestId,
+        phase: 'preflight',
+        message: 'OpenCode preflight passed. Starting run...',
+        retryable: false,
       });
 
-      const result = await handle.done;
-      const failed = result.exitCode !== 0;
-      if (failed) {
-        emitNormalized({
-          type: 'error',
+      let assistantMessage: OpenCodeMessage | undefined;
+      let handle: OpenCodeRunHandle | undefined;
+      let firstActivity = false;
+      let finalized = false;
+      let watchdog: NodeJS.Timeout | undefined;
+
+      const ensureAssistantMessage = () => {
+        if (!assistantMessage) {
+          assistantMessage = opencodeStore.createAssistantMessage(conversation.id);
+          io.emit('opencode:message', { conversationId: conversation.id, message: assistantMessage });
+        }
+        return assistantMessage;
+      };
+
+      const markFirstActivity = () => {
+        if (firstActivity) return;
+        firstActivity = true;
+        if (watchdog) clearTimeout(watchdog);
+        emitRunStatus({
           conversationId: conversation.id,
-          code: 'OPENCODE_RUN_FAILED',
-          message: result.stderr.split(/\r?\n/).find(Boolean) || 'OpenCode exited before completing the task.',
+          requestId: request.requestId,
+          phase: 'streaming',
+          message: 'OpenCode is responding...',
+          retryable: false,
+        });
+      };
+
+      const finalize = (failed: boolean, options: { stopped?: boolean; errorSummary?: string } = {}) => {
+        if (finalized) return;
+        finalized = true;
+        if (watchdog) clearTimeout(watchdog);
+        opencodeStore.finishRequest(conversation.id, failed, options);
+        const snapshot = opencodeStore.getSnapshot(conversation.id);
+        if (snapshot) io.emit('opencode:snapshot', { conversation: snapshot });
+      };
+
+      try {
+        handle = await opencodeRunner.run({
+          conversationId: conversation.id,
+          requestId: request.requestId,
+          prompt: content,
+          sessionId: conversation.opencodeSessionId || payload.sessionId,
+          env: opencodeStore.getCredentials(socket.id),
+          onActivity: markFirstActivity,
+          onRunStatus: emitRunStatus,
+          onStderr: (line) => {
+            emitRunStatus({
+              conversationId: conversation.id,
+              requestId: request.requestId,
+              phase: 'streaming',
+              message: line,
+              retryable: isAuthOrConfigFailure(line),
+            });
+            if (isAuthOrConfigFailure(line)) {
+              socket.emit('opencode:error', {
+                conversationId: conversation.id,
+                code: 'OPENCODE_RUN_FAILED',
+                message: line,
+                retryable: true,
+              });
+            }
+          },
+          onJson: (raw) => {
+            const message = ensureAssistantMessage();
+            for (const event of normalizeOpenCodePayload(raw, conversation.id, message.id)) {
+              emitNormalized(event);
+            }
+          },
+        });
+      } catch (error: any) {
+        const message = error?.message || 'OpenCode could not start.';
+        emitRunStatus({ conversationId: conversation.id, requestId: request.requestId, phase: 'failed', message, retryable: true });
+        socket.emit('opencode:error', { conversationId: conversation.id, code: 'OPENCODE_START_FAILED', message, retryable: true });
+        finalize(true, { errorSummary: message });
+        return;
+      }
+
+      ensureAssistantMessage();
+      emitRunStatus({
+        conversationId: conversation.id,
+        requestId: request.requestId,
+        phase: 'spawned',
+        message: 'OpenCode process started.',
+        retryable: false,
+      });
+      emitRunStatus({
+        conversationId: conversation.id,
+        requestId: request.requestId,
+        phase: 'awaiting_first_output',
+        message: 'Waiting for OpenCode output...',
+        retryable: false,
+      });
+
+      watchdog = setTimeout(() => {
+        if (firstActivity || finalized) return;
+        const message = 'OpenCode started but produced no output before the timeout.';
+        handle?.stop();
+        emitRunStatus({ conversationId: conversation.id, requestId: request.requestId, phase: 'failed', message, retryable: true });
+        socket.emit('opencode:error', {
+          conversationId: conversation.id,
+          code: 'OPENCODE_FIRST_OUTPUT_TIMEOUT',
+          message,
           retryable: true,
         });
+        finalize(true, { errorSummary: message });
+      }, FIRST_OUTPUT_TIMEOUT_MS);
+
+      const result = await handle.done;
+      if (finalized) return;
+
+      if (result.spawnError) {
+        const message = result.spawnError;
+        emitRunStatus({ conversationId: conversation.id, requestId: request.requestId, phase: 'failed', message, retryable: true });
+        socket.emit('opencode:error', { conversationId: conversation.id, code: 'OPENCODE_START_FAILED', message, retryable: true });
+        finalize(true, { errorSummary: message });
+        return;
       }
-      opencodeStore.finishRequest(conversation.id, failed);
-      const snapshot = opencodeStore.getSnapshot(conversation.id);
-      if (snapshot) io.emit('opencode:snapshot', { conversation: snapshot });
+
+      const failed = result.exitCode !== 0;
+      if (failed) {
+        const message = result.stderr.split(/\r?\n/).find(Boolean)?.slice(0, 220) || 'OpenCode exited before completing the task.';
+        emitRunStatus({ conversationId: conversation.id, requestId: request.requestId, phase: 'failed', message, retryable: true });
+        socket.emit('opencode:error', {
+          conversationId: conversation.id,
+          code: 'OPENCODE_RUN_FAILED',
+          message,
+          retryable: true,
+        });
+      } else {
+        emitRunStatus({
+          conversationId: conversation.id,
+          requestId: request.requestId,
+          phase: 'completed',
+          message: 'OpenCode run completed.',
+          retryable: false,
+        });
+      }
+      finalize(failed, { errorSummary: failed ? result.stderr : undefined });
     });
 
     socket.on('opencode:approval', (payload: OpenCodeApprovalDecision) => {
@@ -191,23 +335,18 @@ export const initSocketIO = (server: HttpServer) => {
 
       const input = payload.decision === 'approve' ? 'y\n' : 'n\n';
       opencodeRunner.writeInput(input);
-
       io.emit('opencode:approval_request', { conversationId: payload.conversationId, approval });
-      
-      const approvalStatusMessage = {
-        id: `approval-${Date.now()}`,
-        conversationId: payload.conversationId,
-        role: 'status' as const,
-        content: `Approval ${payload.decision === 'approve' ? 'approved' : 'denied'}.`,
-        createdAt: new Date().toISOString(),
-        status: 'complete' as const,
-      };
 
-      opencodeStore.addMessage(approvalStatusMessage);
-      io.emit('opencode:message', {
+      const approvalStatusMessage: OpenCodeMessage = {
+        id: id('approval'),
         conversationId: payload.conversationId,
-        message: approvalStatusMessage,
-      });
+        role: 'status',
+        content: `Approval ${payload.decision === 'approve' ? 'approved' : 'denied'}.`,
+        createdAt: now(),
+        status: 'complete',
+      };
+      opencodeStore.addMessage(approvalStatusMessage);
+      io.emit('opencode:message', { conversationId: payload.conversationId, message: approvalStatusMessage });
     });
 
     socket.on('opencode:sync', async (payload: OpenCodeSyncRequest = {}) => {
@@ -221,22 +360,19 @@ export const initSocketIO = (server: HttpServer) => {
 
     socket.on('opencode:stop', (payload: OpenCodeStopRequest) => {
       opencodeRunner.stopActiveRun();
-      opencodeStore.finishRequest(payload.conversationId, true);
+      opencodeStore.finishRequest(payload.conversationId, true, { stopped: true, errorSummary: 'OpenCode run stopped.' });
 
-      const stopMessage = {
-        id: `stop-${Date.now()}`,
+      const activeRequestId = opencodeStore.getSnapshot(payload.conversationId)?.activeRequestId || id('stop');
+      emitRunStatus({
         conversationId: payload.conversationId,
-        role: 'status' as const,
-        content: 'OpenCode run stopped.',
-        createdAt: new Date().toISOString(),
-        status: 'complete' as const,
-      };
-
-      opencodeStore.addMessage(stopMessage);
-      io.emit('opencode:message', {
-        conversationId: payload.conversationId,
-        message: stopMessage,
+        requestId: activeRequestId,
+        phase: 'stopped',
+        message: 'OpenCode run stopped.',
+        retryable: true,
       });
+
+      const snapshot = opencodeStore.getSnapshot(payload.conversationId);
+      if (snapshot) io.emit('opencode:snapshot', { conversation: snapshot });
     });
 
     socket.on('disconnect', () => {

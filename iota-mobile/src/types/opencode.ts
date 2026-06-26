@@ -4,6 +4,9 @@ export type OpenCodeCapabilityStatus =
   | 'missing'
   | 'installing'
   | 'install_failed'
+  | 'installed_uninitialized'
+  | 'credentials_missing'
+  | 'server_unavailable'
   | 'unavailable';
 
 export interface OpenCodeCapabilityState {
@@ -17,14 +20,38 @@ export interface OpenCodeCapabilityState {
 
 export type OpenCodeConversationStatus =
   | 'idle'
+  | 'starting'
   | 'running'
+  | 'awaiting_first_output'
   | 'awaiting_approval'
   | 'completed'
+  | 'stopped'
   | 'failed'
   | 'reconnecting';
 
 export type OpenCodeMessageRole = 'user' | 'assistant' | 'system' | 'status';
-export type OpenCodeMessageStatus = 'pending' | 'streaming' | 'complete' | 'error';
+export type OpenCodeMessageStatus = 'pending' | 'streaming' | 'complete' | 'error' | 'stopped';
+
+export type OpenCodeRunPhase =
+  | 'preflight'
+  | 'server_start'
+  | 'direct_run'
+  | 'attached_run'
+  | 'spawned'
+  | 'awaiting_first_output'
+  | 'streaming'
+  | 'finalizing'
+  | 'completed'
+  | 'failed'
+  | 'stopped';
+
+export interface OpenCodeRunStatusEvent {
+  conversationId: string;
+  requestId: string;
+  phase: OpenCodeRunPhase;
+  message: string;
+  retryable?: boolean;
+}
 
 export interface OpenCodeMessage {
   id: string;
@@ -88,6 +115,8 @@ export interface OpenCodeConversation {
   fileChanges?: OpenCodeFileChange[];
   approvals?: OpenCodeApprovalRequest[];
   activeRequestId?: string;
+  lastRunPhase?: OpenCodeRunPhase;
+  lastError?: string;
 }
 
 export interface OpenCodeTimelineState {
