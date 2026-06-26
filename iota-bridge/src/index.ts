@@ -5,8 +5,10 @@ import { initSocketIO } from './services/socket';
 import { requireAuth } from './middleware/auth';
 import statusRouter from './routes/status';
 import gitRouter from './routes/git';
+import { initLogger } from './services/logger';
 
 dotenv.config();
+initLogger();
 
 const app = express();
 const server = createServer(app);

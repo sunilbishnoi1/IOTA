@@ -4,6 +4,8 @@ import * as path from 'path';
 import * as net from 'net';
 import { OpenCodeCapabilityState, OpenCodeRunStatusEvent } from '../types/opencode';
 import { opencodeStore } from './opencodeStore';
+import { logInfo, logError } from './logger';
+
 
 const OPENCODE_PORT = 4096;
 const OPENCODE_URL = `http://localhost:${OPENCODE_PORT}`;
@@ -171,6 +173,9 @@ class OpenCodeRunner {
 
   public async run(options: OpenCodeRunOptions): Promise<OpenCodeRunHandle> {
     this.clearStaleServer();
+    
+    logInfo(`[OpenCodeRunner] Starting run request ${options.requestId} for conversation ${options.conversationId}`);
+    
     options.onRunStatus?.({
       conversationId: options.conversationId,
       requestId: options.requestId,
@@ -180,81 +185,141 @@ class OpenCodeRunner {
     });
 
     const server = await this.ensureServer();
-    const attach = server.ready;
+    const initialAttach = server.ready;
+    
     options.onRunStatus?.({
       conversationId: options.conversationId,
       requestId: options.requestId,
-      phase: attach ? 'attached_run' : 'direct_run',
-      message: attach ? 'OpenCode server is ready. Starting attached run...' : 'OpenCode server is unavailable. Starting direct run...',
+      phase: initialAttach ? 'attached_run' : 'direct_run',
+      message: initialAttach ? 'OpenCode server is ready. Starting attached run...' : 'OpenCode server is unavailable. Starting direct run...',
       retryable: false,
     });
 
-    const args = this.buildRunArgs(options.prompt, options.sessionId, attach);
-    const child = spawn('opencode', args, {
-      cwd: this.getWorkspaceRootSync(),
-      env: { ...process.env, ...options.env, PATH: this.buildInstallerPath() },
-      shell: true,
-      detached: process.platform !== 'win32',
-    });
+    let currentChild: ChildProcess | null = null;
+    let mode: 'attached' | 'direct' = initialAttach ? 'attached' : 'direct';
 
-    this.activeRun = child;
-    let buffer = '';
-    let stderr = '';
+    const donePromise = new Promise<{ exitCode: number | null; stderr: string; spawnError?: string }>(async (resolve) => {
+      let attach = initialAttach;
+      let attemptCount = 0;
+      
+      while (true) {
+        attemptCount++;
+        const args = this.buildRunArgs(options.prompt, options.sessionId, attach);
+        logInfo(`[OpenCodeRunner] Spawning process (attempt ${attemptCount}): opencode ${args.join(' ')}`);
+        
+        const child = spawn('opencode', args, {
+          cwd: this.getWorkspaceRootSync(),
+          env: { ...process.env, ...options.env, PATH: this.buildInstallerPath() },
+          shell: true,
+          detached: process.platform !== 'win32',
+        });
 
-    child.stdout.on('data', (data) => {
-      options.onActivity?.();
-      const text = String(data);
-      options.onText?.(text);
-      buffer += text;
-      const lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() || '';
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          options.onJson(JSON.parse(line));
-        } catch {
-          options.onJson({ type: 'text_delta', content: line });
-        }
-      }
-    });
+        currentChild = child;
+        this.activeRun = child;
 
-    child.stderr.on('data', (data) => {
-      options.onActivity?.();
-      const text = String(data);
-      stderr += text;
-      for (const line of text.split(/\r?\n/)) {
-        const clean = this.sanitizeLine(line);
-        if (clean) options.onStderr?.(clean);
-      }
-    });
+        let buffer = '';
+        let stderr = '';
+        let jsonCount = 0;
 
-    const done = new Promise<{ exitCode: number | null; stderr: string; spawnError?: string }>((resolve) => {
-      child.on('close', (exitCode) => {
-        if (buffer.trim()) {
-          try {
-            options.onJson(JSON.parse(buffer));
-          } catch {
-            options.onJson({ type: 'text_delta', content: buffer });
+        child.stdout.on('data', (data) => {
+          options.onActivity?.();
+          const text = String(data);
+          logInfo(`[OpenCode stdout] ${text.trim()}`);
+          options.onText?.(text);
+          buffer += text;
+          const lines = buffer.split(/\r?\n/);
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const parsed = JSON.parse(line);
+              options.onJson(parsed);
+              jsonCount++;
+            } catch {
+              options.onJson({ type: 'text_delta', content: line });
+            }
           }
+        });
+
+        child.stderr.on('data', (data) => {
+          options.onActivity?.();
+          const text = String(data);
+          logError(`[OpenCode stderr] ${text.trim()}`);
+          stderr += text;
+          for (const line of text.split(/\r?\n/)) {
+            const clean = this.sanitizeLine(line);
+            if (clean) options.onStderr?.(clean);
+          }
+        });
+
+        const childDone = new Promise<{ exitCode: number | null; stderr: string; spawnError?: string }>((resolveChild) => {
+          child.on('close', (exitCode) => {
+            logInfo(`[OpenCodeRunner] Process (attempt ${attemptCount}) closed with exitCode=${exitCode}`);
+            if (buffer.trim()) {
+              try {
+                const parsed = JSON.parse(buffer);
+                options.onJson(parsed);
+                jsonCount++;
+              } catch {
+                options.onJson({ type: 'text_delta', content: buffer });
+              }
+            }
+            if (this.activeRun === child) this.activeRun = null;
+            resolveChild({ exitCode, stderr });
+          });
+          
+          child.on('error', (error) => {
+            logError(`[OpenCodeRunner] Process (attempt ${attemptCount}) error: ${error.message}`);
+            if (this.activeRun === child) this.activeRun = null;
+            resolveChild({ exitCode: null, stderr: error.message, spawnError: error.message });
+          });
+        });
+
+        const result = await childDone;
+
+        // Check if fallback is needed
+        if (attach && jsonCount === 0 && (result.exitCode !== 0 || result.spawnError)) {
+          logError(`[OpenCodeRunner] Attached run failed with exitCode=${result.exitCode}, spawnError=${result.spawnError} and 0 JSON outputs. Triggering fallback to direct run.`);
+          
+          options.onRunStatus?.({
+            conversationId: options.conversationId,
+            requestId: options.requestId,
+            phase: 'direct_run',
+            message: 'Warm server attachment failed. Falling back to direct execution...',
+            retryable: false,
+          });
+
+          this.clearStaleServer();
+          attach = false;
+          mode = 'direct';
+          continue; // rerun loop in direct mode
         }
-        if (this.activeRun === child) this.activeRun = null;
-        resolve({ exitCode, stderr });
-      });
-      child.on('error', (error) => {
-        if (this.activeRun === child) this.activeRun = null;
-        resolve({ exitCode: null, stderr: error.message, spawnError: error.message });
-      });
+
+        // Otherwise we are done
+        resolve(result);
+        break;
+      }
     });
 
     return {
-      stop: () => this.killProcess(child),
-      done,
-      mode: attach ? 'attached' : 'direct',
+      stop: () => {
+        logInfo(`[OpenCodeRunner] Stop requested for requestId=${options.requestId}`);
+        if (currentChild) {
+          this.killProcess(currentChild);
+        }
+      },
+      done: donePromise,
+      get mode() {
+        return mode;
+      },
     };
   }
 
   public stopActiveRun() {
-    if (this.activeRun) this.killProcess(this.activeRun);
+    if (this.activeRun) {
+      logInfo(`[OpenCodeRunner] Stopping active run`);
+      this.killProcess(this.activeRun);
+    }
     this.activeRun = null;
   }
 
@@ -346,7 +411,7 @@ class OpenCodeRunner {
   }
 
   private buildRunArgs(prompt: string, sessionId?: string, attach = false): string[] {
-    const args = ['run'];
+    const args = ['run', '--model', 'opencode/deepseek-v4-flash-free'];
     if (attach) args.push('--attach', OPENCODE_URL);
     if (sessionId) args.push('--continue', '--session', sessionId);
     args.push(prompt, '--format', 'json');

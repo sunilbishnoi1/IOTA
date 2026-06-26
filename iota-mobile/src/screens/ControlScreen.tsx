@@ -74,7 +74,18 @@ const mergeMessages = (local: OpenCodeMessage[], snapshot: OpenCodeMessage[]) =>
       item.content === message.content
     ));
     if (!duplicateServerMessage || ['stopped', 'error', 'streaming'].includes(message.status)) {
-      merged.set(message.id, merged.get(message.id) || message);
+      const existing = merged.get(message.id);
+      if (existing) {
+        const preferLocal =
+          (message.status === 'streaming' && existing.status !== 'complete') ||
+          (message.createdAt > existing.createdAt) ||
+          (message.content.length > existing.content.length);
+        if (preferLocal) {
+          merged.set(message.id, message);
+        }
+      } else {
+        merged.set(message.id, message);
+      }
     }
   }
   return Array.from(merged.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -88,7 +99,7 @@ const mergeById = <T extends { id: string }>(local: T[], snapshot: T[]) => {
 };
 
 const createRunStatusMessage = (status: OpenCodeRunStatusEvent): OpenCodeMessage => ({
-  id: `runstatus-${status.requestId}-${status.phase}`,
+  id: `run-${status.requestId}`,
   conversationId: status.conversationId,
   role: 'status',
   content: status.message,
@@ -211,6 +222,19 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
         setSocketStatus('connecting');
         const apiKeys = await secureStoreService.getAllApiKeys();
         if (!active) return;
+
+        let currentId = conversationIdRef.current;
+        if (!currentId) {
+          const stored = await secureStoreService.getOpenCodeConversationId(conversationScope);
+          currentId = stored || defaultConversationId;
+          if (active) {
+            setConversationId(currentId);
+            conversationIdRef.current = currentId;
+            if (!stored) {
+              await secureStoreService.saveOpenCodeConversationId(conversationScope, currentId).catch(() => undefined);
+            }
+          }
+        }
 
         socket = io(targetUrl, {
           query: { token: user.token },

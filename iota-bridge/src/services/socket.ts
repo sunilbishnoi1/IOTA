@@ -4,6 +4,7 @@ import { validateCodespaceOwner } from './github';
 import { normalizeOpenCodePayload } from './opencodeEvents';
 import { opencodeRunner, OpenCodeRunHandle } from './opencode';
 import { opencodeStore } from './opencodeStore';
+import { logInfo, logError } from './logger';
 import {
   NormalizedOpenCodeEvent,
   OpenCodeApprovalDecision,
@@ -49,15 +50,16 @@ export const initSocketIO = (server: HttpServer) => {
   });
 
   io.on('connection', (socket: Socket) => {
-    console.log(`Socket client connected: ${socket.id}`);
+    logInfo(`Socket client connected: ${socket.id}`);
 
     const credentials = (socket.handshake.auth?.credentials || {}) as Record<string, string>;
     opencodeStore.setCredentials(socket.id, credentials);
 
     const emitRunStatus = (status: OpenCodeRunStatusEvent) => {
       opencodeStore.setRunPhase(status.conversationId, status.phase);
+      logInfo(`[Socket] Run status transition: conversationId=${status.conversationId}, phase=${status.phase}, message="${status.message}"`);
       const statusMessage: OpenCodeMessage = {
-        id: id(`run-${status.phase}`),
+        id: `run-${status.requestId}`,
         conversationId: status.conversationId,
         role: 'status',
         content: status.message,
@@ -139,6 +141,7 @@ export const initSocketIO = (server: HttpServer) => {
     socket.on('opencode:message', async (payload: OpenCodeMessageRequest) => {
       const content = payload?.content?.trim();
       if (!content) {
+        logError(`[Socket] Received empty prompt from socket ${socket.id}`);
         socket.emit('opencode:error', {
           code: 'OPENCODE_EMPTY_PROMPT',
           message: 'Enter a task for OpenCode.',
@@ -147,8 +150,11 @@ export const initSocketIO = (server: HttpServer) => {
         return;
       }
 
+      logInfo(`[Socket] Received prompt from socket ${socket.id}: "${content.slice(0, 60)}${content.length > 60 ? '...' : ''}"`);
+
       const capability = await opencodeRunner.checkCapability();
       if (capability.status !== 'available') {
+        logError(`[Socket] OpenCode capability not ready: ${capability.status} - ${capability.details}`);
         socket.emit('opencode:capability', capability);
         socket.emit('opencode:error', {
           conversationId: payload.conversationId,
@@ -162,6 +168,7 @@ export const initSocketIO = (server: HttpServer) => {
       const conversation = opencodeStore.getOrCreateConversation(payload.conversationId, payload.sessionId);
       const request = opencodeStore.startRequest(conversation.id);
       if (!request.ok) {
+        logError(`[Socket] Active run already exists for conversation ${conversation.id}: ${request.message}`);
         socket.emit('opencode:error', {
           conversationId: conversation.id,
           code: 'OPENCODE_ALREADY_RUNNING',
@@ -170,6 +177,8 @@ export const initSocketIO = (server: HttpServer) => {
         });
         return;
       }
+
+      logInfo(`[Socket] Starting request ${request.requestId} for conversation ${conversation.id}`);
 
       const userMessage = opencodeStore.addUserMessage(conversation.id, content);
       io.emit('opencode:message', { conversationId: conversation.id, message: userMessage });
@@ -227,6 +236,7 @@ export const initSocketIO = (server: HttpServer) => {
           onActivity: markFirstActivity,
           onRunStatus: emitRunStatus,
           onStderr: (line) => {
+            logError(`[Socket] stderr delta: ${line}`);
             emitRunStatus({
               conversationId: conversation.id,
               requestId: request.requestId,
@@ -252,6 +262,7 @@ export const initSocketIO = (server: HttpServer) => {
         });
       } catch (error: any) {
         const message = error?.message || 'OpenCode could not start.';
+        logError(`[Socket] OpenCode spawn/run initiation failed: ${message}`, { error });
         emitRunStatus({ conversationId: conversation.id, requestId: request.requestId, phase: 'failed', message, retryable: true });
         socket.emit('opencode:error', { conversationId: conversation.id, code: 'OPENCODE_START_FAILED', message, retryable: true });
         finalize(true, { errorSummary: message });
@@ -277,6 +288,7 @@ export const initSocketIO = (server: HttpServer) => {
       watchdog = setTimeout(() => {
         if (firstActivity || finalized) return;
         const message = 'OpenCode started but produced no output before the timeout.';
+        logError(`[Socket] Output timeout triggered for request ${request.requestId}`);
         handle?.stop();
         emitRunStatus({ conversationId: conversation.id, requestId: request.requestId, phase: 'failed', message, retryable: true });
         socket.emit('opencode:error', {
@@ -293,6 +305,7 @@ export const initSocketIO = (server: HttpServer) => {
 
       if (result.spawnError) {
         const message = result.spawnError;
+        logError(`[Socket] Request ${request.requestId} ended with spawn error: ${message}`);
         emitRunStatus({ conversationId: conversation.id, requestId: request.requestId, phase: 'failed', message, retryable: true });
         socket.emit('opencode:error', { conversationId: conversation.id, code: 'OPENCODE_START_FAILED', message, retryable: true });
         finalize(true, { errorSummary: message });
@@ -302,6 +315,7 @@ export const initSocketIO = (server: HttpServer) => {
       const failed = result.exitCode !== 0;
       if (failed) {
         const message = result.stderr.split(/\r?\n/).find(Boolean)?.slice(0, 220) || 'OpenCode exited before completing the task.';
+        logError(`[Socket] Request ${request.requestId} ended in failure with exitCode=${result.exitCode}: ${message}`);
         emitRunStatus({ conversationId: conversation.id, requestId: request.requestId, phase: 'failed', message, retryable: true });
         socket.emit('opencode:error', {
           conversationId: conversation.id,
@@ -310,6 +324,7 @@ export const initSocketIO = (server: HttpServer) => {
           retryable: true,
         });
       } else {
+        logInfo(`[Socket] Request ${request.requestId} completed successfully`);
         emitRunStatus({
           conversationId: conversation.id,
           requestId: request.requestId,
@@ -322,8 +337,10 @@ export const initSocketIO = (server: HttpServer) => {
     });
 
     socket.on('opencode:approval', (payload: OpenCodeApprovalDecision) => {
+      logInfo(`[Socket] Received approval event for conversation ${payload.conversationId}, approvalId=${payload.approvalId}, decision=${payload.decision}`);
       const approval = opencodeStore.resolveApproval(payload);
       if (!approval) {
+        logError(`[Socket] Approval resolution failed: approval ${payload.approvalId} not found or not pending`);
         socket.emit('opencode:error', {
           conversationId: payload.conversationId,
           code: 'OPENCODE_APPROVAL_NOT_FOUND',
@@ -376,7 +393,7 @@ export const initSocketIO = (server: HttpServer) => {
     });
 
     socket.on('disconnect', () => {
-      console.log(`Socket client disconnected: ${socket.id}`);
+      logInfo(`Socket client disconnected: ${socket.id}`);
       opencodeStore.cleanupCredentials(socket.id);
     });
   });

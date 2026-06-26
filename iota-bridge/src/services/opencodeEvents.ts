@@ -92,16 +92,35 @@ export function normalizeOpenCodePayload(
 
   const event = payload as Record<string, unknown>;
   const type = valueAsString(event.type) || valueAsString(event.event) || valueAsString(event.kind);
+
+  if (type === 'step_start' || type === 'step_finish') {
+    return [];
+  }
+
   const events: NormalizedOpenCodeEvent[] = [];
 
+  const extractText = (evt: Record<string, unknown>): string => {
+    const direct = valueAsString(evt.content) || valueAsString(evt.text) || valueAsString(evt.delta);
+    if (direct !== undefined) return direct;
+    if (evt.part) {
+      if (typeof evt.part === 'string') return evt.part;
+      if (typeof evt.part === 'object' && evt.part !== null) {
+        const p = evt.part as Record<string, unknown>;
+        const nested = p.text ?? p.content ?? p.delta;
+        if (typeof nested === 'string') return nested;
+      }
+    }
+    return '';
+  };
+
   if (type === 'text_delta' || type === 'message_delta' || type === 'assistant_delta') {
-    const content = valueAsString(event.content) || valueAsString(event.text) || valueAsString(event.delta) || '';
+    const content = extractText(event);
     events.push({ type: 'message_delta', conversationId, messageId: assistantMessageId, content, done: Boolean(event.done) });
     return events;
   }
 
   if (type === 'message' || type === 'assistant_message' || type === 'text') {
-    const content = valueAsString(event.content) || valueAsString(event.text) || '';
+    const content = extractText(event);
     events.push({
       type: 'message',
       conversationId,
