@@ -14,6 +14,7 @@ const OPENCODE_URL = `http://localhost:${OPENCODE_PORT}`;
 const checkPortReady = (port: number, host = '127.0.0.1', timeout = 3000): Promise<boolean> => {
   return new Promise((resolve) => {
     const start = Date.now();
+    logInfo(`[OpenCodeRunner] checkPortReady: probing ${host}:${port} with timeout=${timeout}ms`);
     const check = () => {
       let settled = false;
       const req = http.request({
@@ -25,13 +26,16 @@ const checkPortReady = (port: number, host = '127.0.0.1', timeout = 3000): Promi
       }, (res) => {
         if (settled) return;
         settled = true;
+        logInfo(`[OpenCodeRunner] checkPortReady: successfully received HTTP response status=${res.statusCode} from ${host}:${port}`);
         resolve(true); // Any response means the server is alive
       });
 
-      req.on('error', () => {
+      req.on('error', (err) => {
         if (settled) return;
         settled = true;
-        if (Date.now() - start > timeout) resolve(false);
+        const elapsed = Date.now() - start;
+        logInfo(`[OpenCodeRunner] checkPortReady: probe failed on ${host}:${port} (error: ${err.message}) elapsed=${elapsed}ms`);
+        if (elapsed > timeout) resolve(false);
         else setTimeout(check, 200);
       });
 
@@ -39,7 +43,9 @@ const checkPortReady = (port: number, host = '127.0.0.1', timeout = 3000): Promi
         req.destroy();
         if (settled) return;
         settled = true;
-        if (Date.now() - start > timeout) resolve(false);
+        const elapsed = Date.now() - start;
+        logInfo(`[OpenCodeRunner] checkPortReady: probe timed out on ${host}:${port} elapsed=${elapsed}ms`);
+        if (elapsed > timeout) resolve(false);
         else setTimeout(check, 200);
       });
 
@@ -222,12 +228,13 @@ class OpenCodeRunner {
         const args = this.buildRunArgs(options.prompt, options.sessionId, attach);
         logInfo(`[OpenCodeRunner] Spawning process (attempt ${attemptCount}): opencode ${args.join(' ')}`);
         
-        const child = spawn('opencode', args, {
+        const child = this.spawnProcess('opencode', args, {
           cwd: this.getWorkspaceRootSync(),
-          env: { ...process.env, ...options.env, PATH: this.buildInstallerPath() },
-          shell: process.platform === 'win32',
-          detached: process.platform !== 'win32',
+          env: options.env,
+          detached: true,
         });
+
+        logInfo(`[OpenCodeRunner] Spawning attempt ${attemptCount} result - PID: ${child.pid}, connected: ${child.connected}`);
 
         currentChild = child;
         this.activeRun = child;
@@ -236,7 +243,7 @@ class OpenCodeRunner {
         let stderr = '';
         let jsonCount = 0;
 
-        child.stdout.on('data', (data) => {
+        child.stdout?.on('data', (data) => {
           options.onActivity?.();
           const text = String(data);
           logInfo(`[OpenCode stdout] ${text.trim()}`);
@@ -256,7 +263,7 @@ class OpenCodeRunner {
           }
         });
 
-        child.stderr.on('data', (data) => {
+        child.stderr?.on('data', (data) => {
           options.onActivity?.();
           const text = String(data);
           logError(`[OpenCode stderr] ${text.trim()}`);
@@ -268,8 +275,12 @@ class OpenCodeRunner {
         });
 
         const childDone = new Promise<{ exitCode: number | null; stderr: string; spawnError?: string }>((resolveChild) => {
+          child.on('exit', (exitCode, signal) => {
+            logInfo(`[OpenCodeRunner] Process (attempt ${attemptCount}) exit event: exitCode=${exitCode}, signal=${signal}`);
+          });
+
           child.on('close', (exitCode) => {
-            logInfo(`[OpenCodeRunner] Process (attempt ${attemptCount}) closed with exitCode=${exitCode}`);
+            logInfo(`[OpenCodeRunner] Process (attempt ${attemptCount}) close event: exitCode=${exitCode}`);
             if (buffer.trim()) {
               try {
                 const parsed = JSON.parse(buffer);
@@ -349,10 +360,8 @@ class OpenCodeRunner {
     if (!available) return { ready: false, details: 'OpenCode binary is missing' };
 
     try {
-      this.serveProcess = spawn('opencode', ['serve', '--port', String(OPENCODE_PORT)], {
+      this.serveProcess = this.spawnProcess('opencode', ['serve', '--port', String(OPENCODE_PORT)], {
         cwd: await this.getWorkspaceRoot(),
-        env: { ...process.env, PATH: this.buildInstallerPath() },
-        shell: process.platform === 'win32',
         stdio: 'ignore',
       });
 
@@ -433,6 +442,40 @@ class OpenCodeRunner {
     return args;
   }
 
+  private spawnProcess(
+    command: string,
+    args: string[],
+    options: {
+      cwd: string;
+      env?: Record<string, string>;
+      detached?: boolean;
+      stdio?: any;
+    }
+  ): ChildProcess {
+    const env = { ...process.env, ...options.env, PATH: this.buildInstallerPath() };
+    logInfo(`[OpenCodeRunner] spawnProcess - command="${command}" args=${JSON.stringify(args)}`);
+    logInfo(`[OpenCodeRunner] spawnProcess - cwd="${options.cwd}" PATH length: ${env.PATH?.length || 0}`);
+    if (process.platform === 'win32') {
+      logInfo(`[OpenCodeRunner] Spawning win32 process`);
+      return spawn(command, args, {
+        cwd: options.cwd,
+        env,
+        shell: true,
+        stdio: options.stdio,
+      });
+    } else {
+      const shArgs = ['-c', `${command} "$@"`, '--', ...args];
+      logInfo(`[OpenCodeRunner] Spawning POSIX process wrapper: /bin/sh ${shArgs.join(' ')}`);
+      return spawn('/bin/sh', shArgs, {
+        cwd: options.cwd,
+        env,
+        shell: false,
+        detached: options.detached,
+        stdio: options.stdio,
+      });
+    }
+  }
+
   private async commandExists(command: string): Promise<boolean> {
     const probe = process.platform === 'win32' ? ['where.exe', command] : ['which', command];
     const result = await this.runCommand(probe[0], [probe[1]], 3000);
@@ -489,19 +532,17 @@ class OpenCodeRunner {
 
   private runInstaller(command: string, args: string[], onProgress: (message: string) => void): Promise<CommandResult> {
     return new Promise((resolve) => {
-      const child = spawn(command, args, {
+      const child = this.spawnProcess(command, args, {
         cwd: this.getWorkspaceRootSync(),
-        env: { ...process.env, PATH: this.buildInstallerPath() },
-        shell: process.platform === 'win32',
       });
       let stdout = '';
       let stderr = '';
-      child.stdout.on('data', (data) => {
+      child.stdout?.on('data', (data) => {
         const text = String(data);
         stdout += text;
         onProgress(this.summarizeInstallChunk(text));
       });
-      child.stderr.on('data', (data) => {
+      child.stderr?.on('data', (data) => {
         const text = String(data);
         stderr += text;
         onProgress(this.summarizeInstallChunk(text));
@@ -516,10 +557,8 @@ class OpenCodeRunner {
       let settled = false;
       let stdout = '';
       let stderr = '';
-      const child = spawn(command, args, {
+      const child = this.spawnProcess(command, args, {
         cwd: this.getWorkspaceRootSync(),
-        env: { ...process.env, PATH: this.buildInstallerPath() },
-        shell: process.platform === 'win32',
       });
       const timer = setTimeout(() => {
         if (settled) return;
@@ -527,8 +566,8 @@ class OpenCodeRunner {
         this.killProcess(child);
         resolve({ exitCode: null, stdout, stderr: stderr || 'Command timed out' });
       }, timeoutMs);
-      child.stdout.on('data', (data) => { stdout += String(data); });
-      child.stderr.on('data', (data) => { stderr += String(data); });
+      child.stdout?.on('data', (data) => { stdout += String(data); });
+      child.stderr?.on('data', (data) => { stderr += String(data); });
       child.on('close', (exitCode) => {
         if (settled) return;
         settled = true;
