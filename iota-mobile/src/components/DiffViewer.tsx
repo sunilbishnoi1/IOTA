@@ -26,8 +26,8 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({ hunks }) => {
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <ScrollView horizontal contentContainerStyle={styles.horizontalContent}>
+    <ScrollView style={styles.container} contentContainerStyle={styles.content} nestedScrollEnabled={true}>
+      <ScrollView horizontal contentContainerStyle={styles.horizontalContent} nestedScrollEnabled={true}>
         <View style={styles.diffContainer}>
           {hunks.map((hunk, hunkIdx) => (
             <View key={`hunk-${hunkIdx}`} style={styles.hunkWrapper}>

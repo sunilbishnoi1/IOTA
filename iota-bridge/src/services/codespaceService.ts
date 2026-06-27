@@ -120,6 +120,10 @@ export const listUserCodespaces = async (token: string): Promise<CodespaceVM[]> 
   const verifiedCodespaces = await Promise.all(
     codespaces.map(async (cs) => {
       if (cs.status === 'active') {
+        if (process.env.CODESPACE_NAME && cs.id === process.env.CODESPACE_NAME) {
+          // Reachable by definition since we are running this bridge server inside it
+          return cs;
+        }
         const isReachable = await checkBridgeReachable(cs.connectionUrl, token);
         if (!isReachable) {
           return { ...cs, status: 'starting' as CodespaceStatus };
@@ -128,6 +132,7 @@ export const listUserCodespaces = async (token: string): Promise<CodespaceVM[]> 
       return cs;
     })
   );
+
 
   return verifiedCodespaces;
 };
@@ -145,11 +150,16 @@ export const startUserCodespace = async (token: string, name: string): Promise<C
   let status = mapStateToStatus(cs.state);
 
   if (status === 'active') {
-    const isReachable = await checkBridgeReachable(connectionUrl, token);
-    if (!isReachable) {
-      status = 'starting';
+    if (process.env.CODESPACE_NAME && cs.name === process.env.CODESPACE_NAME) {
+      // Reachable by definition
+    } else {
+      const isReachable = await checkBridgeReachable(connectionUrl, token);
+      if (!isReachable) {
+        status = 'starting';
+      }
     }
   }
+
 
   return {
     id: cs.name,
@@ -175,11 +185,16 @@ export const getUserCodespace = async (token: string, name: string): Promise<Cod
   let status = mapStateToStatus(cs.state);
 
   if (status === 'active') {
-    const isReachable = await checkBridgeReachable(connectionUrl, token);
-    if (!isReachable) {
-      status = 'starting';
+    if (process.env.CODESPACE_NAME && cs.name === process.env.CODESPACE_NAME) {
+      // Reachable by definition
+    } else {
+      const isReachable = await checkBridgeReachable(connectionUrl, token);
+      if (!isReachable) {
+        status = 'starting';
+      }
     }
   }
+
 
   return {
     id: cs.name,

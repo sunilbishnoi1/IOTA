@@ -1,13 +1,8 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
+import { getWorkspaceRoot } from './logger';
 
-function getWorkspaceRoot(): string {
-  if (process.env.CODESPACE_VSCODE_FOLDER) {
-    return process.env.CODESPACE_VSCODE_FOLDER;
-  }
-  return path.resolve(process.cwd(), '..');
-}
 
 const execFileAsync = promisify(execFile);
 

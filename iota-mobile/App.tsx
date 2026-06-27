@@ -129,6 +129,9 @@ export default function App() {
             onBackToDashboard={() => {
               setActiveTab('dashboard');
             }}
+            onGoToShip={() => {
+              setActiveTab('ship');
+            }}
           />
         );
       case 'ship':

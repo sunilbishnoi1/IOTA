@@ -12,6 +12,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import Markdown from 'react-native-markdown-display';
+
 import { MaterialIcons } from '@expo/vector-icons';
 import io, { Socket } from 'socket.io-client';
 import { secureStoreService } from '../services/secureStore';
@@ -38,6 +40,7 @@ interface ControlScreenProps {
   user: { token: string; username?: string; avatarUrl?: string };
   activeCodespace: CodespaceVM;
   onBackToDashboard: () => void;
+  onGoToShip: () => void;
 }
 
 type SocketStatus = 'disconnected' | 'connecting' | 'connected';
@@ -108,10 +111,73 @@ const createRunStatusMessage = (status: OpenCodeRunStatusEvent): OpenCodeMessage
   metadata: { phase: status.phase, requestId: status.requestId, retryable: status.retryable },
 });
 
+const markdownStyles: Record<string, any> = {
+  body: {
+    color: Theme.colors.text.primary,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  link: {
+    color: Theme.colors.primary.glow,
+    textDecorationLine: 'underline' as const,
+  },
+  code_inline: {
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    color: Theme.colors.secondary.glow,
+    paddingHorizontal: 4,
+    borderRadius: 3,
+  },
+  code_block: {
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    borderColor: Theme.colors.border,
+    borderWidth: 1,
+    padding: 10,
+    borderRadius: 6,
+    marginVertical: 8,
+    color: '#e2e8f0',
+    width: '100%',
+  },
+  fence: {
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    borderColor: Theme.colors.border,
+    borderWidth: 1,
+    padding: 10,
+    borderRadius: 6,
+    marginVertical: 8,
+    color: '#e2e8f0',
+    width: '100%',
+  },
+  heading1: {
+    color: Theme.colors.text.primary,
+    fontSize: 18,
+    fontWeight: '800',
+    marginTop: 12,
+    marginBottom: 6,
+  },
+  heading2: {
+    color: Theme.colors.text.primary,
+    fontSize: 16,
+    fontWeight: '700',
+    marginTop: 10,
+    marginBottom: 4,
+  },
+  bullet_list: {
+    marginVertical: 6,
+  },
+  ordered_list: {
+    marginVertical: 6,
+  },
+};
+
+
 export const ControlScreen: React.FC<ControlScreenProps> = ({
   user,
   activeCodespace,
   onBackToDashboard,
+  onGoToShip,
 }) => {
   const [inputPrompt, setInputPrompt] = useState('');
   const [socketStatus, setSocketStatus] = useState<SocketStatus>('disconnected');
@@ -123,6 +189,9 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const [fileChanges, setFileChanges] = useState<OpenCodeFileChange[]>([]);
   const [approvals, setApprovals] = useState<OpenCodeApprovalRequest[]>([]);
   const [running, setRunning] = useState(false);
+  const [runStatusText, setRunStatusText] = useState<string | null>(null);
+  const [showBanner, setShowBanner] = useState(true);
+
   const conversationScope = useMemo(() => sanitizeConversationScope(activeCodespace.id || activeCodespace.repositoryName || activeCodespace.connectionUrl || 'default'), [activeCodespace.id, activeCodespace.repositoryName, activeCodespace.connectionUrl]);
   const defaultConversationId = useMemo(() => `opencode-${conversationScope}`, [conversationScope]);
 
@@ -132,7 +201,9 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
 
   const timelineItems = useMemo<TimelineItem[]>(() => {
     const items: TimelineItem[] = [
-      ...messages.map((message) => ({ key: `message-${message.id}`, type: 'message' as const, message })),
+      ...messages
+        .filter((message) => message.role !== 'status')
+        .map((message) => ({ key: `message-${message.id}`, type: 'message' as const, message })),
       ...tools.map((activity) => ({ key: `tool-${activity.id}`, type: 'tool' as const, activity })),
       ...fileChanges.map((change) => ({ key: `file-${change.id}`, type: 'file' as const, change })),
       ...approvals.map((approval) => ({ key: `approval-${approval.id}`, type: 'approval' as const, approval })),
@@ -146,9 +217,23 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
 
   const canSubmit = socketStatus === 'connected' && capability.canSubmit && !running && inputPrompt.trim().length > 0;
   const statusText = socketStatus === 'connected' ? capability.details : socketStatus === 'connecting' ? 'Connecting to bridge...' : 'Disconnected from bridge';
+  const bannerText = (running && runStatusText) ? runStatusText : statusText;
+
   useEffect(() => {
     conversationIdRef.current = conversationId;
   }, [conversationId]);
+
+  useEffect(() => {
+    if (socketStatus === 'connected' && capability.status === 'available' && !running) {
+      const timer = setTimeout(() => {
+        setShowBanner(false);
+      }, 4000);
+      return () => clearTimeout(timer);
+    } else {
+      setShowBanner(true);
+    }
+  }, [socketStatus, capability.status, running]);
+
 
   useEffect(() => {
     let active = true;
@@ -261,8 +346,10 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           if (!active) return;
           console.log('[ControlScreen] Socket disconnected from:', targetUrl);
           setSocketStatus('disconnected');
-          setRunning((prev) => prev && true);
+          setRunning(false);
+          setRunStatusText(null);
         });
+
  
         socket.on('connect_error', (err: Error) => {
           if (!active) return;
@@ -305,7 +392,9 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             setConversationId(status.conversationId);
             conversationIdRef.current = status.conversationId;
             secureStoreService.saveOpenCodeConversationId(conversationScope, status.conversationId).catch(() => undefined);
-            setRunning(!['completed', 'failed', 'stopped'].includes(status.phase));
+            const isFinished = ['completed', 'failed', 'stopped'].includes(status.phase);
+            setRunning(!isFinished);
+            setRunStatusText(isFinished ? null : status.message);
             const statusMessage = createRunStatusMessage(status);
             setMessages((prev) => [...prev.filter((item) => item.id !== statusMessage.id), statusMessage]);
           },          onToolActivity: ({ activity }) => {
@@ -321,6 +410,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             const targetConversationId = nextConversationId || conversationId || `conversation-${Date.now()}`;
             setConversationId(targetConversationId);
             setRunning(false);
+            setRunStatusText(null);
             setMessages((prev) => [...prev, {
               id: `error-${Date.now()}`,
               conversationId: targetConversationId,
@@ -330,6 +420,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               status: 'error',
             }]);
           },
+
         });
       } catch (err: any) {
         if (!active) return;
@@ -362,6 +453,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     setMessages((prev) => [...prev, createLocalMessage(targetConversationId, content)]);
     setInputPrompt('');
     setRunning(true);
+    setRunStatusText('Starting run...');
     Keyboard.dismiss();
     emitOpenCodeMessage(socketRef.current, { conversationId: targetConversationId, sessionId, content });
   };
@@ -383,38 +475,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     setRunning(false);
   };
 
-  const handleTearDownVM = async () => {
-    Alert.alert('Confirm Tear Down', 'Are you sure you want to stop this VM?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Tear Down',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            if (conversationId) handleStopOpenCode();
-            const targetUrl = activeCodespace.connectionUrl;
-            if (targetUrl) {
-              const response = await fetch(`${targetUrl}/api/codespaces/${activeCodespace.id}/stop`, {
-                method: 'POST',
-                headers: {
-                  Authorization: `Bearer ${user.token}`,
-                  'X-GitHub-Token': user.token,
-                },
-              });
-              if (response.ok) {
-                onBackToDashboard();
-                return;
-              }
-            }
-            onBackToDashboard();
-          } catch (err) {
-            console.warn(err);
-            onBackToDashboard();
-          }
-        },
-      },
-    ]);
-  };
+
 
   const renderMessage = (message: OpenCodeMessage) => {
     const isUser = message.role === 'user';
@@ -423,13 +484,20 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     if (!message.content.trim() && message.status !== 'streaming') {
       return null;
     }
+
+    const content = message.content || (message.status === 'streaming' ? 'Thinking...' : '');
+
     return (
       <View style={[styles.messageBubble, isUser && styles.userBubble, isSystem && styles.systemBubble]}>
-        <Text style={styles.messageLabel}>{isUser ? 'You' : isSystem ? 'System' : 'OpenCode'}</Text>
-        <Text style={styles.messageText}>{message.content || (message.status === 'streaming' ? 'Thinking...' : '')}</Text>
+        {isUser || isSystem || content === 'Thinking...' ? (
+          <Text style={styles.messageText}>{content}</Text>
+        ) : (
+          <Markdown style={markdownStyles}>{content}</Markdown>
+        )}
       </View>
     );
   };
+
 
   const renderItem = ({ item }: { item: TimelineItem }) => {
     if (item.type === 'message') return renderMessage(item.message);
@@ -584,24 +652,30 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           <Text style={styles.repoText} numberOfLines={1}>{activeCodespace.repositoryName.split('/')[1] || activeCodespace.repositoryName}</Text>
           <Text style={styles.branchText} numberOfLines={1}>{activeCodespace.branchName}</Text>
         </View>
-        <TouchableOpacity style={styles.teardownButton} onPress={handleTearDownVM}>
-          <MaterialIcons name="power-settings-new" size={14} color={Theme.colors.accent.glow} />
+        <TouchableOpacity style={styles.shipButton} onPress={onGoToShip}>
+          <View style={styles.shipButtonContent}>
+            <MaterialIcons name="local-shipping" size={14} color={Theme.colors.primary.glow} />
+            <Text style={styles.shipButtonText}>Ship</Text>
+          </View>
         </TouchableOpacity>
       </View>
 
-      <View style={styles.statusBanner}>
-        {capability.status === 'checking' || capability.status === 'installing' ? (
-          <ActivityIndicator size="small" color={Theme.colors.primary.glow} />
-        ) : (
-          <MaterialIcons name={capability.canSubmit ? 'check-circle' : 'info'} size={18} color={capability.canSubmit ? Theme.colors.secondary.glow : Theme.colors.accent.glow} />
-        )}
-        <Text style={styles.statusBannerText} numberOfLines={2}>{statusText}</Text>
-        {running && conversationId && (
-          <TouchableOpacity style={styles.stopButton} onPress={handleStopOpenCode}>
-            <MaterialIcons name="stop" size={16} color={Theme.colors.accent.glow} />
-          </TouchableOpacity>
-        )}
-      </View>
+      {showBanner && (
+        <View style={styles.statusBanner}>
+          {capability.status === 'checking' || capability.status === 'installing' || (running && !runStatusText) ? (
+            <ActivityIndicator size="small" color={Theme.colors.primary.glow} />
+          ) : (
+            <MaterialIcons name={capability.canSubmit ? 'check-circle' : 'info'} size={18} color={capability.canSubmit ? Theme.colors.secondary.glow : Theme.colors.accent.glow} />
+          )}
+          <Text style={styles.statusBannerText} numberOfLines={2}>{bannerText}</Text>
+          {running && conversationId && (
+            <TouchableOpacity style={styles.stopButton} onPress={handleStopOpenCode}>
+              <MaterialIcons name="stop" size={16} color={Theme.colors.accent.glow} />
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+
 
       {isOpenCodeReady ? (
         <>
@@ -701,14 +775,25 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: Theme.colors.secondary.glow,
   },
-  teardownButton: {
-    width: 34,
+  shipButton: {
     height: 34,
+    paddingHorizontal: 12,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(244, 63, 94, 0.3)',
+    borderColor: 'rgba(99, 102, 241, 0.4)',
     borderRadius: 8,
+    backgroundColor: 'rgba(99, 102, 241, 0.1)',
+  },
+  shipButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  shipButtonText: {
+    color: Theme.colors.primary.glow,
+    fontSize: 12,
+    fontWeight: '700',
   },
   statusBanner: {
     flexDirection: 'row',

@@ -14,7 +14,7 @@ const valueAsString = (value: unknown): string | undefined => {
 };
 
 const getExplicitId = (payload: Record<string, unknown>): string | undefined => {
-  const checkKeys = ['id', 'messageid', 'requestid'];
+  const checkKeys = ['id', 'messageid', 'requestid', 'tool_id', 'call_id', 'toolcallid', 'tool_call_id'];
   
   // Helper to find key case-insensitively
   const findKey = (obj: Record<string, unknown>): string | undefined => {
@@ -160,14 +160,14 @@ export function normalizeOpenCodePayload(
     return events;
   }
 
-  if (type === 'tool_start' || type === 'tool' || type === 'tool_update') {
+  if (type === 'tool_start' || type === 'tool' || type === 'tool_update' || type === 'tool_use') {
     const tool = valueAsString(event.tool) || valueAsString(event.name);
     const activity: OpenCodeToolActivity = {
       id: stableId('tool', event),
       conversationId,
       label: valueAsString(event.label) || (tool ? `Running ${tool}` : 'Running tool'),
       kind: mapToolKind(tool),
-      status: type === 'tool_start' ? 'started' : ((valueAsString(event.status) as OpenCodeToolActivity['status']) || 'running'),
+      status: (type === 'tool_start' || type === 'tool_use') ? 'started' : ((valueAsString(event.status) as OpenCodeToolActivity['status']) || 'running'),
       summary: valueAsString(event.summary) || valueAsString(event.input),
       startedAt: now(),
     };
@@ -213,18 +213,6 @@ export function normalizeOpenCodePayload(
     }
   }
 
-  events.push({
-    type: 'message',
-    conversationId,
-    message: {
-      id: stableId('status', event),
-      conversationId,
-      role: 'status',
-      content: 'OpenCode reported progress.',
-      createdAt: now(),
-      status: 'complete',
-      metadata: { rawType: type || 'unknown' },
-    },
-  });
-  return events;
+  return [];
+
 }

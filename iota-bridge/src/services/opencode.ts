@@ -5,7 +5,7 @@ import * as net from 'net';
 import * as http from 'http';
 import { OpenCodeCapabilityState, OpenCodeRunStatusEvent } from '../types/opencode';
 import { opencodeStore } from './opencodeStore';
-import { logInfo, logError } from './logger';
+import { logInfo, logError, getWorkspaceRoot } from './logger';
 
 
 const OPENCODE_PORT = 4096;
@@ -539,7 +539,7 @@ class OpenCodeRunner {
   }
 
   private getWorkspaceRootSync(): string {
-    return process.env.CODESPACE_VSCODE_FOLDER || path.resolve(process.cwd(), '..');
+    return getWorkspaceRoot();
   }
 
   private async findNpmCommand(): Promise<{ command: string; prefixArgs: string[] } | null> {
