@@ -252,18 +252,21 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
 
         socket.on('connect', () => {
           if (!active) return;
+          console.log('[ControlScreen] Socket connected to:', targetUrl);
           setSocketStatus('connected');
           emitOpenCodeSync(socket, conversationIdRef.current || defaultConversationId);
         });
-
+ 
         socket.on('disconnect', () => {
           if (!active) return;
+          console.log('[ControlScreen] Socket disconnected from:', targetUrl);
           setSocketStatus('disconnected');
           setRunning((prev) => prev && true);
         });
-
+ 
         socket.on('connect_error', (err: Error) => {
           if (!active) return;
+          console.error('[ControlScreen] Socket connection error:', err.message);
           setSocketStatus('disconnected');
           setCapability({ status: 'unavailable', details: `Connection error: ${err.message}`, canSubmit: false, canInstall: false });
         });

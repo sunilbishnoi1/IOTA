@@ -248,8 +248,11 @@ class OpenCodeRunner {
         const child = this.spawnProcess('opencode', args, {
           cwd: this.getWorkspaceRootSync(),
           env: options.env,
-          detached: true,
+          detached: process.platform !== 'win32',
         });
+
+        // Close stdin immediately to prevent Go CLI from blocking on piped input
+        child.stdin?.end();
 
         logInfo(`[OpenCodeRunner] Spawning attempt ${attemptCount} result - PID: ${child.pid}, connected: ${child.connected}`);
 
@@ -277,7 +280,8 @@ class OpenCodeRunner {
               const parsed = JSON.parse(line);
               options.onJson(parsed);
               jsonCount++;
-            } catch {
+            } catch (err: any) {
+              logInfo(`[OpenCodeRunner] non-JSON line on stdout fallback to text_delta: "${line}" | Error: ${err.message}`);
               options.onJson({ type: 'text_delta', content: line });
             }
           }
@@ -500,6 +504,8 @@ class OpenCodeRunner {
     const env = { ...process.env, ...options.env, PATH: this.buildInstallerPath() };
     logInfo(`[OpenCodeRunner] spawnProcess - command="${command}" args=${JSON.stringify(args)}`);
     logInfo(`[OpenCodeRunner] spawnProcess - cwd="${options.cwd}" PATH length: ${env.PATH?.length || 0}`);
+    const keysPresent = Object.keys(options.env || {}).filter(k => k.includes('KEY') || k.includes('TOKEN'));
+    logInfo(`[OpenCodeRunner] spawnProcess - custom environment key variables present: ${JSON.stringify(keysPresent)}`);
     if (process.platform === 'win32') {
       logInfo(`[OpenCodeRunner] Spawning win32 process`);
       return spawn(command, args, {

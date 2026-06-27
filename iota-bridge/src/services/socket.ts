@@ -53,6 +53,7 @@ export const initSocketIO = (server: HttpServer) => {
     logInfo(`Socket client connected: ${socket.id}`);
 
     const credentials = (socket.handshake.auth?.credentials || {}) as Record<string, string>;
+    logInfo(`Socket client credentials received for ${socket.id} (keys: ${JSON.stringify(Object.keys(credentials))})`);
     opencodeStore.setCredentials(socket.id, credentials);
 
     const emitRunStatus = (status: OpenCodeRunStatusEvent) => {
@@ -73,6 +74,8 @@ export const initSocketIO = (server: HttpServer) => {
     };
 
     const emitNormalized = (event: NormalizedOpenCodeEvent) => {
+      const convoId = event.type === 'run_status' ? event.status.conversationId : event.conversationId;
+      logInfo(`[Socket] emitNormalized - type=${event.type} conversationId=${convoId || 'unknown'}`);
       switch (event.type) {
         case 'message_delta':
           opencodeStore.appendAssistantDelta(event.conversationId, event.messageId, event.content, event.done);
