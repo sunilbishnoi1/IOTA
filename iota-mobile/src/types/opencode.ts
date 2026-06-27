@@ -92,6 +92,7 @@ export interface OpenCodeFileChange {
   additions: number;
   deletions: number;
   hunks: OpenCodeDiffHunk[];
+  createdAt: string;
 }
 
 export interface OpenCodeApprovalRequest {

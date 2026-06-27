@@ -137,9 +137,24 @@ export function normalizeOpenCodePayload(
     return '';
   };
 
+  const getVal = (keys: string[]): string | undefined => {
+    for (const k of keys) {
+      const v = valueAsString(event[k]);
+      if (v) return v;
+    }
+    if (event.part && typeof event.part === 'object' && event.part !== null) {
+      const p = event.part as Record<string, unknown>;
+      for (const k of keys) {
+        const v = valueAsString(p[k]);
+        if (v) return v;
+      }
+    }
+    return undefined;
+  };
+
   if (type === 'text_delta' || type === 'message_delta' || type === 'assistant_delta') {
     const content = extractText(event);
-    events.push({ type: 'message_delta', conversationId, messageId: assistantMessageId, content, done: Boolean(event.done) });
+    events.push({ type: 'message_delta', conversationId, messageId: assistantMessageId, content, done: Boolean(event.done || (event.part as any)?.done) });
     return events;
   }
 
@@ -160,32 +175,43 @@ export function normalizeOpenCodePayload(
     return events;
   }
 
-  if (type === 'tool_start' || type === 'tool' || type === 'tool_update' || type === 'tool_use') {
-    const tool = valueAsString(event.tool) || valueAsString(event.name);
+  if (type === 'tool_start' || type === 'tool' || type === 'tool_update' || type === 'tool_use' || type === 'tool_finish' || type === 'tool_completed' || type === 'tool_end' || type === 'tool_done') {
+    const tool = getVal(['tool', 'name']);
+    const isStart = type === 'tool_start' || type === 'tool_use';
+    const isFinish = type === 'tool_finish' || type === 'tool_completed' || type === 'tool_end' || type === 'tool_done';
+    const statusVal = getVal(['status']);
+    const status: OpenCodeToolActivity['status'] = isStart 
+      ? 'started' 
+      : isFinish 
+        ? (statusVal === 'failed' ? 'failed' : 'completed') 
+        : ((statusVal as OpenCodeToolActivity['status']) || 'running');
+
     const activity: OpenCodeToolActivity = {
       id: stableId('tool', event),
       conversationId,
-      label: valueAsString(event.label) || (tool ? `Running ${tool}` : 'Running tool'),
+      label: getVal(['label']) || (tool ? `Running ${tool}` : 'Running tool'),
       kind: mapToolKind(tool),
-      status: (type === 'tool_start' || type === 'tool_use') ? 'started' : ((valueAsString(event.status) as OpenCodeToolActivity['status']) || 'running'),
-      summary: valueAsString(event.summary) || valueAsString(event.input),
+      status,
+      summary: getVal(['summary', 'input']),
       startedAt: now(),
+      completedAt: isFinish ? now() : undefined,
     };
     events.push({ type: 'tool_activity', conversationId, activity });
     return events;
   }
 
   if (type === 'file_change' || type === 'file_modified' || type === 'patch') {
-    const patch = valueAsString(event.patch) || valueAsString(event.diff);
+    const patch = getVal(['patch', 'diff']);
     const parsed = patch ? parseUnifiedPatch(patch) : undefined;
     const change: OpenCodeFileChange = {
       id: stableId('change', event),
       conversationId,
-      filePath: valueAsString(event.filePath) || valueAsString(event.path) || parsed?.filePath || 'unknown',
-      changeType: (valueAsString(event.changeType) as OpenCodeFileChange['changeType']) || parsed?.changeType || 'modified',
-      additions: Number(event.additions ?? parsed?.additions ?? 0),
-      deletions: Number(event.deletions ?? parsed?.deletions ?? 0),
+      filePath: getVal(['filePath', 'path']) || parsed?.filePath || 'unknown',
+      changeType: (getVal(['changeType']) as OpenCodeFileChange['changeType']) || parsed?.changeType || 'modified',
+      additions: Number(event.additions ?? (event.part as any)?.additions ?? parsed?.additions ?? 0),
+      deletions: Number(event.deletions ?? (event.part as any)?.deletions ?? parsed?.deletions ?? 0),
       hunks: parsed?.hunks || [],
+      createdAt: now(),
     };
     events.push({ type: 'file_change', conversationId, change });
     return events;
@@ -195,9 +221,9 @@ export function normalizeOpenCodePayload(
     const approval: OpenCodeApprovalRequest = {
       id: stableId('approval', event),
       conversationId,
-      title: valueAsString(event.title) || 'Approval required',
-      description: valueAsString(event.description) || valueAsString(event.prompt) || 'OpenCode needs your approval to continue.',
-      riskLevel: (valueAsString(event.riskLevel) as OpenCodeApprovalRequest['riskLevel']) || 'medium',
+      title: getVal(['title']) || 'Approval required',
+      description: getVal(['description', 'prompt']) || 'OpenCode needs your approval to continue.',
+      riskLevel: (getVal(['riskLevel']) as OpenCodeApprovalRequest['riskLevel']) || 'medium',
       status: 'pending',
       createdAt: now(),
     };

@@ -11,6 +11,7 @@ import { LoginScreen } from './src/screens/LoginScreen';
 import { DashboardScreen } from './src/screens/DashboardScreen';
 import { ControlScreen } from './src/screens/ControlScreen';
 import { ShipScreen } from './src/screens/ShipScreen';
+import { SettingsScreen } from './src/screens/SettingsScreen';
 import { Navigation, TabType } from './src/components/Navigation';
 import { secureStoreService } from './src/services/secureStore';
 import { Theme } from './src/styles/theme';
@@ -25,6 +26,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
   const [activeCodespace, setActiveCodespace] = useState<CodespaceVM | null>(null);
   const [bridgeUrl, setBridgeUrl] = useState<string>('http://localhost:3000');
+  const [keepAliveDuration, setKeepAliveDuration] = useState<number>(0);
 
   useEffect(() => {
     async function init() {
@@ -32,6 +34,11 @@ export default function App() {
         const savedUrl = await secureStoreService.getBridgeUrl();
         if (savedUrl) {
           setBridgeUrl(savedUrl);
+        }
+
+        const savedKeepAlive = await secureStoreService.getKeepAliveDuration();
+        if (savedKeepAlive !== null) {
+          setKeepAliveDuration(savedKeepAlive);
         }
 
         const token = await secureStoreService.getGithubToken();
@@ -104,28 +111,44 @@ export default function App() {
     );
   }
 
-  // Render active screen
-  const renderActiveScreen = () => {
-    switch (activeTab) {
-      case 'dashboard':
-        return (
-          <DashboardScreen
-            user={user}
-            bridgeUrl={bridgeUrl}
-            onChangeBridgeUrl={async (url) => {
-              setBridgeUrl(url);
-              await secureStoreService.saveBridgeUrl(url);
-            }}
-            onSelectCodespace={handleSelectCodespace}
-            onLogout={handleLogout}
-          />
-        );
-      case 'terminal':
-        if (!activeCodespace) return null;
-        return (
+  return (
+    <View style={styles.container}>
+      <View style={[styles.screenContainer, { display: activeTab === 'dashboard' ? 'flex' : 'none' }]}>
+        <DashboardScreen
+          user={user}
+          bridgeUrl={bridgeUrl}
+          onSelectCodespace={handleSelectCodespace}
+          onOpenSettings={() => setActiveTab('settings')}
+        />
+      </View>
+
+      <View style={[styles.screenContainer, { display: activeTab === 'settings' ? 'flex' : 'none' }]}>
+        <SettingsScreen
+          user={user}
+          bridgeUrl={bridgeUrl}
+          keepAliveDuration={keepAliveDuration}
+          onChangeKeepAliveDuration={async (duration) => {
+            setKeepAliveDuration(duration);
+            await secureStoreService.saveKeepAliveDuration(duration);
+          }}
+          onChangeBridgeUrl={async (url) => {
+            setBridgeUrl(url);
+            await secureStoreService.saveBridgeUrl(url);
+          }}
+          isVisible={activeTab === 'settings'}
+          onLogout={handleLogout}
+          onBack={() => setActiveTab('dashboard')}
+        />
+      </View>
+
+      {activeCodespace && (
+        <View style={[styles.screenContainer, { display: activeTab === 'terminal' ? 'flex' : 'none' }]}>
           <ControlScreen
             user={user}
             activeCodespace={activeCodespace}
+            bridgeUrl={bridgeUrl}
+            keepAliveDuration={keepAliveDuration}
+            isVisible={activeTab === 'terminal'}
             onBackToDashboard={() => {
               setActiveTab('dashboard');
             }}
@@ -133,23 +156,21 @@ export default function App() {
               setActiveTab('ship');
             }}
           />
-        );
-      case 'ship':
-        if (!activeCodespace) return null;
-        return (
+        </View>
+      )}
+
+      {activeCodespace && (
+        <View style={[styles.screenContainer, { display: activeTab === 'ship' ? 'flex' : 'none' }]}>
           <ShipScreen
             user={user}
             activeCodespace={activeCodespace}
+            isVisible={activeTab === 'ship'}
+            onBackToDashboard={() => {
+              setActiveTab('dashboard');
+            }}
           />
-        );
-      default:
-        return null;
-    }
-  };
-
-  return (
-    <View style={styles.container}>
-      {renderActiveScreen()}
+        </View>
+      )}
       
       {/* Floating Bottom Navigation Tab Bar */}
       {activeTab !== 'terminal' && (
@@ -174,6 +195,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Theme.colors.background,
+  },
+  screenContainer: {
+    flex: 1,
   },
   placeholderContainer: {
     flex: 1,

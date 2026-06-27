@@ -128,9 +128,50 @@ describe('normalizeOpenCodePayload', () => {
   it('falls back to assistantMessageId (msgId) when no explicit ID is present', () => {
     const payload = { type: 'text', content: 'test without explicit id' };
     const events = normalizeOpenCodePayload(payload, convId, msgId);
+    expect(events).toHaveLength(1);
     expect(events[0].type).toBe('message');
     if (events[0].type === 'message') {
       expect(events[0].message.id).toBe(msgId);
+    }
+  });
+
+  it('normalizes tool_activity events with root properties', () => {
+    const payload = {
+      type: 'tool_start',
+      id: 'tool-call-1',
+      tool: 'ripgrep_search',
+      input: 'search query',
+    };
+    const events = normalizeOpenCodePayload(payload, convId, msgId);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('tool_activity');
+    if (events[0].type === 'tool_activity') {
+      expect(events[0].activity.id).toBe('tool-call-1');
+      expect(events[0].activity.label).toBe('Running ripgrep_search');
+      expect(events[0].activity.status).toBe('started');
+      expect(events[0].activity.summary).toBe('search query');
+    }
+  });
+
+  it('normalizes tool_activity events with nested part properties and completion status', () => {
+    const payload = {
+      type: 'tool_finish',
+      part: {
+        tool_call_id: 'tool-call-1',
+        name: 'ripgrep_search',
+        status: 'completed',
+        summary: 'found 5 matches',
+      },
+    };
+    const events = normalizeOpenCodePayload(payload, convId, msgId);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('tool_activity');
+    if (events[0].type === 'tool_activity') {
+      expect(events[0].activity.id).toBe('tool-call-1');
+      expect(events[0].activity.label).toBe('Running ripgrep_search');
+      expect(events[0].activity.status).toBe('completed');
+      expect(events[0].activity.summary).toBe('found 5 matches');
+      expect(events[0].activity.completedAt).toBeDefined();
     }
   });
 });

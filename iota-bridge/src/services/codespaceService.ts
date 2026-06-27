@@ -82,6 +82,114 @@ export async function checkBridgeReachable(url: string, token: string, retries =
   return false;
 }
 
+interface ReachabilityCacheEntry {
+  isReachable: boolean;
+  lastChecked: number;
+  checkingPromise?: Promise<boolean>;
+}
+
+const reachabilityCache = new Map<string, ReachabilityCacheEntry>();
+const CACHE_TTL_MS = 15000; // 15 seconds
+
+export async function getOrCheckReachability(name: string, url: string, token: string, force = false): Promise<boolean> {
+  const now = Date.now();
+  const cached = reachabilityCache.get(name);
+  
+  if (!force && cached && (now - cached.lastChecked < CACHE_TTL_MS)) {
+    return cached.isReachable;
+  }
+  
+  if (!force && cached && cached.checkingPromise) {
+    return cached.checkingPromise;
+  }
+  
+  const checkingPromise = checkBridgeReachable(url, token).then((isReachable) => {
+    reachabilityCache.set(name, {
+      isReachable,
+      lastChecked: Date.now(),
+    });
+    return isReachable;
+  }).catch((err) => {
+    reachabilityCache.set(name, {
+      isReachable: false,
+      lastChecked: Date.now(),
+    });
+    return false;
+  });
+  
+  reachabilityCache.set(name, {
+    isReachable: cached?.isReachable || false,
+    lastChecked: cached?.lastChecked || 0,
+    checkingPromise,
+  });
+  
+  return checkingPromise;
+}
+
+let selfKeepAliveDuration = 0; // In minutes, 0 means disabled
+let selfKeepAliveExpiresAt = 0; // Timestamp
+let selfKeepAliveToken = '';
+let selfKeepAliveInterval: NodeJS.Timeout | null = null;
+
+export function registerSelfKeepAlive(token: string, durationMinutes: number) {
+  selfKeepAliveToken = token;
+  const maxDuration = 480; // 8 hours cap
+  selfKeepAliveDuration = Math.min(durationMinutes, maxDuration);
+  
+  if (selfKeepAliveDuration <= 0) {
+    selfKeepAliveExpiresAt = 0;
+    console.log('[Keep-Alive Manager] Keep-alive disabled.');
+    return;
+  }
+  
+  selfKeepAliveExpiresAt = Date.now() + selfKeepAliveDuration * 60000;
+  console.log(`[Keep-Alive Manager] Keep-alive configured for ${selfKeepAliveDuration} minutes (capped to 8 hours max). Expiry: ${new Date(selfKeepAliveExpiresAt).toISOString()}`);
+}
+
+export function pokeSelfKeepAlive() {
+  if (selfKeepAliveDuration > 0) {
+    selfKeepAliveExpiresAt = Date.now() + selfKeepAliveDuration * 60000;
+    console.log(`[Keep-Alive Manager] Active user activity. Expiry reset to: ${new Date(selfKeepAliveExpiresAt).toISOString()}`);
+  }
+}
+
+export function startKeepAliveBackgroundWorker() {
+  if (selfKeepAliveInterval) return;
+  
+  const pingIntervalMs = 600000; // 10 minutes
+  console.log(`[Keep-Alive Manager] Starting background worker (ping interval: 10 minutes)...`);
+  
+  selfKeepAliveInterval = setInterval(async () => {
+    const name = process.env.CODESPACE_NAME;
+    if (!name) {
+      return;
+    }
+    
+    const now = Date.now();
+    if (now >= selfKeepAliveExpiresAt) {
+      if (selfKeepAliveDuration > 0) {
+        console.log('[Keep-Alive Manager] Keep-alive period expired. Letting Codespace sleep naturally.');
+        selfKeepAliveDuration = 0;
+      }
+      return;
+    }
+    
+    const url = getConnectionUrl(name);
+    console.log(`[Keep-Alive Manager] Performing self-ping for keepalive to: ${url}`);
+    
+    try {
+      const isReachable = await checkBridgeReachable(url, selfKeepAliveToken, 1);
+      reachabilityCache.set(name, {
+        isReachable,
+        lastChecked: Date.now(),
+      });
+      console.log(`[Keep-Alive Manager] Self-ping status: ${isReachable ? 'SUCCESS' : 'FAILED'}`);
+    } catch (err: any) {
+      console.error('[Keep-Alive Manager] Error during self-ping:', err.message || err);
+    }
+  }, pingIntervalMs);
+}
+
 /**
  * Lists all repositories for the authenticated user.
  */
@@ -124,7 +232,7 @@ export const listUserCodespaces = async (token: string): Promise<CodespaceVM[]> 
           // Reachable by definition since we are running this bridge server inside it
           return cs;
         }
-        const isReachable = await checkBridgeReachable(cs.connectionUrl, token);
+        const isReachable = await getOrCheckReachability(cs.id, cs.connectionUrl, token, false);
         if (!isReachable) {
           return { ...cs, status: 'starting' as CodespaceStatus };
         }
@@ -153,7 +261,7 @@ export const startUserCodespace = async (token: string, name: string): Promise<C
     if (process.env.CODESPACE_NAME && cs.name === process.env.CODESPACE_NAME) {
       // Reachable by definition
     } else {
-      const isReachable = await checkBridgeReachable(connectionUrl, token);
+      const isReachable = await getOrCheckReachability(cs.name, connectionUrl, token, true);
       if (!isReachable) {
         status = 'starting';
       }
@@ -188,7 +296,7 @@ export const getUserCodespace = async (token: string, name: string): Promise<Cod
     if (process.env.CODESPACE_NAME && cs.name === process.env.CODESPACE_NAME) {
       // Reachable by definition
     } else {
-      const isReachable = await checkBridgeReachable(connectionUrl, token);
+      const isReachable = await getOrCheckReachability(cs.name, connectionUrl, token, true);
       if (!isReachable) {
         status = 'starting';
       }

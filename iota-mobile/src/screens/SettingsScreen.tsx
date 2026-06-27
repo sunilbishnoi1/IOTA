@@ -1,0 +1,568 @@
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  Image,
+  TouchableOpacity,
+  Platform,
+  TextInput,
+  KeyboardAvoidingView,
+  ScrollView,
+  TouchableWithoutFeedback,
+  Keyboard,
+  Alert,
+  BackHandler,
+} from 'react-native';
+import { MaterialIcons } from '@expo/vector-icons';
+import { ShaderGradient } from '../components/ShaderGradient';
+import { Theme } from '../styles/theme';
+
+interface SettingsScreenProps {
+  user: { token: string; username?: string; avatarUrl?: string };
+  bridgeUrl: string;
+  onChangeBridgeUrl: (url: string) => void;
+  keepAliveDuration: number;
+  onChangeKeepAliveDuration: (duration: number) => void;
+  isVisible: boolean;
+  onLogout: () => void;
+  onBack: () => void;
+}
+
+export const SettingsScreen: React.FC<SettingsScreenProps> = ({
+  user,
+  bridgeUrl,
+  onChangeBridgeUrl,
+  keepAliveDuration,
+  onChangeKeepAliveDuration,
+  isVisible,
+  onLogout,
+  onBack,
+}) => {
+  const [urlInput, setUrlInput] = useState<string>(bridgeUrl);
+  const [isSaved, setIsSaved] = useState<boolean>(false);
+
+  const [selectedOption, setSelectedOption] = useState<number>(0);
+  const [customValue, setCustomValue] = useState<string>('');
+  const [customUnit, setCustomUnit] = useState<'minutes' | 'hours'>('minutes');
+  const [isKeepAliveSaved, setIsKeepAliveSaved] = useState<boolean>(false);
+
+  useEffect(() => {
+    setUrlInput(bridgeUrl);
+  }, [bridgeUrl]);
+
+  useEffect(() => {
+    if (keepAliveDuration === 0) {
+      setSelectedOption(0);
+    } else if ([30, 60, 120, 240].includes(keepAliveDuration)) {
+      setSelectedOption(keepAliveDuration);
+    } else {
+      setSelectedOption(-1);
+      if (keepAliveDuration % 60 === 0) {
+        setCustomValue((keepAliveDuration / 60).toString());
+        setCustomUnit('hours');
+      } else {
+        setCustomValue(keepAliveDuration.toString());
+        setCustomUnit('minutes');
+      }
+    }
+  }, [keepAliveDuration]);
+
+  useEffect(() => {
+    if (!isVisible) return;
+
+    const handleBackButton = () => {
+      onBack();
+      return true; // Prevents default behavior
+    };
+
+    const backHandler = BackHandler.addEventListener(
+      'hardwareBackPress',
+      handleBackButton
+    );
+
+    return () => backHandler.remove();
+  }, [isVisible, onBack]);
+
+  const handleSaveUrl = () => {
+    onChangeBridgeUrl(urlInput);
+    setIsSaved(true);
+    setTimeout(() => setIsSaved(false), 2000);
+  };
+
+  const handleSaveKeepAlive = () => {
+    let duration = 0;
+    if (selectedOption !== -1) {
+      duration = selectedOption;
+    } else {
+      const parsed = parseInt(customValue, 10);
+      if (isNaN(parsed) || parsed <= 0) {
+        Alert.alert('Invalid Duration', 'Please enter a valid positive number for custom duration.');
+        return;
+      }
+      duration = customUnit === 'hours' ? parsed * 60 : parsed;
+    }
+
+    const MAX_DURATION = 480; // 8 hours cap
+    if (duration > MAX_DURATION) {
+      Alert.alert(
+        'Duration Capped',
+        'To prevent excessive resource and billing usage, the keep-alive duration has been capped at the maximum allowed limit of 8 hours.'
+      );
+      duration = MAX_DURATION;
+      setSelectedOption(-1);
+      setCustomValue('8');
+      setCustomUnit('hours');
+    }
+
+    onChangeKeepAliveDuration(duration);
+    setIsKeepAliveSaved(true);
+    setTimeout(() => setIsKeepAliveSaved(false), 2000);
+  };
+
+  return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      style={styles.container}
+    >
+      <ShaderGradient />
+      
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+        <View style={styles.inner}>
+          {/* Header Row */}
+          <View style={styles.header}>
+            <TouchableOpacity style={styles.backButton} onPress={onBack}>
+              <MaterialIcons name="arrow-back" size={24} color="#fff" />
+            </TouchableOpacity>
+            <Text style={styles.headerTitle}>Settings</Text>
+            <View style={styles.headerPlaceholder} />
+          </View>
+
+          <ScrollView
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+          >
+            {/* Profile Section */}
+            <View style={styles.profileCard}>
+              {user.avatarUrl ? (
+                <Image source={{ uri: user.avatarUrl }} style={styles.avatar} />
+              ) : (
+                <View style={styles.avatarPlaceholder}>
+                  <MaterialIcons name="person" size={48} color="#fff" />
+                </View>
+              )}
+              <Text style={styles.username}>@{user.username || 'developer'}</Text>
+              <View style={styles.githubBadge}>
+                <Text style={styles.githubBadgeText}>GITHUB ACCOUNT</Text>
+              </View>
+            </View>
+
+            {/* Connection Section */}
+            <View style={styles.sectionCard}>
+              <View style={styles.sectionHeader}>
+                <MaterialIcons name="lan" size={20} color={Theme.colors.primary.glow} />
+                <Text style={styles.sectionTitle}>BRIDGE SERVER</Text>
+              </View>
+              
+              <Text style={styles.description}>
+                Set your local bridge server endpoint to connect and fetch container environments.
+              </Text>
+
+              <View style={styles.configInputRow}>
+                <TextInput
+                  style={styles.configInput}
+                  value={urlInput}
+                  onChangeText={(text) => {
+                    setUrlInput(text);
+                    setIsSaved(false);
+                  }}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  placeholder="http://localhost:3000"
+                  placeholderTextColor={Theme.colors.text.muted}
+                />
+                <TouchableOpacity
+                  style={[
+                    styles.saveButton,
+                    isSaved && styles.saveButtonSuccess
+                  ]}
+                  onPress={handleSaveUrl}
+                >
+                  {isSaved ? (
+                    <MaterialIcons name="check" size={20} color="#fff" />
+                  ) : (
+                    <Text style={styles.saveButtonText}>Connect</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Keep-Alive Section */}
+            <View style={styles.sectionCard}>
+              <View style={styles.sectionHeader}>
+                <MaterialIcons name="timer" size={20} color={Theme.colors.secondary.glow} />
+                <Text style={styles.sectionTitle}>CODESPACE KEEP-ALIVE</Text>
+              </View>
+              
+              <Text style={styles.description}>
+                Configure how long to keep your codespace active and prevent websocket disconnection when idle.
+              </Text>
+
+              <View style={styles.optionsContainer}>
+                {[
+                  { label: 'Default', value: 0 },
+                  { label: '30m', value: 30 },
+                  { label: '1h', value: 60 },
+                  { label: '2h', value: 120 },
+                  { label: '4h', value: 240 },
+                  { label: 'Custom', value: -1 },
+                ].map((opt) => {
+                  const isSelected = selectedOption === opt.value;
+                  return (
+                    <TouchableOpacity
+                      key={opt.label}
+                      style={[
+                        styles.optionButton,
+                        isSelected && styles.optionButtonActive
+                      ]}
+                      onPress={() => setSelectedOption(opt.value)}
+                    >
+                      <Text style={[
+                        styles.optionText,
+                        isSelected && styles.optionTextActive
+                      ]}>
+                        {opt.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              {selectedOption === -1 && (
+                <View style={styles.customInputRow}>
+                  <TextInput
+                    style={styles.customInput}
+                    value={customValue}
+                    onChangeText={setCustomValue}
+                    keyboardType="numeric"
+                    placeholder="Enter value"
+                    placeholderTextColor={Theme.colors.text.muted}
+                  />
+                  <View style={styles.unitToggleContainer}>
+                    <TouchableOpacity
+                      style={[
+                        styles.unitButton,
+                        customUnit === 'minutes' && styles.unitButtonActive
+                      ]}
+                      onPress={() => setCustomUnit('minutes')}
+                    >
+                      <Text style={[
+                        styles.unitText,
+                        customUnit === 'minutes' && styles.unitTextActive
+                      ]}>Min</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.unitButton,
+                        customUnit === 'hours' && styles.unitButtonActive
+                      ]}
+                      onPress={() => setCustomUnit('hours')}
+                    >
+                      <Text style={[
+                        styles.unitText,
+                        customUnit === 'hours' && styles.unitTextActive
+                      ]}>Hrs</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+
+              <TouchableOpacity
+                style={[
+                  styles.saveButtonKeepAlive,
+                  isKeepAliveSaved && styles.saveButtonSuccess
+                ]}
+                onPress={handleSaveKeepAlive}
+              >
+                {isKeepAliveSaved ? (
+                  <View style={styles.saveButtonContent}>
+                    <MaterialIcons name="check" size={18} color="#fff" />
+                    <Text style={styles.saveButtonTextKeepAlive}>Saved</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.saveButtonTextKeepAlive}>Save Keep-Alive</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+
+            {/* Actions Section */}
+            <View style={styles.sectionCard}>
+              <View style={styles.sectionHeader}>
+                <MaterialIcons name="account-circle" size={20} color={Theme.colors.accent.glow} />
+                <Text style={styles.sectionTitle}>ACCOUNT ACTIONS</Text>
+              </View>
+
+              <Text style={styles.description}>
+                Sign out of your active workspace and GitHub developer profile.
+              </Text>
+
+              <TouchableOpacity style={styles.logoutButton} onPress={onLogout}>
+                <MaterialIcons name="logout" size={18} color="#fff" style={styles.logoutIcon} />
+                <Text style={styles.logoutButtonText}>Sign Out</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        </View>
+      </TouchableWithoutFeedback>
+    </KeyboardAvoidingView>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: Theme.colors.background,
+  },
+  inner: {
+    flex: 1,
+    paddingTop: Platform.OS === 'ios' ? 60 : 40,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 24,
+    marginBottom: 20,
+  },
+  backButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    borderColor: Theme.colors.border,
+    borderWidth: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  headerTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: Theme.colors.text.primary,
+    letterSpacing: 0.5,
+  },
+  headerPlaceholder: {
+    width: 40,
+    height: 40,
+  },
+  scrollContent: {
+    paddingHorizontal: 24,
+    paddingBottom: 100,
+  },
+  profileCard: {
+    ...Theme.glassmorphism,
+    padding: 24,
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  avatar: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderWidth: 2,
+    marginBottom: 16,
+    shadowColor: Theme.colors.primary.glow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+  },
+  avatarPlaceholder: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: Theme.colors.card,
+    borderColor: Theme.colors.border,
+    borderWidth: 1.5,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  username: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: Theme.colors.text.primary,
+    marginBottom: 8,
+  },
+  githubBadge: {
+    backgroundColor: 'rgba(99, 102, 241, 0.15)',
+    borderColor: 'rgba(99, 102, 241, 0.3)',
+    borderWidth: 1,
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+  },
+  githubBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: Theme.colors.primary.glow,
+    letterSpacing: 1,
+  },
+  sectionCard: {
+    ...Theme.glassmorphism,
+    padding: 20,
+    marginBottom: 20,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  sectionTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: Theme.colors.text.secondary,
+    letterSpacing: 1.5,
+    marginLeft: 8,
+  },
+  description: {
+    fontSize: 13,
+    color: Theme.colors.text.muted,
+    lineHeight: 18,
+    marginBottom: 16,
+  },
+  configInputRow: {
+    flexDirection: 'row',
+  },
+  configInput: {
+    flex: 1,
+    height: 44,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    borderColor: Theme.colors.border,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    color: '#fff',
+    fontSize: 14,
+    marginRight: 10,
+  },
+  saveButton: {
+    backgroundColor: Theme.colors.primary.default,
+    borderRadius: 8,
+    paddingHorizontal: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    minWidth: 90,
+  },
+  saveButtonSuccess: {
+    backgroundColor: Theme.colors.secondary.default,
+  },
+  saveButtonText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  logoutButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 44,
+    backgroundColor: Theme.colors.accent.default,
+    borderRadius: 8,
+    marginTop: 4,
+  },
+  logoutIcon: {
+    marginRight: 8,
+  },
+  logoutButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  optionsContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 16,
+  },
+  optionButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    borderColor: Theme.colors.border,
+    borderWidth: 1,
+    minWidth: 70,
+    alignItems: 'center',
+  },
+  optionButtonActive: {
+    backgroundColor: 'rgba(99, 102, 241, 0.15)',
+    borderColor: Theme.colors.primary.glow,
+  },
+  optionText: {
+    fontSize: 13,
+    color: Theme.colors.text.secondary,
+    fontWeight: '600',
+  },
+  optionTextActive: {
+    color: Theme.colors.primary.glow,
+  },
+  customInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+    gap: 10,
+  },
+  customInput: {
+    flex: 1,
+    height: 40,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    borderColor: Theme.colors.border,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    color: '#fff',
+    fontSize: 14,
+  },
+  unitToggleContainer: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+    padding: 2,
+  },
+  unitButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  unitButtonActive: {
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  unitText: {
+    fontSize: 12,
+    color: Theme.colors.text.muted,
+    fontWeight: '600',
+  },
+  unitTextActive: {
+    color: '#fff',
+  },
+  saveButtonKeepAlive: {
+    backgroundColor: Theme.colors.primary.default,
+    borderRadius: 8,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  saveButtonTextKeepAlive: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  saveButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+});

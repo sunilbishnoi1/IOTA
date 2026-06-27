@@ -57,6 +57,15 @@ export const secureStoreService = {
     return await SecureStore.getItemAsync('iota_original_bridge_url');
   },
 
+  async saveKeepAliveDuration(duration: number): Promise<void> {
+    await SecureStore.setItemAsync('iota_keep_alive_duration', duration.toString());
+  },
+
+  async getKeepAliveDuration(): Promise<number | null> {
+    const val = await SecureStore.getItemAsync('iota_keep_alive_duration');
+    return val !== null ? parseInt(val, 10) : null;
+  },
+
   async getAllApiKeys(): Promise<Record<string, string>> {
     const keys: Record<string, string> = {};
     const providers = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GROQ_API_KEY', 'OPENROUTER_API_KEY'];

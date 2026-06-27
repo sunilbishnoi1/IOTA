@@ -25,9 +25,8 @@ import { secureStoreService } from '../services/secureStore';
 interface DashboardScreenProps {
   user: { token: string; username?: string; avatarUrl?: string };
   bridgeUrl: string;
-  onChangeBridgeUrl: (url: string) => void;
   onSelectCodespace: (vm: CodespaceVM) => void;
-  onLogout: () => void;
+  onOpenSettings: () => void;
 }
 
 // Configurable API URL for bridge server (resolves emulator vs localhost vs custom network IP)
@@ -60,15 +59,12 @@ const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs = 1
 export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   user,
   bridgeUrl,
-  onChangeBridgeUrl,
   onSelectCodespace,
-  onLogout,
+  onOpenSettings,
 }) => {
   const [codespaces, setCodespaces] = useState<CodespaceVM[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
-  const [urlInput, setUrlInput] = useState<string>(bridgeUrl);
-  const [showConfig, setShowConfig] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [repositories, setRepositories] = useState<GitHubRepository[]>([]);
   const [reposLoading, setReposLoading] = useState<boolean>(false);
@@ -259,7 +255,6 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   }, [bridgeUrl, user.token]);
 
   useEffect(() => {
-    setUrlInput(bridgeUrl);
     fetchCodespaces(false);
   }, [bridgeUrl]);
 
@@ -437,7 +432,11 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
     <View style={styles.header}>
       {/* Top greeting + profile row */}
       <View style={styles.profileRow}>
-        <View style={styles.userContainer}>
+        <TouchableOpacity
+          style={styles.userContainer}
+          onPress={onOpenSettings}
+          activeOpacity={0.7}
+        >
           {user.avatarUrl ? (
             <Image source={{ uri: user.avatarUrl }} style={styles.avatar} />
           ) : (
@@ -449,62 +448,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
             <Text style={styles.welcomeLabel}>WELCOME BACK</Text>
             <Text style={styles.username}>@{user.username || 'developer'}</Text>
           </View>
-        </View>
-
-        <View style={styles.headerActions}>
-          <TouchableOpacity style={styles.configButton} onPress={() => setShowConfig(!showConfig)}>
-            <MaterialIcons name="settings" size={20} color={showConfig ? Theme.colors.primary.default : Theme.colors.text.secondary} />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.logoutButton} onPress={onLogout}>
-            <MaterialIcons name="logout" size={20} color={Theme.colors.accent.default} />
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {/* Config URL drawer */}
-      {showConfig && (
-        <View style={styles.configContainer}>
-          <Text style={styles.configLabel}>BRIDGE SERVER ENDPOINT</Text>
-          <View style={styles.configInputRow}>
-            <TextInput
-              style={styles.configInput}
-              value={urlInput}
-              onChangeText={setUrlInput}
-              autoCapitalize="none"
-              autoCorrect={false}
-              placeholder="http://localhost:3000"
-              placeholderTextColor={Theme.colors.text.muted}
-            />
-            <TouchableOpacity
-              style={styles.saveButton}
-              onPress={() => {
-                onChangeBridgeUrl(urlInput);
-                setShowConfig(false);
-              }}
-            >
-              <Text style={styles.saveButtonText}>Connect</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
-
-      {/* Billing Limits Section */}
-      <View style={styles.limitsCard}>
-        <View style={styles.limitsTitleRow}>
-          <View style={styles.limitsLabelContainer}>
-            <MaterialIcons name="query-builder" size={16} color={Theme.colors.primary.glow} />
-            <Text style={styles.limitsLabel}>COMPUTE HOURS LIMIT</Text>
-          </View>
-          <Text style={styles.limitsRatio}>
-            {freeHours} / {totalHours} hrs remaining
-          </Text>
-        </View>
-        <View style={styles.progressBarBg}>
-          <View style={[styles.progressBarFill, { width: `${usageRatio * 100}%` }]} />
-        </View>
-        <Text style={styles.limitsWarning}>
-          GitHub Codespaces free tier usage resets monthly.
-        </Text>
+        </TouchableOpacity>
       </View>
 
       <Text style={styles.matrixTitle}>Container Matrix</Text>
@@ -665,70 +609,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: Theme.colors.text.primary,
-  },
-  headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  configButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderColor: Theme.colors.border,
-    borderWidth: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 10,
-  },
-  logoutButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderColor: Theme.colors.border,
-    borderWidth: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  configContainer: {
-    ...Theme.glassmorphism,
-    padding: 16,
-    marginBottom: 20,
-  },
-  configLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: Theme.colors.text.secondary,
-    letterSpacing: 1,
-    marginBottom: 8,
-  },
-  configInputRow: {
-    flexDirection: 'row',
-  },
-  configInput: {
-    flex: 1,
-    height: 40,
-    backgroundColor: 'rgba(0, 0, 0, 0.4)',
-    borderColor: Theme.colors.border,
-    borderWidth: 1,
-    borderRadius: 6,
-    paddingHorizontal: 12,
-    color: '#fff',
-    fontSize: 14,
-    marginRight: 10,
-  },
-  saveButton: {
-    backgroundColor: Theme.colors.primary.default,
-    borderRadius: 6,
-    paddingHorizontal: 16,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  saveButtonText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '600',
   },
   limitsCard: {
     ...Theme.glassmorphism,

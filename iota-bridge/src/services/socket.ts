@@ -5,6 +5,7 @@ import { normalizeOpenCodePayload } from './opencodeEvents';
 import { opencodeRunner, OpenCodeRunHandle } from './opencode';
 import { opencodeStore } from './opencodeStore';
 import { logInfo, logError } from './logger';
+import { registerSelfKeepAlive, pokeSelfKeepAlive } from './codespaceService';
 import {
   NormalizedOpenCodeEvent,
   OpenCodeApprovalDecision,
@@ -121,6 +122,7 @@ export const initSocketIO = (server: HttpServer) => {
       }));
 
     socket.on('opencode:install', async () => {
+      pokeSelfKeepAlive();
       socket.emit('opencode:capability', {
         status: 'installing',
         details: 'Installing OpenCode...',
@@ -142,6 +144,7 @@ export const initSocketIO = (server: HttpServer) => {
     });
 
     socket.on('opencode:message', async (payload: OpenCodeMessageRequest) => {
+      pokeSelfKeepAlive();
       const content = payload?.content?.trim();
       if (!content) {
         logError(`[Socket] Received empty prompt from socket ${socket.id}`);
@@ -388,6 +391,7 @@ export const initSocketIO = (server: HttpServer) => {
     });
 
     socket.on('opencode:approval', (payload: OpenCodeApprovalDecision) => {
+      pokeSelfKeepAlive();
       logInfo(`[Socket] Received approval event for conversation ${payload.conversationId}, approvalId=${payload.approvalId}, decision=${payload.decision}`);
       const approval = opencodeStore.resolveApproval(payload);
       if (!approval) {
@@ -418,6 +422,7 @@ export const initSocketIO = (server: HttpServer) => {
     });
 
     socket.on('opencode:sync', async (payload: OpenCodeSyncRequest = {}) => {
+      pokeSelfKeepAlive();
       let snapshot = opencodeStore.getSnapshot(payload.conversationId);
       if (!snapshot) {
         await opencodeRunner.syncFromCliSessions(payload.conversationId);
@@ -427,6 +432,7 @@ export const initSocketIO = (server: HttpServer) => {
     });
 
     socket.on('opencode:stop', (payload: OpenCodeStopRequest) => {
+      pokeSelfKeepAlive();
       opencodeRunner.stopActiveRun();
       opencodeStore.finishRequest(payload.conversationId, true, { stopped: true, errorSummary: 'OpenCode run stopped.' });
 
@@ -441,6 +447,15 @@ export const initSocketIO = (server: HttpServer) => {
 
       const snapshot = opencodeStore.getSnapshot(payload.conversationId);
       if (snapshot) io.emit('opencode:snapshot', { conversation: snapshot });
+    });
+
+    socket.on('opencode:keepalive', (payload: { durationMinutes: number }) => {
+      const duration = payload?.durationMinutes;
+      logInfo(`[Socket] Received opencode:keepalive durationMinutes=${duration} from socket ${socket.id}`);
+      const token = socket.handshake.query.token as string || socket.handshake.auth?.token as string;
+      if (token && typeof duration === 'number') {
+        registerSelfKeepAlive(token, duration);
+      }
     });
 
     socket.on('disconnect', () => {

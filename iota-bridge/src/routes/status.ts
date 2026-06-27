@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
-import { listUserCodespaces, startUserCodespace, getUserCodespace, listUserRepos, createCodespace, stopCodespace, deleteCodespace } from '../services/codespaceService';
+import { listUserCodespaces, startUserCodespace, getUserCodespace, listUserRepos, createCodespace, stopCodespace, deleteCodespace, registerSelfKeepAlive, pokeSelfKeepAlive } from '../services/codespaceService';
 import { getOctokitClient } from '../services/github';
 import { getRepoPath, getBranch } from '../services/git';
 import { opencodeRunner } from '../services/opencode';
@@ -10,6 +10,7 @@ const router = Router();
 // GET /api/status - Retrieve bridge/workspace status and OpenCode capability.
 router.get('/status', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
+    pokeSelfKeepAlive();
     const [repository, branch, liveCapability] = await Promise.all([
       getRepoPath().catch(() => process.env.GITHUB_REPOSITORY || 'sunilbishnoi1/IOTA'),
       getBranch().catch(() => 'main'),
@@ -38,6 +39,28 @@ router.get('/status', requireAuth, async (req: AuthenticatedRequest, res: Respon
   } catch (error: any) {
     console.error('Failed to get status:', error);
     res.status(500).json({ error: 'Failed to get status' });
+  }
+});
+
+// POST /api/keepalive - Set keep-alive duration for this codespace
+router.post('/keepalive', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const token = req.userToken!;
+    const { durationMinutes } = req.body;
+    
+    if (typeof durationMinutes !== 'number') {
+      return res.status(400).json({ error: 'durationMinutes must be a number' });
+    }
+
+    registerSelfKeepAlive(token, durationMinutes);
+
+    res.json({
+      success: true,
+      message: `Keepalive registered successfully for ${durationMinutes} minutes`,
+    });
+  } catch (error: any) {
+    console.error('Failed to register keepalive:', error);
+    res.status(500).json({ error: 'Failed to register keepalive' });
   }
 });
 

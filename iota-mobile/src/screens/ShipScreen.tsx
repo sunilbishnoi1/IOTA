@@ -10,6 +10,7 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  BackHandler,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { DiffViewer } from '../components/DiffViewer';
@@ -19,10 +20,18 @@ import { Theme } from '../styles/theme';
 interface ShipScreenProps {
   user: { token: string; username?: string; avatarUrl?: string };
   activeCodespace: CodespaceVM;
+  isVisible: boolean;
+  onBackToDashboard: () => void;
   onSelectCodespace?: (codespace: CodespaceVM) => void;
 }
 
-export const ShipScreen: React.FC<ShipScreenProps> = ({ user, activeCodespace, onSelectCodespace }) => {
+export const ShipScreen: React.FC<ShipScreenProps> = ({
+  user,
+  activeCodespace,
+  isVisible,
+  onBackToDashboard,
+  onSelectCodespace,
+}) => {
   const [selectedCodespace, setSelectedCodespace] = useState<CodespaceVM>(activeCodespace);
   const bridgeUrl = selectedCodespace.connectionUrl;
   const [codespaces, setCodespaces] = useState<CodespaceVM[]>([activeCodespace]);
@@ -34,6 +43,22 @@ export const ShipScreen: React.FC<ShipScreenProps> = ({ user, activeCodespace, o
   const [changedFiles, setChangedFiles] = useState<FileDiff[]>([]);
   const [selectedFile, setSelectedFile] = useState<FileDiff | null>(null);
   const [commitMessage, setCommitMessage] = useState<string>('');
+
+  useEffect(() => {
+    if (!isVisible) return;
+
+    const handleBackButton = () => {
+      onBackToDashboard();
+      return true; // Prevents default behavior
+    };
+
+    const backHandler = BackHandler.addEventListener(
+      'hardwareBackPress',
+      handleBackButton
+    );
+
+    return () => backHandler.remove();
+  }, [isVisible, onBackToDashboard]);
 
   const stagedCount = useMemo(() => changedFiles.filter((file) => file.staged).length, [changedFiles]);
 

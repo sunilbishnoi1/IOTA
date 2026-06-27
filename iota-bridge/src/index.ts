@@ -6,9 +6,11 @@ import { requireAuth } from './middleware/auth';
 import statusRouter from './routes/status';
 import gitRouter from './routes/git';
 import { initLogger } from './services/logger';
+import { startKeepAliveBackgroundWorker } from './services/codespaceService';
 
 dotenv.config();
 initLogger();
+startKeepAliveBackgroundWorker();
 
 const app = express();
 const server = createServer(app);

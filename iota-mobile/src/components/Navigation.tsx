@@ -10,7 +10,7 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import { Theme } from '../styles/theme';
 
-export type TabType = 'dashboard' | 'terminal' | 'ship';
+export type TabType = 'dashboard' | 'terminal' | 'ship' | 'settings';
 
 interface NavigationProps {
   activeTab: TabType;
