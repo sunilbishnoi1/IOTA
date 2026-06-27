@@ -117,11 +117,26 @@ export function normalizeOpenCodePayload(
   const event = payload as Record<string, unknown>;
   const type = valueAsString(event.type) || valueAsString(event.event) || valueAsString(event.kind);
 
-  if (type === 'step_start' || type === 'step_finish') {
-    return [];
+  const events: NormalizedOpenCodeEvent[] = [];
+
+  // Extract session ID from any event payload if present
+  const sessionId =
+    valueAsString(event.sessionID) ||
+    valueAsString(event.sessionId) ||
+    valueAsString(event.session_id) ||
+    (event.part && typeof event.part === 'object' && event.part !== null
+      ? valueAsString((event.part as any).sessionID) ||
+        valueAsString((event.part as any).sessionId) ||
+        valueAsString((event.part as any).session_id)
+      : undefined);
+
+  if (sessionId) {
+    events.push({ type: 'session', conversationId, sessionId });
   }
 
-  const events: NormalizedOpenCodeEvent[] = [];
+  if (type === 'step_start' || type === 'step_finish') {
+    return events;
+  }
 
   const extractText = (evt: Record<string, unknown>): string => {
     const direct = valueAsString(evt.content) || valueAsString(evt.text) || valueAsString(evt.delta);
@@ -231,14 +246,6 @@ export function normalizeOpenCodePayload(
     return events;
   }
 
-  if (type === 'session' || type === 'session_created') {
-    const sessionId = valueAsString(event.sessionId) || valueAsString(event.session_id) || valueAsString(event.id);
-    if (sessionId) {
-      events.push({ type: 'session', conversationId, sessionId });
-      return events;
-    }
-  }
-
-  return [];
+  return events;
 
 }

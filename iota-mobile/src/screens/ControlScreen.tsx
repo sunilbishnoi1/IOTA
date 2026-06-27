@@ -421,7 +421,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             Authorization: `Bearer ${user.token}`,
             'X-GitHub-Token': user.token,
           },
-          transports: ['websocket'],
+          transports: ['polling', 'websocket'],
           reconnection: true,
           reconnectionAttempts: 10,
           reconnectionDelay: 2000,
@@ -714,9 +714,10 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     );
   };
 
-  const renderToolActivity = (activity: OpenCodeToolActivity) => {
-    const isRunning = activity.status === 'started' || activity.status === 'running';
-    const isCompleted = activity.status === 'completed';
+  const renderToolActivity = (activity: OpenCodeToolActivity, isTurnActive?: boolean) => {
+    const isToolRunning = activity.status === 'started' || activity.status === 'running';
+    const isRunning = isToolRunning && !!isTurnActive;
+    const isCompleted = activity.status === 'completed' || (isToolRunning && !isTurnActive);
     const isFailed = activity.status === 'failed';
     let iconName: keyof typeof MaterialIcons.glyphMap = 'build';
     let iconColor = Theme.colors.text.secondary;
@@ -811,7 +812,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
 
     let headerText = 'Thinking...';
     let hasActiveTool = turn.activities.some((act) => act.type === 'tool' && ((act as any).activity.status === 'started' || (act as any).activity.status === 'running'));
-    let showHeaderSpinner = hasActiveTool || (isLastTurn && running && (!turn.assistantMessage || turn.assistantMessage.status === 'streaming'));
+    let showHeaderSpinner = isLastTurn && running && (hasActiveTool || !turn.assistantMessage || turn.assistantMessage.status === 'streaming');
 
     if (isLastTurn && running) {
       const activeTool = toolActivities.find((a) => a.activity.status === 'started' || a.activity.status === 'running');
@@ -868,7 +869,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             {isExpanded && turn.activities.length > 0 && (
               <View style={styles.thinkingContent}>
                 {turn.activities.map((act) => {
-                  if (act.type === 'tool') return renderToolActivity(act.activity);
+                  if (act.type === 'tool') return renderToolActivity(act.activity, isLastTurn && running);
                   if (act.type === 'file') return renderFileChange(act.change);
                   if (act.type === 'approval') return renderApprovalRequest(act.approval);
                   return null;
@@ -1001,12 +1002,14 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           <TouchableOpacity style={styles.iconButton} onPress={onBackToDashboard}>
             <MaterialIcons name="chevron-left" size={28} color={Theme.colors.primary.glow} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>IOTA</Text>
+          <View style={styles.headerTitleContainer}>
+            <Text style={styles.headerTitle}>IOTA</Text>
+            <View style={[styles.socketStatusDot, { backgroundColor: socketStatus === 'connected' ? Theme.colors.secondary.default : socketStatus === 'connecting' ? '#f59e0b' : Theme.colors.accent.default }]} />
+          </View>
           <View style={styles.headerRight}>
             <TouchableOpacity style={styles.iconButton} onPress={handleNewChatPress} activeOpacity={0.7}>
               <MaterialIcons name="add-comment" size={20} color={Theme.colors.primary.glow} />
             </TouchableOpacity>
-            <View style={[styles.socketStatusDot, { backgroundColor: socketStatus === 'connected' ? Theme.colors.secondary.default : socketStatus === 'connecting' ? '#f59e0b' : Theme.colors.accent.default }]} />
           </View>
         </View>
 
@@ -1120,6 +1123,11 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     color: Theme.colors.text.primary,
+  },
+  headerTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   socketStatusDot: {
     width: 10,

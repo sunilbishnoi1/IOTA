@@ -1,5 +1,21 @@
+import * as os from 'os';
 import { getOctokitClient } from './github';
 import { CodespaceVM, CodespaceStatus, GitHubRepository } from '../types';
+
+/**
+ * Gets the current codespace name from CODESPACE_NAME or hostname.
+ */
+export function getCodespaceName(): string {
+  return process.env.CODESPACE_NAME || process.env.HOSTNAME || os.hostname() || '';
+}
+
+/**
+ * Checks if the given name matches the current active codespace name.
+ */
+export function isCurrentCodespace(name: string): boolean {
+  const current = getCodespaceName();
+  return current ? name === current : false;
+}
 
 /**
  * Maps GitHub Codespace state to the internal CodespaceStatus type.
@@ -40,8 +56,8 @@ export async function checkBridgeReachable(url: string, token: string, retries =
     console.log(`[Reachability Checker] Pinging bridge status endpoint (attempt ${attempt}/${retries}): ${targetUrl}`);
     try {
       const controller = new AbortController();
-      // Use 4000ms timeout for the first attempt, and 2000ms for subsequent attempts
-      const timeoutMs = attempt === 1 ? 4000 : 2000;
+      // Use 5000ms timeout for all attempts to make it robust against transient slow response
+      const timeoutMs = 5000;
       timeoutId = setTimeout(() => controller.abort(), timeoutMs);
       
       const response = await fetch(targetUrl, {
@@ -95,12 +111,13 @@ export async function getOrCheckReachability(name: string, url: string, token: s
   const now = Date.now();
   const cached = reachabilityCache.get(name);
   
-  if (!force && cached && (now - cached.lastChecked < CACHE_TTL_MS)) {
-    return cached.isReachable;
+  // If a check is already in-flight, always return its promise to prevent duplicate concurrent checks
+  if (cached && cached.checkingPromise) {
+    return cached.checkingPromise;
   }
   
-  if (!force && cached && cached.checkingPromise) {
-    return cached.checkingPromise;
+  if (!force && cached && (now - cached.lastChecked < CACHE_TTL_MS)) {
+    return cached.isReachable;
   }
   
   const checkingPromise = checkBridgeReachable(url, token).then((isReachable) => {
@@ -156,11 +173,12 @@ export function pokeSelfKeepAlive() {
 export function startKeepAliveBackgroundWorker() {
   if (selfKeepAliveInterval) return;
   
-  const pingIntervalMs = 600000; // 10 minutes
-  console.log(`[Keep-Alive Manager] Starting background worker (ping interval: 10 minutes)...`);
+  // Ping every 2 minutes to keep the connection warm and prevent Codespace idle shutdown
+  const pingIntervalMs = 120000;
+  console.log(`[Keep-Alive Manager] Starting background worker (ping interval: 2 minutes)...`);
   
   selfKeepAliveInterval = setInterval(async () => {
-    const name = process.env.CODESPACE_NAME;
+    const name = getCodespaceName();
     if (!name) {
       return;
     }
@@ -228,7 +246,7 @@ export const listUserCodespaces = async (token: string): Promise<CodespaceVM[]> 
   const verifiedCodespaces = await Promise.all(
     codespaces.map(async (cs) => {
       if (cs.status === 'active') {
-        if (process.env.CODESPACE_NAME && cs.id === process.env.CODESPACE_NAME) {
+        if (isCurrentCodespace(cs.id)) {
           // Reachable by definition since we are running this bridge server inside it
           return cs;
         }
@@ -258,7 +276,7 @@ export const startUserCodespace = async (token: string, name: string): Promise<C
   let status = mapStateToStatus(cs.state);
 
   if (status === 'active') {
-    if (process.env.CODESPACE_NAME && cs.name === process.env.CODESPACE_NAME) {
+    if (isCurrentCodespace(cs.name)) {
       // Reachable by definition
     } else {
       const isReachable = await getOrCheckReachability(cs.name, connectionUrl, token, true);
@@ -293,7 +311,7 @@ export const getUserCodespace = async (token: string, name: string): Promise<Cod
   let status = mapStateToStatus(cs.state);
 
   if (status === 'active') {
-    if (process.env.CODESPACE_NAME && cs.name === process.env.CODESPACE_NAME) {
+    if (isCurrentCodespace(cs.name)) {
       // Reachable by definition
     } else {
       const isReachable = await getOrCheckReachability(cs.name, connectionUrl, token, true);

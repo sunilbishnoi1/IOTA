@@ -174,4 +174,19 @@ describe('normalizeOpenCodePayload', () => {
       expect(events[0].activity.completedAt).toBeDefined();
     }
   });
+
+  it('extracts sessionID from any event type and spelling variant', () => {
+    const payload = {
+      type: 'step_start',
+      sessionID: 'ses_123',
+      step: 'git_status'
+    };
+    const events = normalizeOpenCodePayload(payload, convId, msgId);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual({
+      type: 'session',
+      conversationId: convId,
+      sessionId: 'ses_123'
+    });
+  });
 });

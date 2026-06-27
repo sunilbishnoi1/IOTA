@@ -21,21 +21,16 @@ interface ShipScreenProps {
   user: { token: string; username?: string; avatarUrl?: string };
   activeCodespace: CodespaceVM;
   isVisible: boolean;
-  onBackToDashboard: () => void;
-  onSelectCodespace?: (codespace: CodespaceVM) => void;
+  onBackToControl: () => void;
 }
 
 export const ShipScreen: React.FC<ShipScreenProps> = ({
   user,
   activeCodespace,
   isVisible,
-  onBackToDashboard,
-  onSelectCodespace,
+  onBackToControl,
 }) => {
-  const [selectedCodespace, setSelectedCodespace] = useState<CodespaceVM>(activeCodespace);
-  const bridgeUrl = selectedCodespace.connectionUrl;
-  const [codespaces, setCodespaces] = useState<CodespaceVM[]>([activeCodespace]);
-  const [loadingCodespaces, setLoadingCodespaces] = useState<boolean>(false);
+  const bridgeUrl = activeCodespace.connectionUrl;
   const [loading, setLoading] = useState<boolean>(true);
   const [stagingFile, setStagingFile] = useState<string | null>(null);
   const [pushing, setPushing] = useState<boolean>(false);
@@ -48,7 +43,7 @@ export const ShipScreen: React.FC<ShipScreenProps> = ({
     if (!isVisible) return;
 
     const handleBackButton = () => {
-      onBackToDashboard();
+      onBackToControl();
       return true; // Prevents default behavior
     };
 
@@ -58,7 +53,7 @@ export const ShipScreen: React.FC<ShipScreenProps> = ({
     );
 
     return () => backHandler.remove();
-  }, [isVisible, onBackToDashboard]);
+  }, [isVisible, onBackToControl]);
 
   const stagedCount = useMemo(() => changedFiles.filter((file) => file.staged).length, [changedFiles]);
 
@@ -77,24 +72,6 @@ export const ShipScreen: React.FC<ShipScreenProps> = ({
       return stillPresent || files[0];
     });
   }, []);
-
-  const fetchCodespaces = useCallback(async () => {
-    if (!activeCodespace.connectionUrl) return;
-    setLoadingCodespaces(true);
-    try {
-      const response = await fetch(`${activeCodespace.connectionUrl}/api/codespaces`, { headers: authHeaders });
-      if (!response.ok) throw new Error(`Codespaces request failed with ${response.status}`);
-      const data: CodespaceVM[] = await response.json();
-      const active = data.filter((item) => item.status === 'active' && item.connectionUrl);
-      const merged = [activeCodespace, ...active.filter((item) => item.id !== activeCodespace.id)];
-      setCodespaces(merged);
-    } catch (error) {
-      console.warn('Failed to list active codespaces:', error);
-      setCodespaces([activeCodespace]);
-    } finally {
-      setLoadingCodespaces(false);
-    }
-  }, [activeCodespace, authHeaders]);
 
   const fetchDiffs = useCallback(async () => {
     setLoading(true);
@@ -118,21 +95,8 @@ export const ShipScreen: React.FC<ShipScreenProps> = ({
   }, [bridgeUrl, authHeaders, applyDiffPayload]);
 
   useEffect(() => {
-    setSelectedCodespace(activeCodespace);
-  }, [activeCodespace.id]);
-
-  useEffect(() => {
-    fetchCodespaces();
-  }, [fetchCodespaces]);
-
-  useEffect(() => {
     fetchDiffs();
   }, [fetchDiffs]);
-
-  const selectCodespace = (codespace: CodespaceVM) => {
-    setSelectedCodespace(codespace);
-    onSelectCodespace?.(codespace);
-  };
 
   const updateFileStage = async (file: FileDiff, shouldStage: boolean) => {
     if (!bridgeUrl) return;
@@ -191,35 +155,7 @@ export const ShipScreen: React.FC<ShipScreenProps> = ({
     }
   };
 
-  const renderCodespaceSelector = () => (
-    <View style={styles.selectorBlock}>
-      <View style={styles.selectorHeader}>
-        <Text style={styles.sectionHeader}>Active Codespace</Text>
-        {loadingCodespaces && <ActivityIndicator size="small" color={Theme.colors.primary.glow} />}
-      </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.codespaceList}>
-        {codespaces.map((codespace) => {
-          const selected = selectedCodespace.id === codespace.id;
-          return (
-            <TouchableOpacity
-              key={codespace.id}
-              style={[styles.codespaceChip, selected && styles.codespaceChipSelected]}
-              onPress={() => selectCodespace(codespace)}
-              activeOpacity={0.75}
-            >
-              <MaterialIcons name="developer-board" size={15} color={selected ? Theme.colors.primary.glow : Theme.colors.text.secondary} />
-              <View style={styles.codespaceTextBlock}>
-                <Text style={[styles.codespaceRepo, selected && styles.codespaceRepoSelected]} numberOfLines={1}>
-                  {codespace.repositoryName}
-                </Text>
-                <Text style={styles.codespaceBranch} numberOfLines={1}>{codespace.branchName}</Text>
-              </View>
-            </TouchableOpacity>
-          );
-        })}
-      </ScrollView>
-    </View>
-  );
+
 
   const renderFileRow = (item: FileDiff, index: number) => {
     const isSelected = selectedFile?.file === item.file;
@@ -283,14 +219,13 @@ export const ShipScreen: React.FC<ShipScreenProps> = ({
     if (changedFiles.length === 0) {
       return (
         <ScrollView contentContainerStyle={styles.cleanScrollContent}>
-          {renderCodespaceSelector()}
           <View style={styles.cleanCard}>
             <View style={styles.checkCircle}>
               <MaterialIcons name="check" size={36} color={Theme.colors.secondary.glow} />
             </View>
             <Text style={styles.cleanTitle}>Workspace Clean</Text>
             <Text style={styles.cleanSubtitle}>No modified, staged, or newly created files were found in this codespace.</Text>
-            <Text style={styles.cleanRepoText}>{selectedCodespace.repositoryName} - {selectedCodespace.branchName}</Text>
+            <Text style={styles.cleanRepoText}>{activeCodespace.repositoryName} - {activeCodespace.branchName}</Text>
           </View>
         </ScrollView>
       );
@@ -299,7 +234,6 @@ export const ShipScreen: React.FC<ShipScreenProps> = ({
     return (
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.keyboardView}>
         <ScrollView style={styles.mainScroll} contentContainerStyle={styles.scrollContent}>
-          {renderCodespaceSelector()}
 
           <View style={styles.diffSummaryRow}>
             <Text style={styles.sectionHeader}>Changed Files ({changedFiles.length})</Text>
@@ -358,11 +292,14 @@ export const ShipScreen: React.FC<ShipScreenProps> = ({
   return (
     <View style={styles.container}>
       <View style={styles.header}>
+        <TouchableOpacity style={styles.iconButton} onPress={onBackToControl}>
+          <MaterialIcons name="chevron-left" size={28} color={Theme.colors.primary.glow} />
+        </TouchableOpacity>
         <View style={styles.headerTitles}>
           <Text style={styles.headerTitle}>Ship</Text>
-          <Text style={styles.headerSubtitle} numberOfLines={1}>{selectedCodespace.repositoryName} - {selectedCodespace.branchName}</Text>
+          <Text style={styles.headerSubtitle} numberOfLines={1}>{activeCodespace.repositoryName} - {activeCodespace.branchName}</Text>
         </View>
-        <TouchableOpacity style={styles.refreshButton} onPress={() => { fetchCodespaces(); fetchDiffs(); }} disabled={loading || pushing}>
+        <TouchableOpacity style={styles.refreshButton} onPress={() => { fetchDiffs(); }} disabled={loading || pushing}>
           <MaterialIcons name="refresh" size={22} color={Theme.colors.primary.glow} />
         </TouchableOpacity>
       </View>
@@ -454,12 +391,12 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: 20,
-    paddingBottom: 110,
+    paddingBottom: 40,
   },
   cleanScrollContent: {
     flexGrow: 1,
     padding: 20,
-    paddingBottom: 110,
+    paddingBottom: 40,
   },
   selectorBlock: {
     marginBottom: 4,
@@ -717,5 +654,12 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 14,
     fontWeight: '700',
+  },
+  iconButton: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
   },
 });

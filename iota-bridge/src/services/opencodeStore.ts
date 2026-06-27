@@ -198,6 +198,12 @@ class OpenCodeStore {
         }
       }
     }
+    for (const tool of conversation.tools) {
+      if (tool.status === 'started' || tool.status === 'running') {
+        tool.status = options.stopped ? 'failed' : failed ? 'failed' : 'completed';
+        tool.completedAt = now();
+      }
+    }
     conversation.updatedAt = now();
   }
 }

@@ -120,200 +120,219 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     setTimeout(() => setIsKeepAliveSaved(false), 2000);
   };
 
+  const handleLogoutConfirm = () => {
+    Alert.alert(
+      'Sign Out',
+      'Are you sure you want to sign out?',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Sign Out',
+          style: 'destructive',
+          onPress: onLogout,
+        },
+      ],
+      { cancelable: true }
+    );
+  };
+
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       style={styles.container}
     >
-      <ShaderGradient />
+      {isVisible && <ShaderGradient />}
       
-      <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-        <View style={styles.inner}>
-          {/* Header Row */}
-          <View style={styles.header}>
-            <TouchableOpacity style={styles.backButton} onPress={onBack}>
-              <MaterialIcons name="arrow-back" size={24} color="#fff" />
-            </TouchableOpacity>
-            <Text style={styles.headerTitle}>Settings</Text>
-            <View style={styles.headerPlaceholder} />
+      <View style={styles.inner}>
+        {/* Header Row */}
+        <View style={styles.header}>
+          <TouchableOpacity style={styles.backButton} onPress={onBack}>
+            <MaterialIcons name="arrow-back" size={24} color="#fff" />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Settings</Text>
+          <View style={styles.headerPlaceholder} />
+        </View>
+
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+        >
+          {/* Profile Section */}
+          <View style={styles.profileCard}>
+            {user.avatarUrl ? (
+              <Image source={{ uri: user.avatarUrl }} style={styles.avatar} />
+            ) : (
+              <View style={styles.avatarPlaceholder}>
+                <MaterialIcons name="person" size={48} color="#fff" />
+              </View>
+            )}
+            <Text style={styles.username}>@{user.username || 'developer'}</Text>
+            <View style={styles.githubBadge}>
+              <Text style={styles.githubBadgeText}>GITHUB ACCOUNT</Text>
+            </View>
           </View>
 
-          <ScrollView
-            contentContainerStyle={styles.scrollContent}
-            showsVerticalScrollIndicator={false}
-          >
-            {/* Profile Section */}
-            <View style={styles.profileCard}>
-              {user.avatarUrl ? (
-                <Image source={{ uri: user.avatarUrl }} style={styles.avatar} />
-              ) : (
-                <View style={styles.avatarPlaceholder}>
-                  <MaterialIcons name="person" size={48} color="#fff" />
-                </View>
-              )}
-              <Text style={styles.username}>@{user.username || 'developer'}</Text>
-              <View style={styles.githubBadge}>
-                <Text style={styles.githubBadgeText}>GITHUB ACCOUNT</Text>
-              </View>
+          {/* Connection Section */}
+          <View style={styles.sectionCard}>
+            <View style={styles.sectionHeader}>
+              <MaterialIcons name="lan" size={20} color={Theme.colors.primary.glow} />
+              <Text style={styles.sectionTitle}>BRIDGE SERVER</Text>
             </View>
+            
+            <Text style={styles.description}>
+              Set your local bridge server endpoint to connect and fetch container environments.
+            </Text>
 
-            {/* Connection Section */}
-            <View style={styles.sectionCard}>
-              <View style={styles.sectionHeader}>
-                <MaterialIcons name="lan" size={20} color={Theme.colors.primary.glow} />
-                <Text style={styles.sectionTitle}>BRIDGE SERVER</Text>
-              </View>
-              
-              <Text style={styles.description}>
-                Set your local bridge server endpoint to connect and fetch container environments.
-              </Text>
-
-              <View style={styles.configInputRow}>
-                <TextInput
-                  style={styles.configInput}
-                  value={urlInput}
-                  onChangeText={(text) => {
-                    setUrlInput(text);
-                    setIsSaved(false);
-                  }}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  placeholder="http://localhost:3000"
-                  placeholderTextColor={Theme.colors.text.muted}
-                />
-                <TouchableOpacity
-                  style={[
-                    styles.saveButton,
-                    isSaved && styles.saveButtonSuccess
-                  ]}
-                  onPress={handleSaveUrl}
-                >
-                  {isSaved ? (
-                    <MaterialIcons name="check" size={20} color="#fff" />
-                  ) : (
-                    <Text style={styles.saveButtonText}>Connect</Text>
-                  )}
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            {/* Keep-Alive Section */}
-            <View style={styles.sectionCard}>
-              <View style={styles.sectionHeader}>
-                <MaterialIcons name="timer" size={20} color={Theme.colors.secondary.glow} />
-                <Text style={styles.sectionTitle}>CODESPACE KEEP-ALIVE</Text>
-              </View>
-              
-              <Text style={styles.description}>
-                Configure how long to keep your codespace active and prevent websocket disconnection when idle.
-              </Text>
-
-              <View style={styles.optionsContainer}>
-                {[
-                  { label: 'Default', value: 0 },
-                  { label: '30m', value: 30 },
-                  { label: '1h', value: 60 },
-                  { label: '2h', value: 120 },
-                  { label: '4h', value: 240 },
-                  { label: 'Custom', value: -1 },
-                ].map((opt) => {
-                  const isSelected = selectedOption === opt.value;
-                  return (
-                    <TouchableOpacity
-                      key={opt.label}
-                      style={[
-                        styles.optionButton,
-                        isSelected && styles.optionButtonActive
-                      ]}
-                      onPress={() => setSelectedOption(opt.value)}
-                    >
-                      <Text style={[
-                        styles.optionText,
-                        isSelected && styles.optionTextActive
-                      ]}>
-                        {opt.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-
-              {selectedOption === -1 && (
-                <View style={styles.customInputRow}>
-                  <TextInput
-                    style={styles.customInput}
-                    value={customValue}
-                    onChangeText={setCustomValue}
-                    keyboardType="numeric"
-                    placeholder="Enter value"
-                    placeholderTextColor={Theme.colors.text.muted}
-                  />
-                  <View style={styles.unitToggleContainer}>
-                    <TouchableOpacity
-                      style={[
-                        styles.unitButton,
-                        customUnit === 'minutes' && styles.unitButtonActive
-                      ]}
-                      onPress={() => setCustomUnit('minutes')}
-                    >
-                      <Text style={[
-                        styles.unitText,
-                        customUnit === 'minutes' && styles.unitTextActive
-                      ]}>Min</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[
-                        styles.unitButton,
-                        customUnit === 'hours' && styles.unitButtonActive
-                      ]}
-                      onPress={() => setCustomUnit('hours')}
-                    >
-                      <Text style={[
-                        styles.unitText,
-                        customUnit === 'hours' && styles.unitTextActive
-                      ]}>Hrs</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              )}
-
+            <View style={styles.configInputRow}>
+              <TextInput
+                style={styles.configInput}
+                value={urlInput}
+                onChangeText={(text) => {
+                  setUrlInput(text);
+                  setIsSaved(false);
+                }}
+                autoCapitalize="none"
+                autoCorrect={false}
+                placeholder="http://localhost:3000"
+                placeholderTextColor={Theme.colors.text.muted}
+              />
               <TouchableOpacity
                 style={[
-                  styles.saveButtonKeepAlive,
-                  isKeepAliveSaved && styles.saveButtonSuccess
+                  styles.saveButton,
+                  isSaved && styles.saveButtonSuccess
                 ]}
-                onPress={handleSaveKeepAlive}
+                onPress={handleSaveUrl}
               >
-                {isKeepAliveSaved ? (
-                  <View style={styles.saveButtonContent}>
-                    <MaterialIcons name="check" size={18} color="#fff" />
-                    <Text style={styles.saveButtonTextKeepAlive}>Saved</Text>
-                  </View>
+                {isSaved ? (
+                  <MaterialIcons name="check" size={20} color="#fff" />
                 ) : (
-                  <Text style={styles.saveButtonTextKeepAlive}>Save Keep-Alive</Text>
+                  <Text style={styles.saveButtonText}>Connect</Text>
                 )}
               </TouchableOpacity>
             </View>
+          </View>
 
-            {/* Actions Section */}
-            <View style={styles.sectionCard}>
-              <View style={styles.sectionHeader}>
-                <MaterialIcons name="account-circle" size={20} color={Theme.colors.accent.glow} />
-                <Text style={styles.sectionTitle}>ACCOUNT ACTIONS</Text>
-              </View>
-
-              <Text style={styles.description}>
-                Sign out of your active workspace and GitHub developer profile.
-              </Text>
-
-              <TouchableOpacity style={styles.logoutButton} onPress={onLogout}>
-                <MaterialIcons name="logout" size={18} color="#fff" style={styles.logoutIcon} />
-                <Text style={styles.logoutButtonText}>Sign Out</Text>
-              </TouchableOpacity>
+          {/* Keep-Alive Section */}
+          <View style={styles.sectionCard}>
+            <View style={styles.sectionHeader}>
+              <MaterialIcons name="timer" size={20} color={Theme.colors.secondary.glow} />
+              <Text style={styles.sectionTitle}>CODESPACE KEEP-ALIVE</Text>
             </View>
-          </ScrollView>
-        </View>
-      </TouchableWithoutFeedback>
+            
+            <Text style={styles.description}>
+              Configure how long to keep your codespace active and prevent websocket disconnection when idle.
+            </Text>
+
+            <View style={styles.optionsContainer}>
+              {[
+                { label: 'Default', value: 0 },
+                { label: '30m', value: 30 },
+                { label: '1h', value: 60 },
+                { label: '2h', value: 120 },
+                { label: '4h', value: 240 },
+                { label: 'Custom', value: -1 },
+              ].map((opt) => {
+                const isSelected = selectedOption === opt.value;
+                return (
+                  <TouchableOpacity
+                    key={opt.label}
+                    style={[
+                      styles.optionButton,
+                      isSelected && styles.optionButtonActive
+                    ]}
+                    onPress={() => setSelectedOption(opt.value)}
+                  >
+                    <Text style={[
+                      styles.optionText,
+                      isSelected && styles.optionTextActive
+                    ]}>
+                      {opt.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {selectedOption === -1 && (
+              <View style={styles.customInputRow}>
+                <TextInput
+                  style={styles.customInput}
+                  value={customValue}
+                  onChangeText={setCustomValue}
+                  keyboardType="numeric"
+                  placeholder="Enter value"
+                  placeholderTextColor={Theme.colors.text.muted}
+                />
+                <View style={styles.unitToggleContainer}>
+                  <TouchableOpacity
+                    style={[
+                      styles.unitButton,
+                      customUnit === 'minutes' && styles.unitButtonActive
+                    ]}
+                    onPress={() => setCustomUnit('minutes')}
+                  >
+                    <Text style={[
+                      styles.unitText,
+                      customUnit === 'minutes' && styles.unitTextActive
+                    ]}>Min</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.unitButton,
+                      customUnit === 'hours' && styles.unitButtonActive
+                    ]}
+                    onPress={() => setCustomUnit('hours')}
+                  >
+                    <Text style={[
+                      styles.unitText,
+                      customUnit === 'hours' && styles.unitTextActive
+                    ]}>Hrs</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
+            <TouchableOpacity
+              style={[
+                styles.saveButtonKeepAlive,
+                isKeepAliveSaved && styles.saveButtonSuccess
+              ]}
+              onPress={handleSaveKeepAlive}
+            >
+              {isKeepAliveSaved ? (
+                <View style={styles.saveButtonContent}>
+                  <MaterialIcons name="check" size={18} color="#fff" />
+                  <Text style={styles.saveButtonTextKeepAlive}>Saved</Text>
+                </View>
+              ) : (
+                <Text style={styles.saveButtonTextKeepAlive}>Save Keep-Alive</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          {/* Actions Section */}
+          <View style={styles.sectionCard}>
+            <View style={styles.sectionHeader}>
+              <MaterialIcons name="account-circle" size={20} color={Theme.colors.accent.glow} />
+              <Text style={styles.sectionTitle}>ACCOUNT ACTIONS</Text>
+            </View>
+
+            <Text style={styles.description}>
+              Sign out of your active workspace and GitHub developer profile.
+            </Text>
+
+            <TouchableOpacity style={styles.logoutButton} onPress={handleLogoutConfirm}>
+              <MaterialIcons name="logout" size={18} color="#fff" style={styles.logoutIcon} />
+              <Text style={styles.logoutButtonText}>Sign Out</Text>
+            </TouchableOpacity>
+          </View>
+        </ScrollView>
+      </View>
     </KeyboardAvoidingView>
   );
 };

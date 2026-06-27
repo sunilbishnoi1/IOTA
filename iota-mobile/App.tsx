@@ -12,11 +12,12 @@ import { DashboardScreen } from './src/screens/DashboardScreen';
 import { ControlScreen } from './src/screens/ControlScreen';
 import { ShipScreen } from './src/screens/ShipScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
-import { Navigation, TabType } from './src/components/Navigation';
 import { secureStoreService } from './src/services/secureStore';
 import { Theme } from './src/styles/theme';
 import { CodespaceVM } from './src/types';
 import { MaterialIcons } from '@expo/vector-icons';
+
+type TabType = 'dashboard' | 'terminal' | 'ship' | 'settings';
 
 export default function App() {
   const [isLoading, setIsLoading] = useState(true);
@@ -25,6 +26,7 @@ export default function App() {
   // Navigation & Workspace State
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
   const [activeCodespace, setActiveCodespace] = useState<CodespaceVM | null>(null);
+  const [openedWorkspaces, setOpenedWorkspaces] = useState<Record<string, CodespaceVM>>({});
   const [bridgeUrl, setBridgeUrl] = useState<string>('http://localhost:3000');
   const [keepAliveDuration, setKeepAliveDuration] = useState<number>(0);
 
@@ -81,6 +83,7 @@ export default function App() {
       await secureStoreService.clearAll();
       setUser(null);
       setActiveCodespace(null);
+      setOpenedWorkspaces({});
     } catch (e) {
       console.warn(e);
     } finally {
@@ -90,7 +93,22 @@ export default function App() {
 
   const handleSelectCodespace = async (vm: CodespaceVM) => {
     setActiveCodespace(vm);
+    setOpenedWorkspaces((prev) => ({
+      ...prev,
+      [vm.id]: vm,
+    }));
     setActiveTab('terminal'); // Auto-navigate to control view when workspace is entered
+  };
+
+  const handleDeleteCodespaceFromOpened = (id: string) => {
+    setOpenedWorkspaces((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    if (activeCodespace?.id === id) {
+      setActiveCodespace(null);
+    }
   };
 
   if (isLoading) {
@@ -118,7 +136,9 @@ export default function App() {
           user={user}
           bridgeUrl={bridgeUrl}
           onSelectCodespace={handleSelectCodespace}
+          onDeleteCodespace={handleDeleteCodespaceFromOpened}
           onOpenSettings={() => setActiveTab('settings')}
+          isVisible={activeTab === 'dashboard'}
         />
       </View>
 
@@ -141,14 +161,17 @@ export default function App() {
         />
       </View>
 
-      {activeCodespace && (
-        <View style={[styles.screenContainer, { display: activeTab === 'terminal' ? 'flex' : 'none' }]}>
+      {Object.entries(openedWorkspaces).map(([csId, codespace]) => (
+        <View
+          key={`control-${csId}`}
+          style={[styles.screenContainer, { display: activeTab === 'terminal' && activeCodespace?.id === csId ? 'flex' : 'none' }]}
+        >
           <ControlScreen
             user={user}
-            activeCodespace={activeCodespace}
+            activeCodespace={codespace}
             bridgeUrl={bridgeUrl}
             keepAliveDuration={keepAliveDuration}
-            isVisible={activeTab === 'terminal'}
+            isVisible={activeTab === 'terminal' && activeCodespace?.id === csId}
             onBackToDashboard={() => {
               setActiveTab('dashboard');
             }}
@@ -157,29 +180,24 @@ export default function App() {
             }}
           />
         </View>
-      )}
+      ))}
 
-      {activeCodespace && (
-        <View style={[styles.screenContainer, { display: activeTab === 'ship' ? 'flex' : 'none' }]}>
+      {Object.entries(openedWorkspaces).map(([csId, codespace]) => (
+        <View
+          key={`ship-${csId}`}
+          style={[styles.screenContainer, { display: activeTab === 'ship' && activeCodespace?.id === csId ? 'flex' : 'none' }]}
+        >
           <ShipScreen
             user={user}
-            activeCodespace={activeCodespace}
-            isVisible={activeTab === 'ship'}
-            onBackToDashboard={() => {
-              setActiveTab('dashboard');
+            activeCodespace={codespace}
+            isVisible={activeTab === 'ship' && activeCodespace?.id === csId}
+            onBackToControl={() => {
+              setActiveTab('terminal');
             }}
           />
         </View>
-      )}
+      ))}
       
-      {/* Floating Bottom Navigation Tab Bar */}
-      {activeTab !== 'terminal' && (
-        <Navigation
-          activeTab={activeTab}
-          onTabChange={setActiveTab}
-          hasActiveCodespace={!!activeCodespace}
-        />
-      )}
       <StatusBar style="light" />
     </View>
   );

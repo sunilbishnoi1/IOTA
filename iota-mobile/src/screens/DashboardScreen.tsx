@@ -26,7 +26,9 @@ interface DashboardScreenProps {
   user: { token: string; username?: string; avatarUrl?: string };
   bridgeUrl: string;
   onSelectCodespace: (vm: CodespaceVM) => void;
+  onDeleteCodespace?: (id: string) => void;
   onOpenSettings: () => void;
+  isVisible: boolean;
 }
 
 // Configurable API URL for bridge server (resolves emulator vs localhost vs custom network IP)
@@ -60,7 +62,9 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   user,
   bridgeUrl,
   onSelectCodespace,
+  onDeleteCodespace,
   onOpenSettings,
+  isVisible,
 }) => {
   const [codespaces, setCodespaces] = useState<CodespaceVM[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -258,6 +262,20 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
     fetchCodespaces(false);
   }, [bridgeUrl]);
 
+  // Manage polling and fetch when visibility changes
+  useEffect(() => {
+    if (!isVisible) {
+      console.log('[Codespace Poller] Dashboard became invisible. Clearing all pollers.');
+      Object.entries(pollingIntervals.current).forEach(([id, timer]) => {
+        clearInterval(timer);
+      });
+      pollingIntervals.current = {};
+    } else {
+      console.log('[Codespace Poller] Dashboard became visible. Refreshing codespaces.');
+      fetchCodespaces(true);
+    }
+  }, [isVisible, fetchCodespaces]);
+
   useEffect(() => {
     // Cleanup polling on unmount
     return () => {
@@ -272,12 +290,22 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
 
   // Poll a single codespace's status until it's active or sleeping
   const startPollingCodespace = (id: string) => {
+    if (!isVisible) {
+      console.log(`[Codespace Poller] Skipping start of poll for ${id} because dashboard is hidden`);
+      return;
+    }
     console.log(`[Codespace Poller] Started polling for codespace: ${id}`);
     if (pollingIntervals.current[id]) {
       clearInterval(pollingIntervals.current[id]);
     }
 
     const timer = setInterval(async () => {
+      if (!isVisible) {
+        console.log(`[Codespace Poller] Stopping poll for ${id} because dashboard is hidden`);
+        clearInterval(pollingIntervals.current[id]);
+        delete pollingIntervals.current[id];
+        return;
+      }
       try {
         const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces/${id}`, {
           headers: {
@@ -383,6 +411,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   const handleDeleteCodespace = async (id: string) => {
     // Optimistically remove from list
     setCodespaces((prev) => prev.filter((cs) => cs.id !== id));
+    onDeleteCodespace?.(id);
 
     // Clear any active polling for this codespace
     if (pollingIntervals.current[id]) {
@@ -457,7 +486,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
 
   return (
     <View style={styles.container}>
-      <ShaderGradient />
+      {isVisible && <ShaderGradient />}
 
       {loading ? (
         <View style={styles.centerContainer}>
@@ -564,7 +593,7 @@ const styles = StyleSheet.create({
   listContent: {
     paddingHorizontal: 24,
     paddingTop: Platform.OS === 'ios' ? 60 : 40,
-    paddingBottom: 100, // padding for floating navigation tab bar
+    paddingBottom: 40,
   },
   header: {
     marginBottom: 24,
@@ -716,8 +745,8 @@ const styles = StyleSheet.create({
   },
   fab: {
     position: 'absolute',
-    bottom: 110,
-    right: 24,
+    bottom: 60,
+    right: 30,
     width: 56,
     height: 56,
     borderRadius: 28,
