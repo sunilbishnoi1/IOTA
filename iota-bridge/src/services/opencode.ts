@@ -217,7 +217,7 @@ class OpenCodeRunner {
       conversationId: options.conversationId,
       requestId: options.requestId,
       phase: 'server_start',
-      message: 'Checking OpenCode warm server...',
+      message: 'working...',
       retryable: false,
     });
 
@@ -229,7 +229,7 @@ class OpenCodeRunner {
       conversationId: options.conversationId,
       requestId: options.requestId,
       phase: initialAttach ? 'attached_run' : 'direct_run',
-      message: initialAttach ? 'OpenCode server is ready. Starting attached run...' : 'OpenCode server is unavailable. Starting direct run...',
+      message: 'working...',
       retryable: false,
     });
 
@@ -337,7 +337,7 @@ class OpenCodeRunner {
             conversationId: options.conversationId,
             requestId: options.requestId,
             phase: 'direct_run',
-            message: 'Warm server attachment failed. Falling back to direct execution...',
+            message: 'working...',
             retryable: false,
           });
 

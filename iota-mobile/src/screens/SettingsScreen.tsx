@@ -17,6 +17,7 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import { ShaderGradient } from '../components/ShaderGradient';
 import { Theme } from '../styles/theme';
+import { secureStoreService } from '../services/secureStore';
 
 interface SettingsScreenProps {
   user: { token: string; username?: string; avatarUrl?: string };
@@ -46,6 +47,37 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const [customValue, setCustomValue] = useState<string>('');
   const [customUnit, setCustomUnit] = useState<'minutes' | 'hours'>('minutes');
   const [isKeepAliveSaved, setIsKeepAliveSaved] = useState<boolean>(false);
+
+  const [groqKeyInput, setGroqKeyInput] = useState<string>('');
+  const [isGroqKeySaved, setIsGroqKeySaved] = useState<boolean>(false);
+
+  useEffect(() => {
+    async function loadGroqKey() {
+      try {
+        const key = await secureStoreService.getApiKey('GROQ_API_KEY');
+        if (key) setGroqKeyInput(key);
+      } catch (err) {
+        console.warn('Failed to load Groq API key:', err);
+      }
+    }
+    if (isVisible) {
+      loadGroqKey();
+    }
+  }, [isVisible]);
+
+  const handleSaveGroqKey = async () => {
+    try {
+      if (groqKeyInput.trim()) {
+        await secureStoreService.saveApiKey('GROQ_API_KEY', groqKeyInput.trim());
+      } else {
+        await secureStoreService.deleteApiKey('GROQ_API_KEY');
+      }
+      setIsGroqKeySaved(true);
+      setTimeout(() => setIsGroqKeySaved(false), 2000);
+    } catch (error: any) {
+      Alert.alert('Save Failed', error.message || 'Unable to save Groq API Key.');
+    }
+  };
 
   useEffect(() => {
     setUrlInput(bridgeUrl);
@@ -313,6 +345,47 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 <Text style={styles.saveButtonTextKeepAlive}>Save Keep-Alive</Text>
               )}
             </TouchableOpacity>
+          </View>
+
+          {/* Voice Input Section */}
+          <View style={styles.sectionCard}>
+            <View style={styles.sectionHeader}>
+              <MaterialIcons name="mic" size={20} color={Theme.colors.primary.glow} />
+              <Text style={styles.sectionTitle}>VOICE INPUT (STT)</Text>
+            </View>
+            
+            <Text style={styles.description}>
+              Configure your Groq API Key to enable voice dictation (STT) inside the control chat using whisper-large-v3.
+            </Text>
+
+            <View style={styles.configInputRow}>
+              <TextInput
+                style={styles.configInput}
+                value={groqKeyInput}
+                onChangeText={(text) => {
+                  setGroqKeyInput(text);
+                  setIsGroqKeySaved(false);
+                }}
+                secureTextEntry
+                autoCapitalize="none"
+                autoCorrect={false}
+                placeholder="Enter Groq API Key..."
+                placeholderTextColor={Theme.colors.text.muted}
+              />
+              <TouchableOpacity
+                style={[
+                  styles.saveButton,
+                  isGroqKeySaved && styles.saveButtonSuccess
+                ]}
+                onPress={handleSaveGroqKey}
+              >
+                {isGroqKeySaved ? (
+                  <MaterialIcons name="check" size={20} color="#fff" />
+                ) : (
+                  <Text style={styles.saveButtonText}>Save</Text>
+                )}
+              </TouchableOpacity>
+            </View>
           </View>
 
           {/* Actions Section */}

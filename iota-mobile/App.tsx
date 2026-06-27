@@ -6,6 +6,7 @@ import {
   View,
   ActivityIndicator,
   Platform,
+  AppState,
 } from 'react-native';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { DashboardScreen } from './src/screens/DashboardScreen';
@@ -29,6 +30,7 @@ export default function App() {
   const [openedWorkspaces, setOpenedWorkspaces] = useState<Record<string, CodespaceVM>>({});
   const [bridgeUrl, setBridgeUrl] = useState<string>('http://localhost:3000');
   const [keepAliveDuration, setKeepAliveDuration] = useState<number>(0);
+  const [allCodespaces, setAllCodespaces] = useState<CodespaceVM[]>([]);
 
   useEffect(() => {
     async function init() {
@@ -71,6 +73,57 @@ export default function App() {
     }
     init();
   }, []);
+
+  // Global background keep-alive ping manager for active codespaces
+  useEffect(() => {
+    if (!user?.token) return;
+
+    const reportAllKeepAlives = async () => {
+      if (AppState.currentState !== 'active') return;
+
+      // Collect all active codespaces from dashboard list and opened workspaces
+      const merged = new Map<string, CodespaceVM>();
+      allCodespaces.forEach(cs => merged.set(cs.id, cs));
+      Object.values(openedWorkspaces).forEach(cs => merged.set(cs.id, cs));
+
+      const activeCodespaces = Array.from(merged.values()).filter(
+        (cs) => cs.status === 'active'
+      );
+
+      for (const cs of activeCodespaces) {
+        const targetUrl = cs.connectionUrl;
+        if (!targetUrl) continue;
+
+        // Use user's keepAliveDuration if configured (> 0), otherwise default to 15 mins to keep VM alive while app is open
+        const duration = keepAliveDuration > 0 ? keepAliveDuration : 15;
+
+        try {
+          console.log(`[App Keep-Alive] Pinging active codespace ${cs.id} keep-alive endpoint (duration: ${duration} mins)`);
+          const response = await fetch(`${targetUrl}/api/keepalive`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${user.token}`,
+              'X-GitHub-Token': user.token,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ durationMinutes: duration }),
+          });
+
+          if (!response.ok) {
+            console.warn(`[App Keep-Alive] Failed to ping active codespace ${cs.id}: HTTP ${response.status}`);
+          }
+        } catch (err) {
+          console.warn(`[App Keep-Alive] Failed to ping active codespace ${cs.id} due to network error:`, err);
+        }
+      }
+    };
+
+    // Run immediately and then every 60 seconds
+    reportAllKeepAlives();
+    const interval = setInterval(reportAllKeepAlives, 60000);
+
+    return () => clearInterval(interval);
+  }, [user?.token, allCodespaces, openedWorkspaces, keepAliveDuration]);
 
   const handleLoginSuccess = (token: string, username: string, avatarUrl: string) => {
     setUser({ token, username, avatarUrl });
@@ -139,6 +192,7 @@ export default function App() {
           onDeleteCodespace={handleDeleteCodespaceFromOpened}
           onOpenSettings={() => setActiveTab('settings')}
           isVisible={activeTab === 'dashboard'}
+          onCodespacesUpdated={setAllCodespaces}
         />
       </View>
 

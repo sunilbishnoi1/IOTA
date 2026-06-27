@@ -48,8 +48,8 @@ function getConnectionUrl(codespaceName: string): string {
 /**
  * Checks if the bridge server inside the codespace is actually reachable and running.
  */
-export async function checkBridgeReachable(url: string, token: string, retries = 2): Promise<boolean> {
-  const targetUrl = `${url}/api/status`;
+export async function checkBridgeReachable(url: string, token: string, retries = 2, selfPing = false): Promise<boolean> {
+  const targetUrl = selfPing ? `${url}/api/status?selfPing=true` : `${url}/api/status`;
   
   for (let attempt = 1; attempt <= retries; attempt++) {
     let timeoutId: NodeJS.Timeout | null = null;
@@ -196,7 +196,7 @@ export function startKeepAliveBackgroundWorker() {
     console.log(`[Keep-Alive Manager] Performing self-ping for keepalive to: ${url}`);
     
     try {
-      const isReachable = await checkBridgeReachable(url, selfKeepAliveToken, 1);
+      const isReachable = await checkBridgeReachable(url, selfKeepAliveToken, 1, true);
       reachabilityCache.set(name, {
         isReachable,
         lastChecked: Date.now(),

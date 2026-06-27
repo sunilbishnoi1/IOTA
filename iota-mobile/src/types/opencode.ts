@@ -72,6 +72,7 @@ export interface OpenCodeToolActivity {
   summary?: string;
   startedAt: string;
   completedAt?: string;
+  metadata?: Record<string, any>;
 }
 
 export interface OpenCodeDiffLine {

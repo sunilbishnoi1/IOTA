@@ -10,7 +10,9 @@ const router = Router();
 // GET /api/status - Retrieve bridge/workspace status and OpenCode capability.
 router.get('/status', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    pokeSelfKeepAlive();
+    if (req.query.selfPing !== 'true') {
+      pokeSelfKeepAlive();
+    }
     const [repository, branch, liveCapability] = await Promise.all([
       getRepoPath().catch(() => process.env.GITHUB_REPOSITORY || 'sunilbishnoi1/IOTA'),
       getBranch().catch(() => 'main'),

@@ -29,6 +29,7 @@ interface DashboardScreenProps {
   onDeleteCodespace?: (id: string) => void;
   onOpenSettings: () => void;
   isVisible: boolean;
+  onCodespacesUpdated?: (codespaces: CodespaceVM[]) => void;
 }
 
 // Configurable API URL for bridge server (resolves emulator vs localhost vs custom network IP)
@@ -65,6 +66,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   onDeleteCodespace,
   onOpenSettings,
   isVisible,
+  onCodespacesUpdated,
 }) => {
   const [codespaces, setCodespaces] = useState<CodespaceVM[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -75,6 +77,10 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   const [repoModalVisible, setRepoModalVisible] = useState<boolean>(false);
 
   const pollingIntervals = useRef<Record<string, NodeJS.Timeout>>({});
+
+  useEffect(() => {
+    onCodespacesUpdated?.(codespaces);
+  }, [codespaces, onCodespacesUpdated]);
 
   const fetchRepositories = useCallback(async () => {
     setReposLoading(true);

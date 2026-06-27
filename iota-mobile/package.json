@@ -5,6 +5,7 @@
   "dependencies": {
     "@expo/vector-icons": "^14.0.2",
     "expo": "~51.0.38",
+    "expo-av": "^16.0.8",
     "expo-clipboard": "~6.0.3",
     "expo-router": "~3.5.23",
     "expo-secure-store": "~13.0.2",

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   BackHandler,
   FlatList,
   Keyboard,
@@ -16,6 +17,7 @@ import {
 } from 'react-native';
 import Markdown from 'react-native-markdown-display';
 import * as Clipboard from 'expo-clipboard';
+import { Audio } from 'expo-av';
 
 import { MaterialIcons } from '@expo/vector-icons';
 import io, { Socket } from 'socket.io-client';
@@ -122,15 +124,27 @@ const mergeById = <T extends { id: string }>(local: T[], snapshot: T[]) => {
   return Array.from(merged.values());
 };
 
-const createRunStatusMessage = (status: OpenCodeRunStatusEvent): OpenCodeMessage => ({
-  id: `run-${status.requestId}`,
-  conversationId: status.conversationId,
-  role: 'status',
-  content: status.message,
-  createdAt: new Date().toISOString(),
-  status: status.phase === 'failed' ? 'error' : status.phase === 'stopped' ? 'stopped' : 'complete',
-  metadata: { phase: status.phase, requestId: status.requestId, retryable: status.retryable },
-});
+const createRunStatusMessage = (status: OpenCodeRunStatusEvent): OpenCodeMessage => {
+  let content = status.message;
+  if (
+    ['server_start', 'attached_run', 'direct_run'].includes(status.phase) ||
+    content.toLowerCase().includes('checking opencode') ||
+    content.toLowerCase().includes('warm server') ||
+    content.toLowerCase().includes('starting attached') ||
+    content.toLowerCase().includes('direct execution')
+  ) {
+    content = 'working...';
+  }
+  return {
+    id: `run-${status.requestId}`,
+    conversationId: status.conversationId,
+    role: 'status',
+    content,
+    createdAt: new Date().toISOString(),
+    status: status.phase === 'failed' ? 'error' : status.phase === 'stopped' ? 'stopped' : 'complete',
+    metadata: { phase: status.phase, requestId: status.requestId, retryable: status.retryable },
+  };
+};
 
 const markdownStyles: Record<string, any> = {
   body: {
@@ -215,6 +229,15 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const [running, setRunning] = useState(false);
   const [runStatusText, setRunStatusText] = useState<string | null>(null);
   const [showBanner, setShowBanner] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(true);
+
+  // VOICE STT & LAYOUT HEIGHT STATES
+  const [groqApiKey, setGroqApiKey] = useState<string | null>(null);
+  const [soundRecording, setSoundRecording] = useState<Audio.Recording | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [inputHeight, setInputHeight] = useState(44);
+  const [waveAnim] = useState(() => new Animated.Value(0));
 
   const conversationScope = useMemo(() => sanitizeConversationScope(activeCodespace.id || activeCodespace.repositoryName || activeCodespace.connectionUrl || 'default'), [activeCodespace.id, activeCodespace.repositoryName, activeCodespace.connectionUrl]);
   const defaultConversationId = useMemo(() => `opencode-${conversationScope}`, [conversationScope]);
@@ -225,6 +248,8 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const flatListRef = useRef<FlatList<GroupedItem>>(null);
   const textInputRef = useRef<TextInput>(null);
   const [expandedTurns, setExpandedTurns] = useState<Record<string, boolean>>({});
+  const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
+  const [expandedThoughts, setExpandedThoughts] = useState<Record<string, boolean>>({});
 
   const groupedTimelineItems = useMemo<GroupedItem[]>(() => {
     const allEvents = [
@@ -311,6 +336,126 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const canSubmit = socketStatus === 'connected' && capability.canSubmit && !running && inputPrompt.trim().length > 0;
   const statusText = socketStatus === 'connected' ? capability.details : socketStatus === 'connecting' ? 'Connecting to bridge...' : 'Disconnected from bridge';
   const bannerText = (running && runStatusText) ? runStatusText : statusText;
+
+  // Load Groq API Key
+  useEffect(() => {
+    async function loadGroqApiKey() {
+      try {
+        const key = await secureStoreService.getApiKey('GROQ_API_KEY');
+        setGroqApiKey(key);
+      } catch (err) {
+        console.warn('[ControlScreen] Failed to load Groq API key:', err);
+      }
+    }
+    if (isVisible) {
+      loadGroqApiKey();
+    }
+  }, [isVisible]);
+
+  // Audio wave animation loop
+  useEffect(() => {
+    if (isRecording) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(waveAnim, {
+            toValue: 1,
+            duration: 500,
+            useNativeDriver: true,
+          }),
+          Animated.timing(waveAnim, {
+            toValue: 0,
+            duration: 500,
+            useNativeDriver: true,
+          }),
+        ])
+      ).start();
+    } else {
+      waveAnim.setValue(0);
+    }
+  }, [isRecording]);
+
+  const startRecording = async () => {
+    try {
+      const permission = await Audio.requestPermissionsAsync();
+      if (permission.status !== 'granted') {
+        Alert.alert('Permission Denied', 'Please grant microphone access to record audio.');
+        return;
+      }
+
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      });
+
+      const { recording: newRecording } = await Audio.Recording.createAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY
+      );
+
+      setSoundRecording(newRecording);
+      setIsRecording(true);
+    } catch (err) {
+      console.error('[ControlScreen] Failed to start recording:', err);
+      Alert.alert('Recording failed', 'Could not access microphone.');
+    }
+  };
+
+  const stopRecording = async () => {
+    if (!soundRecording) return;
+    setIsRecording(false);
+    try {
+      await soundRecording.stopAndUnloadAsync();
+      const uri = soundRecording.getURI();
+      setSoundRecording(null);
+
+      if (!uri) {
+        throw new Error('Could not retrieve audio path');
+      }
+
+      setIsTranscribing(true);
+      await transcribeAudio(uri);
+    } catch (err: any) {
+      console.error('[ControlScreen] Failed to stop recording:', err);
+      Alert.alert('Transcription failed', err.message || 'An error occurred during audio processing.');
+      setIsTranscribing(false);
+    }
+  };
+
+  const transcribeAudio = async (fileUri: string) => {
+    if (!groqApiKey) return;
+    try {
+      const formData = new FormData();
+      formData.append('file', {
+        uri: fileUri,
+        type: Platform.OS === 'ios' ? 'audio/m4a' : 'audio/mp4',
+        name: 'audio.m4a',
+      } as any);
+      formData.append('model', 'whisper-large-v3');
+
+      const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${groqApiKey}`,
+          'Content-Type': 'multipart/form-data',
+        },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData?.error?.message || `HTTP error ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (data.text) {
+        setInputPrompt((prev) => (prev ? `${prev} ${data.text}` : data.text));
+      }
+    } catch (error: any) {
+      console.warn('[ControlScreen] Transcription service error:', error);
+      Alert.alert('Transcription Failed', error.message || 'Could not contact transcription API.');
+    } finally {
+      setIsTranscribing(false);
+    }
+  };
 
   useEffect(() => {
     conversationIdRef.current = conversationId;
@@ -466,6 +611,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             setFileChanges((prev) => mergeById(prev, conversation.fileChanges || []));
             setApprovals((prev) => mergeById(prev, conversation.approvals || []));
             setRunning(Boolean(conversation.activeRequestId) || conversation.status === 'running');
+            setIsSyncing(false);
           },
           onMessage: ({ conversationId: nextConversationId, message }) => {
             setConversationId(nextConversationId);
@@ -541,34 +687,6 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
       socketRef.current.emit('opencode:keepalive', { durationMinutes: keepAliveDuration });
     }
   }, [keepAliveDuration, socketStatus]);
-
-  // Periodic keep-alive REST pings to remote bridge to generate port forwarding activity
-  useEffect(() => {
-    const targetUrl = activeCodespace.connectionUrl;
-    if (!targetUrl || keepAliveDuration <= 0) return;
-
-    const reportActivity = async () => {
-      try {
-        console.log('[ControlScreen] Pinging remote bridge keep-alive endpoint');
-        await fetch(`${targetUrl}/api/keepalive`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${user.token}`,
-            'X-GitHub-Token': user.token,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ durationMinutes: keepAliveDuration }),
-        });
-      } catch (err) {
-        console.warn('[ControlScreen] Failed to report activity keep-alive:', err);
-      }
-    };
-
-    reportActivity();
-    const interval = setInterval(reportActivity, 60000); // Ping every 60s to ensure active state
-
-    return () => clearInterval(interval);
-  }, [activeCodespace.connectionUrl, keepAliveDuration, user.token]);
 
   // Inbuilt/hardware back button handler
   useEffect(() => {
@@ -681,6 +799,44 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     return !content.includes('\n') && !content.includes('```') && content.length < 60;
   };
 
+  const parseMessageThoughts = (content: string): { cleanContent: string; thoughts?: string } => {
+    const match = content.match(/<thought>([\s\S]*?)<\/thought>/);
+    if (match) {
+      const thoughts = match[1].trim();
+      const cleanContent = content.replace(/<thought>[\s\S]*?<\/thought>/, '').trim();
+      return { cleanContent, thoughts };
+    }
+    return { cleanContent: content };
+  };
+
+  const renderThinkingAccordion = (thinkingText: string, turnId: string) => {
+    const isExpanded = !!expandedThoughts[turnId];
+    return (
+      <View style={styles.thinkingTextContainer}>
+        <TouchableOpacity
+          style={styles.thinkingTextHeader}
+          onPress={() => setExpandedThoughts(prev => ({ ...prev, [turnId]: !prev[turnId] }))}
+          activeOpacity={0.7}
+        >
+          <View style={styles.thinkingLeft}>
+            <MaterialIcons name="psychology" size={16} color={Theme.colors.primary.glow} />
+            <Text style={styles.thinkingTitle}>Thought Process</Text>
+          </View>
+          <MaterialIcons
+            name={isExpanded ? 'keyboard-arrow-up' : 'keyboard-arrow-down'}
+            size={18}
+            color={Theme.colors.text.secondary}
+          />
+        </TouchableOpacity>
+        {isExpanded && (
+          <ScrollView style={styles.thinkingTextScroll} nestedScrollEnabled>
+            <Text style={styles.thinkingTextBody}>{thinkingText}</Text>
+          </ScrollView>
+        )}
+      </View>
+    );
+  };
+
   const renderMessage = (message: OpenCodeMessage) => {
     const isUser = message.role === 'user';
     const isSystem = message.role === 'system' || message.role === 'status';
@@ -689,7 +845,18 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
       return null;
     }
 
-    const content = message.content;
+    let content = message.content;
+    let thoughts: string | undefined;
+
+    if (message.role === 'assistant') {
+      const parsed = parseMessageThoughts(content);
+      content = parsed.cleanContent;
+      thoughts = parsed.thoughts;
+    }
+
+    if (!content.trim() && thoughts) {
+      return renderThinkingAccordion(thoughts, message.id);
+    }
 
     if (message.role === 'assistant') {
       const isShort = isShortSingleLine(content);
@@ -698,7 +865,10 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           styles.assistantContainer,
           isShort ? styles.assistantShort : styles.assistantFullWidth
         ]}>
-          <Markdown rules={markdownRules} style={markdownStyles}>{content}</Markdown>
+          {!!thoughts && renderThinkingAccordion(thoughts, message.id)}
+          {!!content.trim() && (
+            <Markdown rules={markdownRules} style={markdownStyles}>{content}</Markdown>
+          )}
         </View>
       );
     }
@@ -710,6 +880,55 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
         ) : (
           <Markdown rules={markdownRules} style={markdownStyles}>{content}</Markdown>
         )}
+      </View>
+    );
+  };
+
+  const renderToolActivityDetails = (activity: OpenCodeToolActivity) => {
+    const meta = activity.metadata;
+    if (!meta) return null;
+
+    return (
+      <View style={styles.toolDetailCard}>
+        <View style={styles.toolDetailContent}>
+          {activity.kind === 'command' && (
+            <View>
+              {!!meta.commandLine && <Text style={styles.detailCodeHeader}>$ {meta.commandLine}</Text>}
+              {!!meta.cwd && <Text style={styles.detailMetaText}>Cwd: {meta.cwd}</Text>}
+              <View style={styles.terminalContainer}>
+                {!!meta.stdout && <Text style={styles.terminalStdout}>{meta.stdout}</Text>}
+                {!!meta.stderr && <Text style={styles.terminalStderr}>{meta.stderr}</Text>}
+                {meta.exitCode !== undefined && (
+                  <Text style={styles.terminalExitCode}>Process exited with code {meta.exitCode}</Text>
+                )}
+              </View>
+            </View>
+          )}
+
+          {activity.kind === 'file_read' && (
+            <View>
+              <Text style={styles.detailMetaText}>Read {meta.filePath} (Lines {meta.startLine ?? 1}-{meta.endLine ?? 'EOF'})</Text>
+              {!!meta.content && (
+                <ScrollView horizontal style={styles.codeBlockScroll} contentContainerStyle={styles.codeBlockScrollContent}>
+                  <Text style={styles.codeBlockText}>{meta.content}</Text>
+                </ScrollView>
+              )}
+            </View>
+          )}
+
+          {activity.kind === 'search' && (
+            <View>
+              {!!meta.query && <Text style={styles.detailMetaText}>Search Query: "{meta.query}"</Text>}
+              {meta.results && meta.results.map((res: any, idx: number) => (
+                <View key={idx} style={styles.searchResultRow}>
+                  <Text style={styles.searchResultTitle} onPress={() => {}}>{res.title}</Text>
+                  <Text style={styles.searchResultUrl}>{res.url}</Text>
+                  <Text style={styles.searchResultSnippet}>{res.snippet}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
       </View>
     );
   };
@@ -733,17 +952,35 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
       iconColor = Theme.colors.accent.glow;
     }
 
+    const hasMeta = activity.metadata && Object.keys(activity.metadata).length > 0;
+    const isExpanded = !!expandedTools[activity.id];
+
     return (
-      <View key={`tool-${activity.id}`} style={styles.statusRow}>
-        {isRunning ? (
-          <ActivityIndicator size="small" color={iconColor} style={{ marginRight: 2 }} />
-        ) : (
-          <MaterialIcons name={iconName} size={16} color={iconColor} />
-        )}
-        <View style={styles.statusTextWrap}>
-          <Text style={styles.statusTitle}>{activity.label}</Text>
-          {!!activity.summary && <Text style={styles.statusSubtitle}>{activity.summary}</Text>}
-        </View>
+      <View key={`tool-${activity.id}`} style={{ marginBottom: 6 }}>
+        <TouchableOpacity
+          style={styles.statusRow}
+          onPress={() => hasMeta && setExpandedTools((prev) => ({ ...prev, [activity.id]: !prev[activity.id] }))}
+          disabled={!hasMeta}
+          activeOpacity={hasMeta ? 0.7 : 1}
+        >
+          {isRunning ? (
+            <ActivityIndicator size="small" color={iconColor} style={{ marginRight: 2 }} />
+          ) : (
+            <MaterialIcons name={iconName} size={16} color={iconColor} />
+          )}
+          <View style={styles.statusTextWrap}>
+            <Text style={styles.statusTitle}>{activity.label}</Text>
+            {!!activity.summary && <Text style={styles.statusSubtitle}>{activity.summary}</Text>}
+          </View>
+          {hasMeta && (
+            <MaterialIcons
+              name={isExpanded ? 'expand-less' : 'expand-more'}
+              size={18}
+              color={Theme.colors.text.secondary}
+            />
+          )}
+        </TouchableOpacity>
+        {isExpanded && hasMeta && renderToolActivityDetails(activity)}
       </View>
     );
   };
@@ -975,6 +1212,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     await secureStoreService.saveOpenCodeConversationId(conversationScope, newId).catch(() => undefined);
 
     if (socketRef.current && socketStatus === 'connected') {
+      setIsSyncing(true);
       emitOpenCodeSync(socketRef.current, newId);
     }
   };
@@ -991,6 +1229,31 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     setTimeout(() => {
       textInputRef.current?.focus();
     }, 100);
+  };
+
+  const renderVoiceWaves = () => {
+    return (
+      <View style={styles.wavesContainer}>
+        {[0.4, 0.9, 0.6, 0.8, 0.5].map((scaleFactor, index) => {
+          const heightScale = waveAnim.interpolate({
+            inputRange: [0, 1],
+            outputRange: [1, 2.5 * scaleFactor],
+          });
+          return (
+            <Animated.View
+              key={index}
+              style={[
+                styles.waveBar,
+                {
+                  transform: [{ scaleY: heightScale }],
+                },
+              ]}
+            />
+          );
+        })}
+        <Text style={styles.recordingText}>Listening...</Text>
+      </View>
+    );
   };
 
   return (
@@ -1051,42 +1314,88 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               keyExtractor={(item) => item.key}
               renderItem={renderItem}
               contentContainerStyle={groupedTimelineItems.length ? styles.timelineContent : styles.emptyContent}
-              ListEmptyComponent={(
-                <View style={styles.emptyState}>
-                  <MaterialIcons name="chat-bubble-outline" size={44} color="rgba(255,255,255,0.18)" />
-                  <Text style={styles.emptyTitle}>Ready for an OpenCode task</Text>
-                  <Text style={styles.emptySubtitle}>Send a coding request when the bridge reports OpenCode is ready.</Text>
-                  <View style={styles.pillsContainer}>
-                    {promptPills.map((pill) => (
-                      <TouchableOpacity
-                        key={pill.label}
-                        style={styles.pillButton}
-                        onPress={() => handlePillPress(pill.text)}
-                        activeOpacity={0.7}
-                      >
-                        <Text style={styles.pillText}>{pill.label}</Text>
-                      </TouchableOpacity>
-                    ))}
+              ListEmptyComponent={
+                isSyncing ? (
+                  <View style={styles.emptyState}>
+                    <ActivityIndicator size="large" color={Theme.colors.primary.glow} />
+                    <Text style={styles.emptyTitle}>Syncing conversation...</Text>
+                    <Text style={styles.emptySubtitle}>Loading chat history from Codespace bridge...</Text>
                   </View>
-                </View>
-              )}
+                ) : (
+                  <View style={styles.emptyState}>
+                    <MaterialIcons name="chat-bubble-outline" size={44} color="rgba(255,255,255,0.18)" />
+                    <Text style={styles.emptyTitle}>Ready for an OpenCode task</Text>
+                    <Text style={styles.emptySubtitle}>Send a coding request when the bridge reports OpenCode is ready.</Text>
+                    <View style={styles.pillsContainer}>
+                      {promptPills.map((pill) => (
+                        <TouchableOpacity
+                          key={pill.label}
+                          style={styles.pillButton}
+                          onPress={() => handlePillPress(pill.text)}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={styles.pillText}>{pill.label}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </View>
+                )
+              }
             />
 
             <View style={styles.bottomBar}>
-              <View style={styles.inputWrapper}>
-                <TextInput
-                  ref={textInputRef}
-                  style={styles.textInput}
-                  value={inputPrompt}
-                  onChangeText={setInputPrompt}
-                  placeholder={capability.canSubmit ? 'Ask OpenCode to change code...' : 'OpenCode is not ready'}
-                  placeholderTextColor="rgba(255, 255, 255, 0.35)"
-                  multiline
-                  editable={socketStatus === 'connected' && capability.canSubmit && !running}
-                />
-                <TouchableOpacity style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]} onPress={handleSubmitPrompt} disabled={!canSubmit}>
-                  <MaterialIcons name="arrow-upward" size={20} color="#ffffff" />
-                </TouchableOpacity>
+              <View style={[styles.inputWrapper, { minHeight: 48, height: isRecording ? 48 : Math.max(48, inputHeight) }]}>
+                {isRecording ? (
+                  renderVoiceWaves()
+                ) : (
+                  <TextInput
+                    ref={textInputRef}
+                    style={[styles.textInput, { height: Math.max(36, inputHeight - 12) }]}
+                    value={inputPrompt}
+                    onChangeText={setInputPrompt}
+                    placeholder={capability.canSubmit ? 'Ask OpenCode to change code...' : 'OpenCode is not ready'}
+                    placeholderTextColor="rgba(255, 255, 255, 0.35)"
+                    multiline
+                    onContentSizeChange={(e) => {
+                      setInputHeight(Math.min(150, Math.max(44, e.nativeEvent.contentSize.height + 12)));
+                    }}
+                    editable={socketStatus === 'connected' && capability.canSubmit && !running && !isTranscribing}
+                  />
+                )}
+
+                <View style={styles.actionButtonsContainer}>
+                  {!!groqApiKey && !running && (
+                    <TouchableOpacity
+                      style={[
+                        styles.micButton,
+                        isRecording && styles.micButtonRecording
+                      ]}
+                      onPress={isRecording ? stopRecording : startRecording}
+                      disabled={isTranscribing}
+                      activeOpacity={0.7}
+                    >
+                      {isTranscribing ? (
+                        <ActivityIndicator size="small" color={Theme.colors.primary.glow} />
+                      ) : (
+                        <MaterialIcons
+                          name={isRecording ? 'stop' : 'mic'}
+                          size={18}
+                          color={isRecording ? '#ffffff' : Theme.colors.primary.glow}
+                        />
+                      )}
+                    </TouchableOpacity>
+                  )}
+
+                  {!isRecording && (
+                    <TouchableOpacity 
+                      style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]} 
+                      onPress={handleSubmitPrompt} 
+                      disabled={!canSubmit || isTranscribing}
+                    >
+                      <MaterialIcons name="arrow-upward" size={20} color="#ffffff" />
+                    </TouchableOpacity>
+                  )}
+                </View>
               </View>
             </View>
           </>
@@ -1610,5 +1919,169 @@ const styles = StyleSheet.create({
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
     color: '#e2e8f0',
     fontSize: 13,
+  },
+  actionButtonsContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  micButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: 'rgba(99, 102, 241, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(99, 102, 241, 0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  micButtonRecording: {
+    backgroundColor: Theme.colors.accent.default,
+    borderColor: Theme.colors.accent.glow,
+  },
+  wavesContainer: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    gap: 6,
+    height: 36,
+    paddingHorizontal: 8,
+  },
+  waveBar: {
+    width: 4,
+    height: 12,
+    backgroundColor: Theme.colors.primary.glow,
+    borderRadius: 2,
+  },
+  recordingText: {
+    marginLeft: 10,
+    fontSize: 13,
+    fontWeight: '600',
+    color: Theme.colors.text.secondary,
+  },
+  toolDetailCard: {
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+    borderRadius: 6,
+    backgroundColor: 'rgba(255,255,255,0.01)',
+    overflow: 'hidden',
+  },
+  toolDetailHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    backgroundColor: 'rgba(255,255,255,0.02)',
+  },
+  toolDetailHeaderLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Theme.colors.text.secondary,
+  },
+  toolDetailContent: {
+    padding: 10,
+    backgroundColor: 'rgba(0,0,0,0.15)',
+    borderTopWidth: 1,
+    borderTopColor: Theme.colors.border,
+  },
+  detailCodeHeader: {
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#34d399',
+    marginBottom: 6,
+  },
+  detailMetaText: {
+    fontSize: 11,
+    color: Theme.colors.text.muted,
+    marginBottom: 6,
+  },
+  terminalContainer: {
+    backgroundColor: '#030014',
+    borderRadius: 6,
+    padding: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.05)',
+  },
+  terminalStdout: {
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontSize: 11,
+    color: '#f8fafc',
+    lineHeight: 15,
+  },
+  terminalStderr: {
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontSize: 11,
+    color: '#fca5a5',
+    lineHeight: 15,
+  },
+  terminalExitCode: {
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontSize: 10,
+    fontWeight: '700',
+    color: Theme.colors.text.muted,
+    marginTop: 4,
+  },
+  searchResultRow: {
+    marginBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
+    paddingBottom: 6,
+  },
+  searchResultTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: Theme.colors.primary.glow,
+    textDecorationLine: 'underline',
+  },
+  searchResultUrl: {
+    fontSize: 10,
+    color: Theme.colors.text.muted,
+    marginVertical: 2,
+  },
+  searchResultSnippet: {
+    fontSize: 12,
+    color: Theme.colors.text.secondary,
+    lineHeight: 16,
+  },
+  thinkingTextContainer: {
+    marginVertical: 4,
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+    borderRadius: 6,
+    backgroundColor: 'rgba(99, 102, 241, 0.03)',
+    overflow: 'hidden',
+  },
+  thinkingTextHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    backgroundColor: 'rgba(99, 102, 241, 0.05)',
+  },
+  thinkingLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  thinkingTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: Theme.colors.primary.glow,
+  },
+  thinkingTextScroll: {
+    maxHeight: 120,
+    padding: 8,
+    borderTopWidth: 1,
+    borderTopColor: Theme.colors.border,
+  },
+  thinkingTextBody: {
+    fontSize: 12,
+    color: Theme.colors.text.secondary,
+    lineHeight: 17,
   },
 });

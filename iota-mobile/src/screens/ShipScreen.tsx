@@ -120,6 +120,65 @@ export const ShipScreen: React.FC<ShipScreenProps> = ({
     }
   };
 
+  const handleStageHunk = async (file: string, hunkHeader: string, patchLines: string[]) => {
+    if (!bridgeUrl) return;
+    setLoading(true);
+    try {
+      const patch = `--- a/${file}\n+++ b/${file}\n${hunkHeader}\n${patchLines.join('\n')}\n`;
+      const response = await fetch(`${bridgeUrl}/api/git/stage-hunk`, {
+        method: 'POST',
+        headers: {
+          ...authHeaders,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ file, patch }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Failed to stage hunk.');
+      applyDiffPayload(data);
+    } catch (error: any) {
+      Alert.alert('Git staging failed', error.message || 'Unable to stage hunk.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDiscardHunk = async (file: string, hunkHeader: string, patchLines: string[]) => {
+    if (!bridgeUrl) return;
+    Alert.alert(
+      'Discard Change',
+      'Are you sure you want to discard this specific change hunk? This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Discard',
+          style: 'destructive',
+          onPress: async () => {
+            setLoading(true);
+            try {
+              const patch = `--- a/${file}\n+++ b/${file}\n${hunkHeader}\n${patchLines.join('\n')}\n`;
+              const response = await fetch(`${bridgeUrl}/api/git/discard-hunk`, {
+                method: 'POST',
+                headers: {
+                  ...authHeaders,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ file, patch }),
+              });
+              const data = await response.json().catch(() => ({}));
+              if (!response.ok) throw new Error(data.error || 'Failed to discard hunk.');
+              applyDiffPayload(data);
+            } catch (error: any) {
+              Alert.alert('Git discard failed', error.message || 'Unable to discard hunk.');
+            } finally {
+              setLoading(false);
+            }
+          }
+        }
+      ]
+    );
+  };
+
   const handleCommitAndPush = async () => {
     if (!commitMessage.trim()) {
       Alert.alert('Commit message required', 'Enter a commit message describing the staged changes.');
@@ -248,7 +307,12 @@ export const ShipScreen: React.FC<ShipScreenProps> = ({
                 <Text style={styles.selectedFileName} numberOfLines={1}>{selectedFile.file.split('/').pop()}</Text>
               </View>
               <View style={styles.diffViewerContainer}>
-                <DiffViewer hunks={selectedFile.hunks} />
+                <DiffViewer 
+                  hunks={selectedFile.hunks} 
+                  filePath={selectedFile.file}
+                  onStageHunk={handleStageHunk}
+                  onDiscardHunk={handleDiscardHunk}
+                />
               </View>
             </>
           )}

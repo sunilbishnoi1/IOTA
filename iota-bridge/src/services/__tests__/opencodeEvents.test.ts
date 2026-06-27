@@ -189,4 +189,33 @@ describe('normalizeOpenCodePayload', () => {
       sessionId: 'ses_123'
     });
   });
+
+  it('correctly maps tool activity metadata (query, commandLine, etc)', () => {
+    const payload = {
+      type: 'tool_completed',
+      metadata: {
+        commandLine: 'npm test',
+        cwd: '/workspace',
+        exitCode: 0,
+        stdout: 'Tests passed!'
+      },
+      part: {
+        tool_call_id: 'tool-call-x',
+        name: 'run_command',
+        status: 'completed',
+        label: 'Executing tests',
+      }
+    };
+    const events = normalizeOpenCodePayload(payload, convId, msgId);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('tool_activity');
+    if (events[0].type === 'tool_activity') {
+      expect(events[0].activity.metadata).toEqual({
+        commandLine: 'npm test',
+        cwd: '/workspace',
+        exitCode: 0,
+        stdout: 'Tests passed!'
+      });
+    }
+  });
 });

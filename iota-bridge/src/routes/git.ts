@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
-import { getGitDiff, commitAndPush, stageFiles, unstageFiles } from '../services/git';
+import { getGitDiff, commitAndPush, stageFiles, unstageFiles, stageHunk, discardHunk } from '../services/git';
 
 const router = Router();
 
@@ -54,6 +54,34 @@ router.post('/git/commit', requireAuth, async (req: AuthenticatedRequest, res: R
   } catch (error: any) {
     console.error('Failed to commit and push changes:', error);
     res.status(500).json({ error: error.message || 'Failed to commit and push changes' });
+  }
+});
+
+router.post('/git/stage-hunk', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { file, patch } = req.body;
+    if (!file || !patch) {
+      return res.status(400).json({ error: 'File and patch diff are required.' });
+    }
+    const diff = await stageHunk(file, patch);
+    res.json(diff);
+  } catch (error: any) {
+    console.error('Failed to stage hunk:', error);
+    res.status(400).json({ error: error.message || 'Failed to stage selected hunk' });
+  }
+});
+
+router.post('/git/discard-hunk', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { file, patch } = req.body;
+    if (!file || !patch) {
+      return res.status(400).json({ error: 'File and patch diff are required.' });
+    }
+    const diff = await discardHunk(file, patch);
+    res.json(diff);
+  } catch (error: any) {
+    console.error('Failed to discard hunk:', error);
+    res.status(400).json({ error: error.message || 'Failed to discard selected hunk' });
   }
 });
 

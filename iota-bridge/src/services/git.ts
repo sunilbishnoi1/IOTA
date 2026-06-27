@@ -1,4 +1,4 @@
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
 import { getWorkspaceRoot } from './logger';
@@ -220,4 +220,47 @@ export async function commitAndPush(token: string, message: string): Promise<{ c
     console.error('Failed in commitAndPush:', error);
     throw error;
   }
+}
+
+async function gitApplyPatch(patchText: string, extraArgs: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', ['apply', ...extraArgs, '-'], {
+      cwd: getWorkspaceRoot(),
+    });
+
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`git apply failed (exit code ${code}): ${stderr}`));
+      }
+    });
+
+    child.on('error', (err) => {
+      reject(err);
+    });
+
+    child.stdin.write(patchText);
+    child.stdin.end();
+  });
+}
+
+export async function stageHunk(file: string, patchText: string): Promise<GitDiffResponse> {
+  await gitApplyPatch(patchText, ['--cached']);
+  return await getGitDiff();
+}
+
+export async function discardHunk(file: string, patchText: string): Promise<GitDiffResponse> {
+  try {
+    await gitApplyPatch(patchText, ['--cached', '--reverse']);
+  } catch (e) {
+    // Ignore if not staged
+  }
+  await gitApplyPatch(patchText, ['--reverse']);
+  return await getGitDiff();
 }

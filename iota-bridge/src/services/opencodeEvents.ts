@@ -201,6 +201,25 @@ export function normalizeOpenCodePayload(
         ? (statusVal === 'failed' ? 'failed' : 'completed') 
         : ((statusVal as OpenCodeToolActivity['status']) || 'running');
 
+    const extractMetadata = (): Record<string, any> => {
+      const src = (event.part && typeof event.part === 'object' ? { ...event, ...(event.part as any) } : event) as Record<string, any>;
+      const meta: Record<string, any> = {};
+      if (src.metadata && typeof src.metadata === 'object') {
+        Object.assign(meta, src.metadata);
+      }
+      const directKeys = [
+        'query', 'results', 'domain',
+        'filePath', 'startLine', 'endLine', 'content', 'fileSize',
+        'commandLine', 'cwd', 'stdout', 'stderr', 'exitCode'
+      ];
+      for (const k of directKeys) {
+        if (src[k] !== undefined) {
+          meta[k] = src[k];
+        }
+      }
+      return meta;
+    };
+
     const activity: OpenCodeToolActivity = {
       id: stableId('tool', event),
       conversationId,
@@ -210,6 +229,7 @@ export function normalizeOpenCodePayload(
       summary: getVal(['summary', 'input']),
       startedAt: now(),
       completedAt: isFinish ? now() : undefined,
+      metadata: extractMetadata(),
     };
     events.push({ type: 'tool_activity', conversationId, activity });
     return events;
