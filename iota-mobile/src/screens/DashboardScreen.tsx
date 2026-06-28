@@ -238,9 +238,13 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
       clearInterval(pollingIntervals.current[id]);
     }
 
+    let pollCount = 0;
+    const maxPolls = 100; // Stop after ~5 minutes
+
     const timer = setInterval(async () => {
-      if (!isVisible) {
-        console.log(`[Codespace Poller] Stopping poll for ${id} because dashboard is hidden`);
+      pollCount++;
+      if (!isVisible || pollCount > maxPolls) {
+        console.log(`[Codespace Poller] Stopping poll for ${id} (isVisible=${isVisible}, pollCount=${pollCount})`);
         clearInterval(pollingIntervals.current[id]);
         delete pollingIntervals.current[id];
         return;
@@ -249,12 +253,23 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
         const updatedCs = await getUserCodespace(bridgeUrl, user.token, id);
         console.log(`[Codespace Poller] Poll response for ${id}: status=${updatedCs.status}, rawState=${updatedCs.rawState}, connectionUrl=${updatedCs.connectionUrl}`);
         
+        let finalCs = updatedCs;
+        // If it's sleeping, but we've polled fewer than 6 times (~15 seconds),
+        // treat it as starting. This handles the GitHub API lag during wake-up.
+        if (updatedCs.status === 'sleeping' && pollCount < 6) {
+          finalCs = {
+            ...updatedCs,
+            status: 'starting' as const,
+            rawState: 'Starting',
+          };
+        }
+
         setCodespaces((prev) =>
-          prev.map((cs) => (cs.id === id ? updatedCs : cs))
+          prev.map((cs) => (cs.id === id ? finalCs : cs))
         );
 
-        if (updatedCs.status === 'active' || updatedCs.status === 'sleeping') {
-          console.log(`[Codespace Poller] Polling finished for ${id} (final status: ${updatedCs.status})`);
+        if (finalCs.status === 'active' || finalCs.status === 'sleeping') {
+          console.log(`[Codespace Poller] Polling finished for ${id} (final status: ${finalCs.status})`);
           clearInterval(pollingIntervals.current[id]);
           delete pollingIntervals.current[id];
         }
@@ -275,17 +290,25 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
       // Optmistically set starting state
       setCodespaces((prev) =>
         prev.map((cs) =>
-          cs.id === id ? { ...cs, status: 'starting' } : cs
+          cs.id === id ? { ...cs, status: 'starting', rawState: 'Starting' } : cs
         )
       );
 
       try {
         const updatedCs = await startUserCodespace(bridgeUrl, user.token, id);
+        
+        // If it's sleeping, override to starting to keep the UI in starting state
+        const finalCs = updatedCs.status === 'sleeping' ? {
+          ...updatedCs,
+          status: 'starting' as const,
+          rawState: 'Starting',
+        } : updatedCs;
+
         setCodespaces((prev) =>
-          prev.map((cs) => (cs.id === id ? updatedCs : cs))
+          prev.map((cs) => (cs.id === id ? finalCs : cs))
         );
         
-        if (updatedCs.status === 'starting') {
+        if (finalCs.status === 'starting') {
           startPollingCodespace(id);
         }
       } catch (err) {

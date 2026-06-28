@@ -16,6 +16,7 @@ import { ShaderGradient } from '../components/ShaderGradient';
 import { oauthService, DeviceCodeResponse } from '../services/oauth';
 import { secureStoreService } from '../services/secureStore';
 import { Theme } from '../styles/theme';
+import * as Clipboard from 'expo-clipboard';
 
 interface LoginScreenProps {
   onLoginSuccess: (token: string, username: string, avatarUrl: string) => void;
@@ -28,6 +29,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const [deviceCodeData, setDeviceCodeData] = useState<DeviceCodeResponse | null>(null);
   const [progressMessage, setProgressMessage] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string>('');
+  const [copied, setCopied] = useState<boolean>(false);
   
   // Animation values
   const spinValue = useRef(new Animated.Value(0)).current;
@@ -80,6 +82,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const handleStartAuth = async () => {
     setAuthState('requesting_code');
     setErrorMessage('');
+    setCopied(false);
     try {
       const data = await oauthService.requestDeviceCode();
       setDeviceCodeData(data);
@@ -148,6 +151,21 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
     setAuthState('idle');
     setDeviceCodeData(null);
     setErrorMessage('');
+    setCopied(false);
+  };
+
+  const handleCopyCode = async () => {
+    if (deviceCodeData?.user_code) {
+      try {
+        await Clipboard.setStringAsync(deviceCodeData.user_code);
+        setCopied(true);
+        setTimeout(() => {
+          setCopied(false);
+        }, 2000);
+      } catch (err) {
+        console.error('Failed to copy code:', err);
+      }
+    }
   };
 
   const handleOpenBrowser = () => {
@@ -199,7 +217,25 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
 
           {authState === 'display_code' && deviceCodeData && (
             <View style={styles.codeContainer}>
-              <Text style={styles.codeLabel}>DEVICE ACTIVATION CODE</Text>
+              <View style={styles.codeHeaderRow}>
+                <Text style={styles.codeLabel}>DEVICE ACTIVATION CODE</Text>
+                <TouchableOpacity
+                  style={styles.labelCopyButton}
+                  onPress={handleCopyCode}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Copy activation code"
+                >
+                  <MaterialIcons
+                    name={copied ? "check" : "content-copy"}
+                    size={12}
+                    color={copied ? Theme.colors.secondary.default : Theme.colors.text.secondary}
+                  />
+                  <Text style={[styles.copyButtonText, copied && { color: Theme.colors.secondary.default }]}>
+                    {copied ? "COPIED" : "COPY"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
               <View style={styles.codeBox}>
                 <Text style={styles.codeText}>{deviceCodeData.user_code}</Text>
               </View>
@@ -396,7 +432,29 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: Theme.colors.text.muted,
     letterSpacing: 2,
+  },
+  codeHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '100%',
     marginBottom: 12,
+  },
+  labelCopyButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    borderColor: Theme.colors.border,
+    borderWidth: 1,
+    borderRadius: 4,
+  },
+  copyButtonText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: Theme.colors.text.secondary,
+    marginLeft: 4,
   },
   codeBox: {
     backgroundColor: '#000000',

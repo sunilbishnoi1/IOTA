@@ -80,7 +80,10 @@ export const BentoCard: React.FC<BentoCardProps> = ({ item, onPowerToggle, onDel
           if (raw === 'Available') {
             return 'Starting Bridge...';
           }
-          return `Booting (${raw})...`;
+          const normalizedRaw = item.rawState.toLowerCase();
+          if (normalizedRaw === 'starting' || normalizedRaw === 'provisioning' || normalizedRaw === 'queued') {
+            return `Booting (${raw})...`;
+          }
         }
         return 'Booting...';
       case 'stopping':

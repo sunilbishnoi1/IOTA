@@ -313,7 +313,7 @@ describe('SlashCommandsAutocomplete Component', () => {
 
     const { toJSON: toJSON2 } = render(
       <SlashCommandsAutocomplete
-        inputPrompt="/models "
+        inputPrompt="/sessions "
         setInputPrompt={setInputPrompt}
         inputHeight={44}
         textInputRef={textInputRef}
@@ -328,14 +328,14 @@ describe('SlashCommandsAutocomplete Component', () => {
 
     render(
       <SlashCommandsAutocomplete
-        inputPrompt="/m"
+        inputPrompt="/se"
         setInputPrompt={setInputPrompt}
         inputHeight={44}
         textInputRef={textInputRef}
       />
     );
 
-    expect(screen.getByText('/models')).toBeTruthy();
+    expect(screen.getByText('/sessions')).toBeTruthy();
     expect(screen.queryByText('/help')).toBeNull();
   });
 
@@ -345,14 +345,14 @@ describe('SlashCommandsAutocomplete Component', () => {
 
     render(
       <SlashCommandsAutocomplete
-        inputPrompt="/models"
+        inputPrompt="/sessions"
         setInputPrompt={setInputPrompt}
         inputHeight={44}
         textInputRef={textInputRef}
       />
     );
 
-    fireEvent.press(screen.getByText('/models'));
-    expect(setInputPrompt).toHaveBeenCalledWith('/models ');
+    fireEvent.press(screen.getByText('/sessions'));
+    expect(setInputPrompt).toHaveBeenCalledWith('/sessions ');
   });
 });

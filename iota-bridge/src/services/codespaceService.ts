@@ -284,8 +284,13 @@ export const startUserCodespace = async (token: string, name: string): Promise<C
         status = 'starting';
       }
     }
+  } else {
+    status = 'starting';
   }
 
+  const rawState = status === 'starting' && !['starting', 'provisioning', 'queued'].includes(cs.state?.toLowerCase())
+    ? 'Starting'
+    : cs.state;
 
   return {
     id: cs.name,
@@ -294,7 +299,7 @@ export const startUserCodespace = async (token: string, name: string): Promise<C
     status,
     freeHoursRemaining: 12.0,
     connectionUrl,
-    rawState: cs.state,
+    rawState,
   };
 };
 

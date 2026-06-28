@@ -289,6 +289,29 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
   const [expandedThoughts, setExpandedThoughts] = useState<Record<string, boolean>>({});
 
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const shouldScrollToBottomRef = useRef(false);
+
+  const scrollToBottom = (animated = true) => {
+    shouldScrollToBottomRef.current = true;
+    flatListRef.current?.scrollToEnd({ animated });
+    setShowScrollToBottom(false);
+  };
+
+  const handleScroll = (event: any) => {
+    const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
+    const distanceFromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y;
+    const isScrolledUp = contentSize.height > layoutMeasurement.height && distanceFromBottom > 150;
+    setShowScrollToBottom(isScrolledUp);
+  };
+
+  const handleContentSizeChange = () => {
+    if (shouldScrollToBottomRef.current || !showScrollToBottom) {
+      flatListRef.current?.scrollToEnd({ animated: true });
+      shouldScrollToBottomRef.current = false;
+    }
+  };
+
   const groupedTimelineItems = useMemo<GroupedItem[]>(() => {
     const allEvents = [
       ...messages
@@ -364,12 +387,15 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
 
   useEffect(() => {
     if (timelineItemsLength > 0) {
-      const timer = setTimeout(() => {
-        flatListRef.current?.scrollToEnd({ animated: true });
-      }, 150);
-      return () => clearTimeout(timer);
+      if (shouldScrollToBottomRef.current || !showScrollToBottom) {
+        const timer = setTimeout(() => {
+          flatListRef.current?.scrollToEnd({ animated: true });
+          shouldScrollToBottomRef.current = false;
+        }, 150);
+        return () => clearTimeout(timer);
+      }
     }
-  }, [timelineItemsLength, running, runStatusText]);
+  }, [timelineItemsLength, running, runStatusText, showScrollToBottom]);
 
   const canSubmit = socketStatus === 'connected' && capability.canSubmit && !running && inputPrompt.trim().length > 0;
   const statusText = socketStatus === 'connected' ? capability.details : socketStatus === 'connecting' ? 'Connecting to bridge...' : 'Disconnected from bridge';
@@ -767,6 +793,13 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     setRunning(true);
     setRunStatusText('Starting run...');
     Keyboard.dismiss();
+    
+    // Force scroll to bottom when sending a message
+    shouldScrollToBottomRef.current = true;
+    setTimeout(() => {
+      scrollToBottom(true);
+    }, 50);
+
     emitOpenCodeMessage(socketRef.current, { conversationId: targetConversationId, sessionId, content });
   };
 
@@ -1440,6 +1473,9 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               keyExtractor={(item) => item.key}
               renderItem={renderItem}
               contentContainerStyle={groupedTimelineItems.length ? styles.timelineContent : styles.emptyContent}
+              onScroll={handleScroll}
+              scrollEventThrottle={16}
+              onContentSizeChange={handleContentSizeChange}
               ListEmptyComponent={
                 isSyncing ? (
                   <View style={styles.emptyState}>
@@ -1532,6 +1568,18 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
                 </View>
               </View>
             </View>
+            {showScrollToBottom && (
+              <TouchableOpacity
+                style={[
+                  styles.scrollToBottomButton,
+                  { bottom: (isRecording ? 48 : Math.max(48, inputHeight)) + 36 }
+                ]}
+                onPress={() => scrollToBottom(true)}
+                activeOpacity={0.8}
+              >
+                <MaterialIcons name="keyboard-arrow-down" size={22} color="#ffffff" />
+              </TouchableOpacity>
+            )}
             <CredentialsModal
               visible={showConnectModal}
               onClose={() => setShowConnectModal(false)}
@@ -2268,5 +2316,23 @@ const styles = StyleSheet.create({
     color: Theme.colors.text.primary,
     fontSize: 11,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  scrollToBottomButton: {
+    position: 'absolute',
+    right: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(99, 102, 241, 0.9)',
+    borderWidth: 1,
+    borderColor: 'rgba(129, 140, 248, 0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+    zIndex: 9999,
   },
 });

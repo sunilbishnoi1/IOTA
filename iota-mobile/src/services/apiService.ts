@@ -406,7 +406,12 @@ export async function startUserCodespace(
           if (!isReachable) {
             status = 'starting';
           }
+        } else {
+          status = 'starting';
         }
+        const rawState = status === 'starting' && !['starting', 'provisioning', 'queued'].includes(cs.state?.toLowerCase())
+          ? 'Starting'
+          : cs.state;
         return {
           id: cs.name,
           repositoryName: cs.repository?.full_name || '',
@@ -414,7 +419,7 @@ export async function startUserCodespace(
           status,
           freeHoursRemaining: 12.0,
           connectionUrl,
-          rawState: cs.state,
+          rawState,
         };
       }
       throw new Error(`GitHub API failed: ${ghResponse.status}`);

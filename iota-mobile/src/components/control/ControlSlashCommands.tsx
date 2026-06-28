@@ -72,12 +72,6 @@ export const ALL_COMMANDS: SlashCommand[] = [
     clientOnly: false,
   },
   {
-    command: '/models',
-    description: 'List available models or switch active model',
-    usage: '/models [model-name]',
-    clientOnly: false,
-  },
-  {
     command: '/export',
     description: 'Export current conversation to a Markdown file',
     usage: '/export',
@@ -311,8 +305,6 @@ export const SlashCommandsAutocomplete: React.FC<SlashCommandsAutocompleteProps>
         return 'redo';
       case '/sessions':
         return 'dns';
-      case '/models':
-        return 'psychology';
       case '/export':
         return 'file-download';
       case '/exit':
