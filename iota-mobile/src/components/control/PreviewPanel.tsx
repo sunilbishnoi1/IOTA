@@ -4,7 +4,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { Socket } from 'socket.io-client';
 import { Theme } from '../../styles/theme';
 import { fetchPreviewConfig, PreviewServerConfig } from '../../services/apiService';
-import { registerPreviewSocketHandlers, emitPreviewStart, emitPreviewStop, emitPreviewStatusRequest } from '../../services/preview';
+import { registerPreviewSocketHandlers, emitPreviewStart, emitPreviewStop, emitPreviewStatusRequest, emitPreviewConfigRequest } from '../../services/preview';
 import { PreviewTerminal } from './PreviewTerminal';
 import { PreviewExpoGo } from './PreviewExpoGo';
 import { PreviewWebView } from './PreviewWebView';
@@ -53,7 +53,10 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ socket, bridgeUrl, t
 
     setSocketConnected(socket.connected);
 
-    const onConnect = () => setSocketConnected(true);
+    const onConnect = () => {
+      setSocketConnected(true);
+      emitPreviewConfigRequest(socket);
+    };
     const onDisconnect = () => setSocketConnected(false);
 
     socket.on('connect', onConnect);
@@ -84,11 +87,21 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ socket, bridgeUrl, t
           setLogs((prev) => [...prev, `[ERROR] ${payload.error}`].slice(-1000));
         }
       },
+      onConfig: (payload) => {
+        setServers(payload.servers || []);
+        if (payload.servers && payload.servers.length > 0 && !selectedServer) {
+          setSelectedServer(payload.servers[0]);
+        }
+        setLoadingConfig(false);
+      },
     });
 
-    // Request status for the selected server
+    // Request status and config
     if (selectedServer) {
       emitPreviewStatusRequest(socket, selectedServer.port);
+    }
+    if (socket.connected) {
+      emitPreviewConfigRequest(socket);
     }
 
     return () => {

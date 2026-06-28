@@ -4,10 +4,12 @@ import { validateCodespaceOwner } from './github';
 import { normalizeOpenCodePayload } from './opencodeEvents';
 import { opencodeRunner, OpenCodeRunHandle } from './opencode';
 import { opencodeStore } from './opencodeStore';
-import { logInfo, logError } from './logger';
+import { logInfo, logError, getWorkspaceRoot } from './logger';
 import { registerSelfKeepAlive, pokeSelfKeepAlive } from './codespaceService';
 import { PreviewService } from './previewService';
 import { PreviewServerConfig } from '../types/preview';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   NormalizedOpenCodeEvent,
   OpenCodeApprovalDecision,
@@ -697,6 +699,27 @@ export const initSocketIO = (server: HttpServer) => {
           status: 'stopped',
           command: ''
         });
+      }
+    });
+
+    socket.on('preview:config_request', () => {
+      pokeSelfKeepAlive();
+      logInfo(`[Socket] Received preview:config_request`);
+      try {
+        const rootDir = getWorkspaceRoot();
+        const configPath = path.join(rootDir, '.iota', 'preview.json');
+        let servers: PreviewServerConfig[] = [];
+        if (fs.existsSync(configPath)) {
+          const content = fs.readFileSync(configPath, 'utf8');
+          const parsed = JSON.parse(content);
+          servers = parsed.servers || [];
+        } else {
+          servers = PreviewService.getInstance().detectServers();
+        }
+        socket.emit('preview:config_response', { servers });
+      } catch (err: any) {
+        logError(`Failed to fetch preview config over socket: ${err.message}`);
+        socket.emit('preview:error', { port: 0, error: `Failed to fetch config: ${err.message}` });
       }
     });
 

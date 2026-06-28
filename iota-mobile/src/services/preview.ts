@@ -1,4 +1,5 @@
 import { Socket } from 'socket.io-client';
+import { PreviewServerConfig } from './apiService';
 
 export interface PreviewStatusPayload {
   port: number;
@@ -21,6 +22,7 @@ export interface PreviewSocketHandlers {
   onStatus?: (payload: PreviewStatusPayload) => void;
   onLog?: (payload: PreviewLogPayload) => void;
   onError?: (payload: PreviewErrorPayload) => void;
+  onConfig?: (payload: { servers: PreviewServerConfig[] }) => void;
 }
 
 export function registerPreviewSocketHandlers(socket: Socket, handlers: PreviewSocketHandlers) {
@@ -36,6 +38,11 @@ export function registerPreviewSocketHandlers(socket: Socket, handlers: PreviewS
   socket.on('preview:error', (payload: PreviewErrorPayload) => {
     console.error('[PreviewSocket] Received preview:error:', JSON.stringify(payload));
     handlers.onError?.(payload);
+  });
+
+  socket.on('preview:config_response', (payload: { servers: PreviewServerConfig[] }) => {
+    console.log('[PreviewSocket] Received preview:config_response:', JSON.stringify(payload));
+    handlers.onConfig?.(payload);
   });
 }
 
@@ -61,4 +68,9 @@ export const emitPreviewStatusRequest = (
 ) => {
   console.log('[PreviewSocket] Emitting preview:status_request for port:', port);
   socket?.emit('preview:status_request', { port });
+};
+
+export const emitPreviewConfigRequest = (socket: Socket | null | undefined) => {
+  console.log('[PreviewSocket] Emitting preview:config_request');
+  socket?.emit('preview:config_request');
 };
