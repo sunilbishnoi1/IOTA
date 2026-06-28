@@ -6,6 +6,8 @@ import { opencodeRunner, OpenCodeRunHandle } from './opencode';
 import { opencodeStore } from './opencodeStore';
 import { logInfo, logError } from './logger';
 import { registerSelfKeepAlive, pokeSelfKeepAlive } from './codespaceService';
+import { PreviewService } from './previewService';
+import { PreviewServerConfig } from '../types/preview';
 import {
   NormalizedOpenCodeEvent,
   OpenCodeApprovalDecision,
@@ -18,7 +20,7 @@ import {
 
 let ioInstance: Server | null = null;
 
-const FIRST_OUTPUT_TIMEOUT_MS = Number(process.env.OPENCODE_FIRST_OUTPUT_TIMEOUT_MS || 60000);
+const FIRST_OUTPUT_TIMEOUT_MS = Number(process.env.OPENCODE_FIRST_OUTPUT_TIMEOUT_MS || 120000);
 const id = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const now = () => new Date().toISOString();
 
@@ -317,7 +319,7 @@ export const initSocketIO = (server: HttpServer) => {
         conversationId: conversation.id,
         requestId: request.requestId,
         phase: 'preflight',
-        message: 'OpenCode preflight passed. Starting run...',
+        message: 'Working...', //OpenCode preflight passed. Starting run...
         retryable: false,
       });
 
@@ -476,7 +478,7 @@ export const initSocketIO = (server: HttpServer) => {
         conversationId: conversation.id,
         requestId: request.requestId,
         phase: 'spawned',
-        message: 'OpenCode process started.',
+        message: 'Working...', //OpenCode process started.
         retryable: false,
       });
       emitRunStatus({
@@ -545,7 +547,7 @@ export const initSocketIO = (server: HttpServer) => {
           conversationId: conversation.id,
           requestId: request.requestId,
           phase: 'completed',
-          message: 'OpenCode run completed.',
+          message: 'Working...', //OpenCode run completed.
           retryable: false,
         });
       }
@@ -603,7 +605,7 @@ export const initSocketIO = (server: HttpServer) => {
         conversationId: payload.conversationId,
         requestId: activeRequestId,
         phase: 'stopped',
-        message: 'OpenCode run stopped.',
+        message: 'OpenCode stopped', //OpenCode run stopped.
         retryable: true,
       });
 
@@ -624,6 +626,78 @@ export const initSocketIO = (server: HttpServer) => {
       pokeSelfKeepAlive();
       logInfo(`[Socket] Received opencode:credentials updates for socket ${socket.id} (keys: ${JSON.stringify(Object.keys(newCredentials))})`);
       opencodeStore.setCredentials(socket.id, newCredentials);
+    });
+
+    // Preview Event Listeners
+    socket.on('preview:start', async (payload: { port: number; command: string; cwd?: string; type: 'expo-go' | 'web' }) => {
+      pokeSelfKeepAlive();
+      logInfo(`[Socket] Received preview:start for port ${payload.port}`);
+      try {
+        const previewService = PreviewService.getInstance();
+        
+        await previewService.startPreview(
+          {
+            name: `Preview:${payload.port}`,
+            ...payload
+          },
+          (text: string) => {
+            io.emit('preview:log', { port: payload.port, text });
+          },
+          (error: string) => {
+            io.emit('preview:error', { port: payload.port, error });
+          },
+          (state) => {
+            io.emit('preview:status', {
+              port: state.port,
+              status: state.status,
+              url: state.url,
+              command: state.command
+            });
+          }
+        );
+      } catch (err: any) {
+        logError(`Failed to start preview on port ${payload.port}: ${err.message}`);
+        socket.emit('preview:error', { port: payload.port, error: err.message || String(err) });
+      }
+    });
+
+    socket.on('preview:stop', async (payload: { port: number }) => {
+      pokeSelfKeepAlive();
+      logInfo(`[Socket] Received preview:stop for port ${payload.port}`);
+      try {
+        const previewService = PreviewService.getInstance();
+        await previewService.stopPreview(payload.port);
+        
+        io.emit('preview:status', {
+          port: payload.port,
+          status: 'stopped',
+          command: ''
+        });
+      } catch (err: any) {
+        logError(`Failed to stop preview on port ${payload.port}: ${err.message}`);
+        socket.emit('preview:error', { port: payload.port, error: err.message || String(err) });
+      }
+    });
+
+    socket.on('preview:status_request', (payload: { port: number }) => {
+      pokeSelfKeepAlive();
+      logInfo(`[Socket] Received preview:status_request for port ${payload.port}`);
+      const previewService = PreviewService.getInstance();
+      const state = previewService.getPreviewState(payload.port);
+      if (state) {
+        socket.emit('preview:status', {
+          port: state.port,
+          status: state.status,
+          url: state.url,
+          command: state.command
+        });
+      } else {
+        socket.emit('preview:status', {
+          port: payload.port,
+          status: 'stopped',
+          command: ''
+        });
+      }
     });
 
     socket.on('disconnect', () => {

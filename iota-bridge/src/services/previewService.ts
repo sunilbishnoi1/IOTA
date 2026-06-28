@@ -1,0 +1,229 @@
+import { ChildProcess, exec, spawn } from 'child_process';
+import { promisify } from 'util';
+import * as path from 'path';
+import { PreviewProcessState, PreviewServerConfig, PreviewStatus } from '../types/preview';
+import { getWorkspaceRoot, logInfo, logError } from './logger';
+
+const execAsync = promisify(exec);
+
+export class PreviewService {
+  private static instance: PreviewService;
+  private activePreviews = new Map<number, {
+    state: PreviewProcessState;
+    process?: ChildProcess;
+  }>();
+
+  private constructor() {}
+
+  public static getInstance(): PreviewService {
+    if (!PreviewService.instance) {
+      PreviewService.instance = new PreviewService();
+    }
+    return PreviewService.instance;
+  }
+
+  // Helper to kill anything on port
+  public async killProcessOnPort(port: number): Promise<void> {
+    logInfo(`Attempting to kill any process occupying port ${port}`);
+    if (process.platform === 'win32') {
+      try {
+        const { stdout } = await execAsync(`netstat -ano | findstr :${port}`);
+        const lines = stdout.split('\n').map(l => l.trim()).filter(Boolean);
+        for (const line of lines) {
+          const parts = line.split(/\s+/);
+          const pid = parts[parts.length - 1];
+          if (pid && !isNaN(Number(pid)) && Number(pid) > 0) {
+            logInfo(`Killing process with PID ${pid} on port ${port}`);
+            try {
+              await execAsync(`taskkill /F /PID ${pid}`);
+            } catch (e) {
+              // Ignore failure for individual PIDs
+            }
+          }
+        }
+      } catch (err) {
+        // no process found
+      }
+    } else {
+      try {
+        await execAsync(`lsof -t -i :${port} | xargs kill -9`);
+        logInfo(`Killed process on port ${port} via lsof`);
+      } catch (err) {
+        try {
+          await execAsync(`fuser -k ${port}/tcp`);
+          logInfo(`Killed process on port ${port} via fuser`);
+        } catch (err2) {
+          // ignore
+        }
+      }
+    }
+  }
+
+  // Set port to public using gh CLI
+  public async setPortVisibility(port: number, visibility: 'public' | 'private'): Promise<void> {
+    const codespaceName = process.env.CODESPACE_NAME;
+    if (!codespaceName) {
+      logInfo(`Not in codespace, skipping port visibility update for ${port}`);
+      return;
+    }
+    logInfo(`Setting port ${port} visibility to ${visibility}`);
+    try {
+      await execAsync(`gh codespace ports visibility ${port}:${visibility} -c ${codespaceName}`);
+    } catch (err) {
+      try {
+        await execAsync(`gh codespace ports visibility ${port}:${visibility}`);
+      } catch (e) {
+        logError(`Failed to set port visibility for ${port} to ${visibility}: ${String(e)}`);
+      }
+    }
+  }
+
+  // Start preview server
+  public async startPreview(
+    config: PreviewServerConfig,
+    onLog: (text: string) => void,
+    onError: (err: string) => void,
+    onStatusChange: (state: PreviewProcessState) => void
+  ): Promise<PreviewProcessState> {
+    const port = config.port;
+    
+    // 1. Kill existing processes on the port
+    await this.killProcessOnPort(port);
+
+    // 2. Initialize state
+    const codespaceName = process.env.CODESPACE_NAME;
+    const portForwardingDomain = process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN || 'app.github.dev';
+    
+    let resolvedUrl = codespaceName
+      ? `https://${codespaceName}-${port}.${portForwardingDomain}`
+      : `http://localhost:${port}`;
+      
+    if (config.type === 'expo-go') {
+      resolvedUrl = resolvedUrl.replace(/^https:/, 'exps:').replace(/^http:/, 'exp:');
+    }
+
+    const state: PreviewProcessState = {
+      port,
+      pid: null,
+      status: 'starting',
+      command: config.command,
+      url: resolvedUrl
+    };
+
+    this.activePreviews.set(port, { state });
+    onStatusChange(state);
+
+    // 3. Make port public
+    await this.setPortVisibility(port, 'public');
+
+    // 4. Resolve cwd
+    const workspaceRoot = getWorkspaceRoot();
+    const resolvedCwd = config.cwd ? path.resolve(workspaceRoot, config.cwd) : workspaceRoot;
+
+    logInfo(`Spawning preview process on port ${port} with command: ${config.command} in cwd: ${resolvedCwd}`);
+
+    // Parse command
+    let finalCommand = config.command;
+    // T015: Enhance bridge preview subprocess manager to handle Flutter Web execution modes
+    if (config.command.startsWith('flutter run') && !config.command.includes('-d web-server') && !config.command.includes('--web-port')) {
+      finalCommand = `flutter run -d web-server --web-port ${port} --web-hostname 0.0.0.0`;
+      logInfo(`Enhanced Flutter command to: ${finalCommand}`);
+    }
+
+    const parts = finalCommand.trim().split(/\s+/);
+    const baseCommand = parts[0];
+    const args = parts.slice(1);
+
+    const env = { ...process.env };
+    let child: ChildProcess;
+
+    try {
+      if (process.platform === 'win32') {
+        child = spawn(baseCommand, args, { cwd: resolvedCwd, env, shell: true });
+      } else {
+        child = spawn('/bin/sh', ['-c', `${baseCommand} "$@"`, '--', ...args], { cwd: resolvedCwd, env, shell: false });
+      }
+    } catch (e: any) {
+      logError(`Failed to spawn child process on port ${port}: ${e.message}`);
+      state.status = 'crashed';
+      this.activePreviews.set(port, { state });
+      onStatusChange(state);
+      onError(e.message || String(e));
+      throw e;
+    }
+
+    state.pid = child.pid || null;
+    state.status = 'running';
+    
+    this.activePreviews.set(port, { state, process: child });
+    onStatusChange(state);
+
+    child.stdout?.on('data', (data: any) => {
+      onLog(data.toString());
+    });
+
+    child.stderr?.on('data', (data: any) => {
+      onLog(data.toString());
+    });
+
+    child.on('error', (err: any) => {
+      logError(`Process error on port ${port}: ${err.message}`);
+      state.status = 'crashed';
+      onStatusChange(state);
+      onError(err.message || String(err));
+    });
+
+    child.on('exit', (code: number | null, signal: string | null) => {
+      logInfo(`Process on port ${port} exited with code: ${code}, signal: ${signal}`);
+      const current = this.activePreviews.get(port);
+      if (current && current.state.status !== 'stopped') {
+        current.state.status = (code === 0 || code === null) ? 'stopped' : 'crashed';
+        current.state.pid = null;
+        onStatusChange(current.state);
+      }
+    });
+
+    return state;
+  }
+
+  // Stop preview server
+  public async stopPreview(port: number): Promise<void> {
+    const current = this.activePreviews.get(port);
+    if (!current) {
+      logInfo(`No active preview process registered on port ${port}`);
+      return;
+    }
+
+    logInfo(`Stopping preview process on port ${port}`);
+    current.state.status = 'stopped';
+    current.state.pid = null;
+
+    if (current.process) {
+      try {
+        current.process.kill();
+      } catch (e) {
+        logError(`Failed to kill process on port ${port}: ${String(e)}`);
+      }
+    }
+
+    // Set port back to private
+    await this.setPortVisibility(port, 'private');
+    this.activePreviews.delete(port);
+  }
+
+  public getPreviewState(port: number): PreviewProcessState | undefined {
+    return this.activePreviews.get(port)?.state;
+  }
+
+  public getAllPreviewStates(): PreviewProcessState[] {
+    return Array.from(this.activePreviews.values()).map(p => p.state);
+  }
+
+  // Clean up all processes on application shutdown
+  public async cleanup(): Promise<void> {
+    const ports = Array.from(this.activePreviews.keys());
+    for (const port of ports) {
+      await this.stopPreview(port);
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "servers": [
+    {
+      "name": "Expo Go App",
+      "cwd": "iota-mobile",
+      "command": "npx expo start",
+      "port": 8081,
+      "type": "expo-go"
+    },
+    {
+      "name": "IOTA Bridge Web API Docs",
+      "cwd": "iota-bridge",
+      "command": "npm run dev",
+      "port": 3000,
+      "type": "web"
+    }
+  ]
+}

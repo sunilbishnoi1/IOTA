@@ -575,3 +575,28 @@ export async function createUserCodespace(
     throw err;
   }
 }
+
+export interface PreviewServerConfig {
+  name: string;
+  cwd?: string;
+  command: string;
+  port: number;
+  type: 'expo-go' | 'web';
+}
+
+export interface PreviewWorkspaceConfig {
+  servers: PreviewServerConfig[];
+}
+
+export async function fetchPreviewConfig(bridgeUrl: string, token: string): Promise<PreviewWorkspaceConfig> {
+  const response = await fetchWithTimeout(`${bridgeUrl}/api/preview/config`, {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Accept': 'application/json',
+    },
+  });
+  if (response.ok) {
+    return await response.json();
+  }
+  throw new Error(`Failed to fetch preview configuration: status ${response.status}`);
+}

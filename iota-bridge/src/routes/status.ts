@@ -4,6 +4,9 @@ import { listUserCodespaces, startUserCodespace, getUserCodespace, listUserRepos
 import { getOctokitClient } from '../services/github';
 import { getRepoPath, getBranch } from '../services/git';
 import { opencodeRunner } from '../services/opencode';
+import * as fs from 'fs';
+import * as path from 'path';
+import { getWorkspaceRoot } from '../services/logger';
 
 const router = Router();
 
@@ -237,6 +240,124 @@ router.delete('/codespaces/:name', requireAuth, async (req: AuthenticatedRequest
       request: error.request,
       response: error.response?.data
     });
+  }
+});
+
+import { PreviewServerConfig } from '../types/preview';
+
+function detectPreviewServers(dir: string, workspaceRoot: string, depth = 0): PreviewServerConfig[] {
+  const configs: PreviewServerConfig[] = [];
+  if (depth > 2) return configs;
+
+  try {
+    const files = fs.readdirSync(dir);
+    
+    // Check package.json
+    if (files.includes('package.json')) {
+      try {
+        const pkgContent = fs.readFileSync(path.join(dir, 'package.json'), 'utf8');
+        const pkg = JSON.parse(pkgContent);
+        const relativeCwd = path.relative(workspaceRoot, dir) || '.';
+        const dependencies = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+        
+        if (dependencies['expo']) {
+          configs.push({
+            name: `${pkg.name || 'Expo'} App`,
+            cwd: relativeCwd,
+            command: 'npx expo start',
+            port: 8081,
+            type: 'expo-go'
+          });
+        } else if (dependencies['next']) {
+          configs.push({
+            name: `${pkg.name || 'Next.js'} Web App`,
+            cwd: relativeCwd,
+            command: 'npx next dev',
+            port: 3000,
+            type: 'web'
+          });
+        } else if (dependencies['vite']) {
+          configs.push({
+            name: `${pkg.name || 'Vite'} Web App`,
+            cwd: relativeCwd,
+            command: 'npx vite',
+            port: 5173,
+            type: 'web'
+          });
+        } else {
+          const scripts = pkg.scripts || {};
+          if (scripts.dev) {
+            configs.push({
+              name: `${pkg.name || 'Web'} App (dev)`,
+              cwd: relativeCwd,
+              command: 'npm run dev',
+              port: 3000,
+              type: 'web'
+            });
+          } else if (scripts.start) {
+            configs.push({
+              name: `${pkg.name || 'Web'} App (start)`,
+              cwd: relativeCwd,
+              command: 'npm run start',
+              port: 3000,
+              type: 'web'
+            });
+          }
+        }
+      } catch (e) {
+        // ignore JSON parse errors
+      }
+    }
+
+    // Check pubspec.yaml
+    if (files.includes('pubspec.yaml')) {
+      const relativeCwd = path.relative(workspaceRoot, dir) || '.';
+      configs.push({
+        name: 'Flutter Web App',
+        cwd: relativeCwd,
+        command: 'flutter run -d web-server --web-port 8080 --web-hostname 0.0.0.0',
+        port: 8080,
+        type: 'web'
+      });
+    }
+
+    // Recurse subdirs
+    for (const file of files) {
+      if (file === 'node_modules' || file === '.git' || file === 'dist' || file === 'build' || file.startsWith('.')) {
+        continue;
+      }
+      const fullPath = path.join(dir, file);
+      try {
+        if (fs.statSync(fullPath).isDirectory()) {
+          configs.push(...detectPreviewServers(fullPath, workspaceRoot, depth + 1));
+        }
+      } catch (e) {
+        // ignore stat errors
+      }
+    }
+  } catch (e) {
+    // ignore read errors
+  }
+
+  return configs;
+}
+
+// GET /api/preview/config - Retrieve the preview config from the workspace filesystem
+router.get('/preview/config', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const rootDir = getWorkspaceRoot();
+    const configPath = path.join(rootDir, '.iota', 'preview.json');
+    if (!fs.existsSync(configPath)) {
+      // Auto-detect preview configurations for the current project
+      const detected = detectPreviewServers(rootDir, rootDir);
+      return res.json({ servers: detected });
+    }
+    const content = fs.readFileSync(configPath, 'utf8');
+    const parsed = JSON.parse(content);
+    res.json(parsed);
+  } catch (error: any) {
+    console.error('Failed to read preview config:', error);
+    res.status(500).json({ error: 'Failed to read preview config' });
   }
 });
 
