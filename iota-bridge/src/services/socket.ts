@@ -222,7 +222,7 @@ export const initSocketIO = (server: HttpServer) => {
           conversationId: conversation.id,
           requestId: request.requestId,
           phase: 'streaming',
-          message: 'OpenCode is responding...',
+          message: 'Working...',
           retryable: false,
         });
       };
@@ -321,7 +321,7 @@ export const initSocketIO = (server: HttpServer) => {
         conversationId: conversation.id,
         requestId: request.requestId,
         phase: 'awaiting_first_output',
-        message: 'Waiting for OpenCode output...',
+        message: 'Working...',
         retryable: false,
       });
 

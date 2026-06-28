@@ -124,17 +124,46 @@ const mergeById = <T extends { id: string }>(local: T[], snapshot: T[]) => {
   return Array.from(merged.values());
 };
 
-const createRunStatusMessage = (status: OpenCodeRunStatusEvent): OpenCodeMessage => {
-  let content = status.message;
+const AnimatedDotsText: React.FC<{ text: string; style?: any; numberOfLines?: number }> = ({ text, style, numberOfLines }) => {
+  const [step, setStep] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setStep((prev) => (prev + 1) % 4);
+    }, 500);
+    return () => clearInterval(interval);
+  }, []);
+
+  const baseText = text.endsWith('...') ? text.slice(0, -3) : text;
+
+  return (
+    <Text style={style} numberOfLines={numberOfLines}>
+      {baseText}
+      <Text style={{ opacity: step >= 1 ? 1 : 0 }}>.</Text>
+      <Text style={{ opacity: step >= 2 ? 1 : 0 }}>.</Text>
+      <Text style={{ opacity: step >= 3 ? 1 : 0 }}>.</Text>
+    </Text>
+  );
+};
+
+const getNormalizedStatusText = (phase: string, message: string): string => {
+  const lowerMsg = message.toLowerCase();
   if (
-    ['server_start', 'attached_run', 'direct_run'].includes(status.phase) ||
-    content.toLowerCase().includes('checking opencode') ||
-    content.toLowerCase().includes('warm server') ||
-    content.toLowerCase().includes('starting attached') ||
-    content.toLowerCase().includes('direct execution')
+    ['server_start', 'attached_run', 'direct_run', 'awaiting_first_output', 'streaming'].includes(phase) ||
+    lowerMsg.includes('checking opencode') ||
+    lowerMsg.includes('warm server') ||
+    lowerMsg.includes('starting attached') ||
+    lowerMsg.includes('direct execution') ||
+    lowerMsg.includes('waiting for opencode output') ||
+    lowerMsg.includes('opencode is responding')
   ) {
-    content = 'working...';
+    return 'Working...';
   }
+  return message;
+};
+
+const createRunStatusMessage = (status: OpenCodeRunStatusEvent): OpenCodeMessage => {
+  const content = getNormalizedStatusText(status.phase, status.message);
   return {
     id: `run-${status.requestId}`,
     conversationId: status.conversationId,
@@ -636,7 +665,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             secureStoreService.saveOpenCodeConversationId(conversationScope, status.conversationId).catch(() => undefined);
             const isFinished = ['completed', 'failed', 'stopped'].includes(status.phase);
             setRunning(!isFinished);
-            setRunStatusText(isFinished ? null : status.message);
+            setRunStatusText(isFinished ? null : getNormalizedStatusText(status.phase, status.message));
             const statusMessage = createRunStatusMessage(status);
             setMessages((prev) => [...prev.filter((item) => item.id !== statusMessage.id), statusMessage]);
           },          onToolActivity: ({ activity }) => {
@@ -876,7 +905,11 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     return (
       <View style={[styles.messageBubble, isUser && styles.userBubble, isSystem && styles.systemBubble]}>
         {isUser || isSystem ? (
-          <Text style={styles.messageText}>{content}</Text>
+          content.endsWith('...') ? (
+            <AnimatedDotsText text={content} style={styles.messageText} />
+          ) : (
+            <Text style={styles.messageText}>{content}</Text>
+          )
         ) : (
           <Markdown rules={markdownRules} style={markdownStyles}>{content}</Markdown>
         )}
@@ -1092,9 +1125,13 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
                 ) : (
                   <MaterialIcons name="done-all" size={16} color={Theme.colors.secondary.glow} style={{ marginRight: 8 }} />
                 )}
-                <Text style={styles.thinkingHeaderText} numberOfLines={1}>
-                  {headerText}
-                </Text>
+                {headerText.endsWith('...') ? (
+                  <AnimatedDotsText text={headerText} style={styles.thinkingHeaderText} numberOfLines={1} />
+                ) : (
+                  <Text style={styles.thinkingHeaderText} numberOfLines={1}>
+                    {headerText}
+                  </Text>
+                )}
               </View>
               <MaterialIcons
                 name={isExpanded ? 'keyboard-arrow-down' : 'keyboard-arrow-right'}
@@ -1297,7 +1334,11 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             ) : (
               <MaterialIcons name={capability.canSubmit ? 'check-circle' : 'info'} size={18} color={capability.canSubmit ? Theme.colors.secondary.glow : Theme.colors.accent.glow} />
             )}
-            <Text style={styles.statusBannerText} numberOfLines={2}>{bannerText}</Text>
+            {bannerText.endsWith('...') ? (
+              <AnimatedDotsText text={bannerText} style={styles.statusBannerText} numberOfLines={2} />
+            ) : (
+              <Text style={styles.statusBannerText} numberOfLines={2}>{bannerText}</Text>
+            )}
             {running && conversationId && (
               <TouchableOpacity style={styles.stopButton} onPress={handleStopOpenCode}>
                 <MaterialIcons name="stop" size={16} color={Theme.colors.accent.glow} />

@@ -21,6 +21,17 @@ import { RepositoryList } from '../components/RepositoryList';
 import { CodespaceVM, GitHubRepository } from '../types';
 import { Theme } from '../styles/theme';
 import { secureStoreService } from '../services/secureStore';
+import {
+  listUserRepos,
+  checkDevcontainer,
+  setupDevcontainer,
+  listUserCodespaces,
+  getUserCodespace,
+  startUserCodespace,
+  stopUserCodespace,
+  deleteUserCodespace,
+  createUserCodespace,
+} from '../services/apiService';
 
 interface DashboardScreenProps {
   user: { token: string; username?: string; avatarUrl?: string };
@@ -39,25 +50,7 @@ const DEFAULT_BRIDGE_URL = Platform.select({
   default: 'http://localhost:3000',
 });
 
-// A helper to perform fetch requests with an abortable timeout
-const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs = 15000): Promise<Response> => {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, {
-      ...options,
-      signal: controller.signal,
-    });
-    clearTimeout(id);
-    return response;
-  } catch (error: any) {
-    clearTimeout(id);
-    if (error.name === 'AbortError') {
-      throw new Error('Connection timed out. Please verify the bridge server address and connection.');
-    }
-    throw error;
-  }
-};
+
 
 export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   user,
@@ -85,18 +78,8 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   const fetchRepositories = useCallback(async () => {
     setReposLoading(true);
     try {
-      const response = await fetchWithTimeout(`${bridgeUrl}/api/repos`, {
-        headers: {
-          'Authorization': `Bearer ${user.token}`,
-          'Accept': 'application/json',
-        },
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setRepositories(data);
-      } else {
-        throw new Error('Failed to fetch repositories');
-      }
+      const data = await listUserRepos(bridgeUrl, user.token);
+      setRepositories(data);
     } catch (err) {
       console.warn('Failed to fetch repositories:', err);
     } finally {
@@ -124,30 +107,13 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
     setCodespaces((prev) => [optimisticCodespace, ...prev]);
     
     try {
-      const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${user.token}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: JSON.stringify({
-          repository: repo.fullName,
-          branch: repo.defaultBranch,
-        }),
-      });
-
-      if (response.ok) {
-        const createdCs: CodespaceVM = await response.json();
-        // Replace optimistic codespace with real created codespace
-        setCodespaces((prev) =>
-          prev.map((cs) => (cs.id === tempId ? createdCs : cs))
-        );
-        if (createdCs.status === 'starting') {
-          startPollingCodespace(createdCs.id);
-        }
-      } else {
-        throw new Error('Failed to create codespace');
+      const createdCs = await createUserCodespace(bridgeUrl, user.token, repo.fullName, repo.defaultBranch);
+      // Replace optimistic codespace with real created codespace
+      setCodespaces((prev) =>
+        prev.map((cs) => (cs.id === tempId ? createdCs : cs))
+      );
+      if (createdCs.status === 'starting') {
+        startPollingCodespace(createdCs.id);
       }
     } catch (err) {
       console.warn('Failed to create codespace:', err);
@@ -163,19 +129,13 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
     setErrorMsg(null);
     
     try {
-      // Check if devcontainer exists in the repository
-      const checkResponse = await fetchWithTimeout(`${bridgeUrl}/api/repos/${repo.fullName}/check-devcontainer`, {
-        headers: {
-          'Authorization': `Bearer ${user.token}`,
-          'Accept': 'application/json',
-        },
-      });
-
-      if (!checkResponse.ok) {
-        throw new Error('Failed to check devcontainer configuration');
+      const [owner, repoName] = repo.fullName.split('/');
+      if (!owner || !repoName) {
+        throw new Error('Invalid repository format');
       }
 
-      const checkData = await checkResponse.json();
+      // Check if devcontainer exists in the repository
+      const checkData = await checkDevcontainer(bridgeUrl, user.token, owner, repoName);
       setLoading(false);
 
       if (!checkData.exists) {
@@ -189,23 +149,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
               onPress: async () => {
                 setLoading(true);
                 try {
-                  const setupResponse = await fetchWithTimeout(`${bridgeUrl}/api/repos/setup-devcontainer`, {
-                    method: 'POST',
-                    headers: {
-                      'Authorization': `Bearer ${user.token}`,
-                      'Content-Type': 'application/json',
-                      'Accept': 'application/json',
-                    },
-                    body: JSON.stringify({
-                      repository: repo.fullName,
-                      branch: repo.defaultBranch,
-                    }),
-                  });
-
-                  if (!setupResponse.ok) {
-                    throw new Error('Failed to setup devcontainer configuration');
-                  }
-
+                  await setupDevcontainer(bridgeUrl, user.token, repo.fullName, repo.defaultBranch);
                   // Successfully added devcontainer, now trigger creation
                   await triggerCodespaceCreation(repo);
                 } catch (setupErr: any) {
@@ -223,7 +167,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
     } catch (err: any) {
       console.warn('Error checking repository setup:', err);
       setLoading(false);
-      Alert.alert('Connection Error', 'Could not verify repository devcontainer configuration. Make sure your local bridge server is connected.');
+      Alert.alert('Connection Error', 'Could not verify repository devcontainer configuration. Make sure you are connected to the network or bridge.');
     }
   };
 
@@ -233,18 +177,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
     setErrorMsg(null);
     const targetUrl = customUrl || bridgeUrl;
     try {
-      const response = await fetchWithTimeout(`${targetUrl}/api/codespaces`, {
-        headers: {
-          'Authorization': `Bearer ${user.token}`,
-          'Accept': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error(`Server returned code ${response.status}`);
-      }
-
-      const data = await response.json();
+      const data = await listUserCodespaces(targetUrl, user.token);
       setCodespaces(data);
 
       // Check if any codespace is starting, if so start polling for it
@@ -256,7 +189,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
     } catch (error: any) {
       console.warn('Error fetching codespaces:', error);
       setErrorMsg(
-        `Unable to reach IOTA Bridge at ${targetUrl}.\nMake sure the bridge server is running and accessible.`
+        `Unable to reach IOTA Bridge or GitHub API.\nMake sure you are connected to the network or the bridge server is running.`
       );
     } finally {
       setLoading(false);
@@ -313,28 +246,17 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
         return;
       }
       try {
-        const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces/${id}`, {
-          headers: {
-            'Authorization': `Bearer ${user.token}`,
-            'Accept': 'application/json',
-          },
-        });
+        const updatedCs = await getUserCodespace(bridgeUrl, user.token, id);
+        console.log(`[Codespace Poller] Poll response for ${id}: status=${updatedCs.status}, rawState=${updatedCs.rawState}, connectionUrl=${updatedCs.connectionUrl}`);
+        
+        setCodespaces((prev) =>
+          prev.map((cs) => (cs.id === id ? updatedCs : cs))
+        );
 
-        if (response.ok) {
-          const updatedCs: CodespaceVM = await response.json();
-          console.log(`[Codespace Poller] Poll response for ${id}: status=${updatedCs.status}, rawState=${updatedCs.rawState}, connectionUrl=${updatedCs.connectionUrl}`);
-          
-          setCodespaces((prev) =>
-            prev.map((cs) => (cs.id === id ? updatedCs : cs))
-          );
-
-          if (updatedCs.status === 'active' || updatedCs.status === 'sleeping') {
-            console.log(`[Codespace Poller] Polling finished for ${id} (final status: ${updatedCs.status})`);
-            clearInterval(pollingIntervals.current[id]);
-            delete pollingIntervals.current[id];
-          }
-        } else {
-          console.warn(`[Codespace Poller] Poll failed for ${id} with status ${response.status}`);
+        if (updatedCs.status === 'active' || updatedCs.status === 'sleeping') {
+          console.log(`[Codespace Poller] Polling finished for ${id} (final status: ${updatedCs.status})`);
+          clearInterval(pollingIntervals.current[id]);
+          delete pollingIntervals.current[id];
         }
       } catch (err) {
         console.warn(`[Codespace Poller] Polling failed for codespace ${id}:`, err);
@@ -358,25 +280,13 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
       );
 
       try {
-        const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces/${id}/start`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${user.token}`,
-            'Accept': 'application/json',
-          },
-        });
-
-        if (response.ok) {
-          const updatedCs: CodespaceVM = await response.json();
-          setCodespaces((prev) =>
-            prev.map((cs) => (cs.id === id ? updatedCs : cs))
-          );
-          
-          if (updatedCs.status === 'starting') {
-            startPollingCodespace(id);
-          }
-        } else {
-          throw new Error('Wake up call failed');
+        const updatedCs = await startUserCodespace(bridgeUrl, user.token, id);
+        setCodespaces((prev) =>
+          prev.map((cs) => (cs.id === id ? updatedCs : cs))
+        );
+        
+        if (updatedCs.status === 'starting') {
+          startPollingCodespace(id);
         }
       } catch (err) {
         console.warn(`Failed to wake up codespace ${id}:`, err);
@@ -392,20 +302,9 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
       );
 
       try {
-        const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces/${id}/stop`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${user.token}`,
-            'Accept': 'application/json',
-          },
-        });
-
-        if (response.ok) {
-          // Poll or refresh status to confirm sleep
-          fetchCodespaces(true);
-        } else {
-          throw new Error('Stop call failed');
-        }
+        await stopUserCodespace(bridgeUrl, user.token, id);
+        // Poll or refresh status to confirm sleep
+        fetchCodespaces(true);
       } catch (err) {
         console.warn(`Failed to stop codespace ${id}:`, err);
         fetchCodespaces(true);
@@ -426,30 +325,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
     }
 
     try {
-      const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces/${id}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${user.token}`,
-          'Accept': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        let errMsg = 'Delete call failed';
-        try {
-          const errData = await response.json();
-          errMsg = errData.error || errMsg;
-          if (errData.status) {
-            errMsg += ` (Status: ${errData.status})`;
-          }
-          if (errData.response && errData.response.message) {
-            errMsg += `: ${errData.response.message}`;
-          }
-        } catch (parseErr) {
-          // ignore parsing error
-        }
-        throw new Error(errMsg);
-      }
+      await deleteUserCodespace(bridgeUrl, user.token, id);
     } catch (err: any) {
       console.warn(`Failed to delete codespace ${id}:`, err);
       Alert.alert('Delete Failed', err.message || 'Could not delete the codespace. Please try again.');
