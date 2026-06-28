@@ -218,4 +218,81 @@ describe('normalizeOpenCodePayload', () => {
       });
     }
   });
+
+  it('normalizes reasoning events to message_delta', () => {
+    const payload = {
+      type: 'reasoning',
+      part: {
+        text: 'Let me think about it...',
+      },
+    };
+    const events = normalizeOpenCodePayload(payload, convId, msgId);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual({
+      type: 'message_delta',
+      conversationId: convId,
+      messageId: msgId,
+      content: 'Let me think about it...',
+      done: false,
+    });
+  });
+
+  it('normalizes tool execution from nested part.state format', () => {
+    const payload = {
+      type: 'tool_use',
+      part: {
+        tool: 'glob',
+        state: {
+          status: 'completed',
+          title: 'Found 3 files matching *.ts',
+          input: {
+            pattern: '*.ts',
+          },
+          output: [
+            'src/index.ts',
+            'src/types.ts',
+            'src/utils.ts'
+          ]
+        }
+      }
+    };
+    const events = normalizeOpenCodePayload(payload, convId, msgId);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('tool_activity');
+    if (events[0].type === 'tool_activity') {
+      const act = events[0].activity;
+      expect(act.kind).toBe('search');
+      expect(act.status).toBe('completed');
+      expect(act.label).toBe('Found 3 files matching *.ts');
+      expect(act.metadata).toBeDefined();
+      expect(act.metadata?.query).toBe('*.ts');
+      expect(act.metadata?.stdout).toContain('src/index.ts');
+    }
+  });
+
+  it('normalizes apply_patch tool execution and maps to file_write kind', () => {
+    const payload = {
+      type: 'tool_use',
+      part: {
+        tool: 'apply_patch',
+        state: {
+          status: 'completed',
+          input: {
+            filePath: 'src/index.ts',
+            patch: 'diff --git...'
+          }
+        }
+      }
+    };
+    const events = normalizeOpenCodePayload(payload, convId, msgId);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('tool_activity');
+    if (events[0].type === 'tool_activity') {
+      const act = events[0].activity;
+      expect(act.kind).toBe('file_write');
+      expect(act.metadata).toBeDefined();
+      expect(act.metadata?.filePath).toBe('src/index.ts');
+      expect(act.metadata?.content).toBe('diff --git...');
+    }
+  });
 });

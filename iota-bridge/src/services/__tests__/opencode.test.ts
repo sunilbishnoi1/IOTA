@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { opencodeRunner } from '../opencode';
+import { opencodeStore } from '../opencodeStore';
 
 describe('OpenCodeRunner Integration & Simulation Tests', () => {
   const mockBinDir = path.join(__dirname, 'mock-bin');
@@ -54,10 +55,15 @@ if (args.includes('run')) {
     }
   }
 
-  // Output mock ND-JSON stream
-  console.log(JSON.stringify({ type: 'step_start', timestamp: Date.now() }));
-  console.log(JSON.stringify({ type: 'text', timestamp: Date.now(), part: { text: 'Hello from mock CLI' } }));
-  console.log(JSON.stringify({ type: 'step_finish', timestamp: Date.now() }));
+  if (args.join(' ').includes('summarize')) {
+    console.log(JSON.stringify({ type: 'text', part: { text: 'Summary of conversation and workspace changes.' } }));
+  } else {
+    // Output mock ND-JSON stream
+    console.log(JSON.stringify({ type: 'step_start', timestamp: Date.now() }));
+    console.log(JSON.stringify({ type: 'text', timestamp: Date.now(), part: { text: 'Hello from mock CLI' } }));
+    console.log(JSON.stringify({ type: 'args', args: args }));
+    console.log(JSON.stringify({ type: 'step_finish', timestamp: Date.now() }));
+  }
   process.exit(0);
 }
     `;
@@ -69,11 +75,22 @@ if (args.includes('run')) {
       const batContent = `@echo off\r\nnode "%~dp0mock_opencode.js" %*\r\n`;
       fs.writeFileSync(path.join(mockBinDir, 'opencode.cmd'), batContent, 'utf8');
       fs.writeFileSync(path.join(mockBinDir, 'opencode.bat'), batContent, 'utf8');
+
+      // Mock powershell
+      const psContent = `@echo off\r\necho Mock powershell output\r\nexit /b 0\r\n`;
+      fs.writeFileSync(path.join(mockBinDir, 'powershell.cmd'), psContent, 'utf8');
+      fs.writeFileSync(path.join(mockBinDir, 'powershell.bat'), psContent, 'utf8');
     } else {
       const shContent = `#!/bin/sh\nnode "$(dirname "$0")/mock_opencode.js" "$@"\n`;
       const binPath = path.join(mockBinDir, 'opencode');
       fs.writeFileSync(binPath, shContent, 'utf8');
       fs.chmodSync(binPath, '755');
+
+      // Mock bash
+      const bashContent = `#!/bin/sh\necho Mock bash output\nexit 0\n`;
+      const bashBinPath = path.join(mockBinDir, 'bash');
+      fs.writeFileSync(bashBinPath, bashContent, 'utf8');
+      fs.chmodSync(bashBinPath, '755');
     }
 
     // 4. Prepend mock bin to PATH so the spawn runner targets it
@@ -147,5 +164,46 @@ if (args.includes('run')) {
     expect(result.exitCode).toBe(0);
     expect(handle.mode).toBe('attached');
     expect(jsonEvents.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test('should inject activeModel into buildRunArgs when executing run', async () => {
+    const jsonEvents: any[] = [];
+    const convoId = 'test-convo-active-model';
+    
+    // Set the activeModel in opencodeStore
+    const conversation = opencodeStore.getOrCreateConversation(convoId);
+    conversation.activeModel = 'test-provider/test-model-name';
+
+    const handle = await opencodeRunner.run({
+      conversationId: convoId,
+      requestId: 'test-req-model',
+      prompt: 'hello',
+      onJson: (payload) => jsonEvents.push(payload),
+    });
+
+    const result = await handle.done;
+    expect(result.exitCode).toBe(0);
+
+    const argsEvent = jsonEvents.find(e => e.type === 'args');
+    expect(argsEvent).toBeDefined();
+    expect(argsEvent.args).toContain('--model');
+    const modelIndex = argsEvent.args.indexOf('--model');
+    expect(argsEvent.args[modelIndex + 1]).toBe('test-provider/test-model-name');
+  });
+
+  test('should run compact query successfully and extract summary text', async () => {
+    const summary = await opencodeRunner.runCompactQuery('test-convo');
+    expect(summary).toBe('Summary of conversation and workspace changes.');
+  });
+
+  test('should run skills query successfully and return list of custom skills', async () => {
+    const skills = await opencodeRunner.runSkillsQuery();
+    expect(skills).toContain('Custom Agent Skills');
+    expect(skills).toContain('speckit-implement');
+  });
+
+  test('should run init query successfully executing update script', async () => {
+    const initRes = await opencodeRunner.runInitQuery();
+    expect(initRes).toContain('Mock');
   });
 });

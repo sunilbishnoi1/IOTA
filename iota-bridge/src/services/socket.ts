@@ -175,6 +175,128 @@ export const initSocketIO = (server: HttpServer) => {
 
       const conversation = opencodeStore.getOrCreateConversation(payload.conversationId, payload.sessionId);
       logInfo(`[Socket] Conversation resolved: id=${conversation.id}, sessionId=${conversation.opencodeSessionId || 'none'}, existingMessages=${conversation.messages.length}`);
+
+      let runPrompt = content;
+      if (content.toLowerCase().startsWith('/review')) {
+        runPrompt = "Review all staged and unstaged changes in this repository and audit for code quality, bugs, and style consistency.";
+      }
+
+      const isSlashCommand = content.startsWith('/') && !content.toLowerCase().startsWith('/review');
+      if (isSlashCommand) {
+        const parts = content.split(/\s+/);
+        const command = parts[0].toLowerCase();
+
+        const request = opencodeStore.startRequest(conversation.id);
+        if (!request.ok) {
+          logError(`[Socket] Active run already exists for conversation ${conversation.id}: ${request.message}`);
+          socket.emit('opencode:error', {
+            conversationId: conversation.id,
+            code: 'OPENCODE_ALREADY_RUNNING',
+            message: request.message,
+            retryable: true,
+          });
+          return;
+        }
+
+        const userMessage = opencodeStore.addUserMessage(conversation.id, content);
+        io.emit('opencode:message', { conversationId: conversation.id, message: userMessage });
+
+        emitRunStatus({
+          conversationId: conversation.id,
+          requestId: request.requestId,
+          phase: 'direct_run',
+          message: 'Executing command...',
+          retryable: false,
+        });
+
+        const finalize = (failed: boolean, options: { stopped?: boolean; errorSummary?: string } = {}) => {
+          logInfo(`[Socket] Finalizing command request ${request.requestId}`);
+          opencodeStore.finishRequest(conversation.id, failed, options);
+          const snapshot = opencodeStore.getSnapshot(conversation.id);
+          if (snapshot) io.emit('opencode:snapshot', { conversation: snapshot });
+        };
+
+        let assistantContent = '';
+        let failed = false;
+
+        try {
+          if (command === '/models') {
+            const sub = parts[1];
+            if (sub) {
+              const rawModels = await opencodeRunner.runModelsQuery();
+              const modelsList = rawModels.split(/\r?\n/).map(m => m.trim()).filter(Boolean);
+              const found = modelsList.find(m => m.toLowerCase() === sub.toLowerCase());
+              if (found) {
+                conversation.activeModel = found;
+                assistantContent = `Active model successfully switched to \`${found}\`.`;
+              } else {
+                failed = true;
+                assistantContent = `Invalid model name: \`${sub}\`.\n\nChoose from the available models: ${modelsList.map(m => `\n- \`${m}\``).join('')}`;
+              }
+            } else {
+              const rawModels = await opencodeRunner.runModelsQuery();
+              assistantContent = `### Available Models\n\n\`\`\`text\n${rawModels}\n\`\`\``;
+            }
+          } else if (command === '/stats') {
+            const stats = await opencodeRunner.runStatsQuery();
+            assistantContent = `### Session Stats\n\n\`\`\`text\n${stats}\n\`\`\``;
+          } else if (command === '/sessions') {
+            const sub = parts[1]?.toLowerCase();
+            if (sub === 'delete') {
+              const targetSessionId = parts[2];
+              if (!targetSessionId) {
+                failed = true;
+                assistantContent = 'Please specify a Session ID to delete: `/sessions delete <session-id>`';
+              } else {
+                const deleteResult = await opencodeRunner.runSessionDelete(targetSessionId);
+                assistantContent = deleteResult;
+              }
+            } else {
+              const sessionsTable = await opencodeRunner.runSessionsQuery();
+              assistantContent = sessionsTable;
+            }
+          } else if (command === '/export') {
+            const targetSessionId = parts[1];
+            const exported = await opencodeRunner.runExportQuery(targetSessionId);
+            assistantContent = exported;
+          } else if (command === '/skills') {
+            const skills = await opencodeRunner.runSkillsQuery();
+            assistantContent = skills;
+          } else if (command === '/init') {
+            const initRes = await opencodeRunner.runInitQuery();
+            assistantContent = initRes;
+          } else if (command === '/compact' || command === '/summarize') {
+            const summary = await opencodeRunner.runCompactQuery(conversation.id);
+            assistantContent = summary;
+          } else if (command === '/exit' || command === '/quit' || command === '/q') {
+            opencodeRunner.stopActiveRun();
+            assistantContent = 'Session exited and active agent run stopped.';
+          } else {
+            failed = true;
+            assistantContent = `Unrecognized slash command on bridge: \`${command}\`.`;
+          }
+        } catch (err: any) {
+          failed = true;
+          assistantContent = `Error: ${err.message}`;
+        }
+
+        const assistantMessage = opencodeStore.createAssistantMessage(conversation.id);
+        assistantMessage.content = assistantContent;
+        assistantMessage.status = failed ? 'error' : 'complete';
+        opencodeStore.addMessage(assistantMessage);
+        io.emit('opencode:message', { conversationId: conversation.id, message: assistantMessage });
+
+        finalize(failed, { errorSummary: failed ? assistantContent : undefined });
+        emitRunStatus({
+          conversationId: conversation.id,
+          requestId: request.requestId,
+          phase: failed ? 'failed' : 'completed',
+          message: failed ? 'Failed' : 'Completed',
+          retryable: false,
+        });
+        return;
+      }
+
       const request = opencodeStore.startRequest(conversation.id);
       if (!request.ok) {
         logError(`[Socket] Active run already exists for conversation ${conversation.id}: ${request.message}`);
@@ -204,6 +326,7 @@ export const initSocketIO = (server: HttpServer) => {
       let firstActivity = false;
       let finalized = false;
       let watchdog: NodeJS.Timeout | undefined;
+      let inThought = false;
 
       const ensureAssistantMessage = () => {
         if (!assistantMessage) {
@@ -235,6 +358,19 @@ export const initSocketIO = (server: HttpServer) => {
         finalized = true;
         logInfo(`[Socket] Finalizing request ${request.requestId}: failed=${failed}, stopped=${options.stopped || false}, errorSummary="${(options.errorSummary || '').slice(0, 120)}"`);
         if (watchdog) clearTimeout(watchdog);
+
+        if (inThought) {
+          inThought = false;
+          const msg = ensureAssistantMessage();
+          emitNormalized({
+            type: 'message_delta',
+            conversationId: conversation.id,
+            messageId: msg.id,
+            content: '</thought>',
+            done: false,
+          });
+        }
+
         opencodeStore.finishRequest(conversation.id, failed, options);
         const snapshot = opencodeStore.getSnapshot(conversation.id);
         if (snapshot) io.emit('opencode:snapshot', { conversation: snapshot });
@@ -245,7 +381,7 @@ export const initSocketIO = (server: HttpServer) => {
         handle = await opencodeRunner.run({
           conversationId: conversation.id,
           requestId: request.requestId,
-          prompt: content,
+          prompt: runPrompt,
           sessionId: conversation.opencodeSessionId || payload.sessionId,
           env: opencodeStore.getCredentials(socket.id),
           onActivity: markFirstActivity,
@@ -288,9 +424,35 @@ export const initSocketIO = (server: HttpServer) => {
             }
           },
           onJson: (raw) => {
-            const rawType = (raw as any)?.type || 'unknown';
+            const rawType = (raw as any)?.type || (raw as any)?.part?.type || 'unknown';
             logInfo(`[Socket] onJson received for request ${request.requestId}: type=${rawType}`);
             const message = ensureAssistantMessage();
+
+            // Handle thought tag opening and closing transitions
+            if (rawType === 'reasoning') {
+              if (!inThought) {
+                inThought = true;
+                const openEvent: NormalizedOpenCodeEvent = {
+                  type: 'message_delta',
+                  conversationId: conversation.id,
+                  messageId: message.id,
+                  content: '<thought>',
+                  done: false,
+                };
+                emitNormalized(openEvent);
+              }
+            } else if (inThought && ['text', 'message_delta', 'assistant_delta', 'tool', 'tool_use', 'tool_start', 'tool_completed', 'tool_finish', 'file_change', 'patch', 'approval'].includes(String(rawType))) {
+              inThought = false;
+              const closeEvent: NormalizedOpenCodeEvent = {
+                type: 'message_delta',
+                conversationId: conversation.id,
+                messageId: message.id,
+                content: '</thought>',
+                done: false,
+              };
+              emitNormalized(closeEvent);
+            }
+
             const events = normalizeOpenCodePayload(raw, conversation.id, message.id);
             logInfo(`[Socket] normalizeOpenCodePayload produced ${events.length} event(s): [${events.map(e => e.type).join(', ')}]`);
             for (const event of events) {
@@ -456,6 +618,12 @@ export const initSocketIO = (server: HttpServer) => {
       if (token && typeof duration === 'number') {
         registerSelfKeepAlive(token, duration);
       }
+    });
+
+    socket.on('opencode:credentials', (newCredentials: Record<string, string>) => {
+      pokeSelfKeepAlive();
+      logInfo(`[Socket] Received opencode:credentials updates for socket ${socket.id} (keys: ${JSON.stringify(Object.keys(newCredentials))})`);
+      opencodeStore.setCredentials(socket.id, newCredentials);
     });
 
     socket.on('disconnect', () => {

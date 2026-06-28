@@ -30,6 +30,7 @@ import {
   emitOpenCodeSync,
   registerOpenCodeSocketHandlers,
 } from '../services/opencodeSocket';
+import { useSlashCommands, SlashCommandsAutocomplete, CredentialsModal } from '../components/control/ControlSlashCommands';
 import { CodespaceVM } from '../types';
 import {
   OpenCodeApprovalRequest,
@@ -272,6 +273,14 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const defaultConversationId = useMemo(() => `opencode-${conversationScope}`, [conversationScope]);
 
   const socketRef = useRef<Socket | null>(null);
+  const [showConnectModal, setShowConnectModal] = useState(false);
+  const handleSlashCommand = useSlashCommands({
+    messages,
+    setMessages,
+    conversationId: conversationId || defaultConversationId,
+    socket: socketRef.current,
+    onOpenConnect: () => setShowConnectModal(true),
+  });
   const conversationIdRef = useRef<string | undefined>(conversationId);
   const isInstallingRef = useRef(false);
   const flatListRef = useRef<FlatList<GroupedItem>>(null);
@@ -736,7 +745,14 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
 
   const handleSubmitPrompt = () => {
     const content = inputPrompt.trim();
-    if (!content || !socketRef.current) return;
+    if (!content) return;
+
+    if (handleSlashCommand(content)) {
+      setInputPrompt('');
+      return;
+    }
+
+    if (!socketRef.current) return;
     if (!capability.canSubmit) {
       Alert.alert('OpenCode unavailable', capability.details);
       return;
@@ -940,7 +956,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
 
           {activity.kind === 'file_read' && (
             <View>
-              <Text style={styles.detailMetaText}>Read {meta.filePath} (Lines {meta.startLine ?? 1}-{meta.endLine ?? 'EOF'})</Text>
+              <Text style={styles.detailMetaText}>Read {meta.filePath || 'file'} (Lines {meta.startLine ?? 1}-{meta.endLine ?? 'EOF'})</Text>
               {!!meta.content && (
                 <ScrollView horizontal style={styles.codeBlockScroll} contentContainerStyle={styles.codeBlockScrollContent}>
                   <Text style={styles.codeBlockText}>{meta.content}</Text>
@@ -949,16 +965,71 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             </View>
           )}
 
+          {activity.kind === 'file_write' && (
+            <View>
+              <Text style={styles.detailMetaText}>Write {meta.filePath || 'file'}</Text>
+              {!!meta.content && (
+                <ScrollView horizontal style={styles.codeBlockScroll} contentContainerStyle={styles.codeBlockScrollContent}>
+                  <Text style={styles.codeBlockText}>{meta.content}</Text>
+                </ScrollView>
+              )}
+            </View>
+          )}
+
+          {activity.kind === 'test' && (
+            <View>
+              {!!meta.commandLine && <Text style={styles.detailCodeHeader}>Test: {meta.commandLine}</Text>}
+              <View style={styles.terminalContainer}>
+                {!!meta.stdout && <Text style={styles.terminalStdout}>{meta.stdout}</Text>}
+                {!!meta.stderr && <Text style={styles.terminalStderr}>{meta.stderr}</Text>}
+                {meta.exitCode !== undefined && (
+                  <Text style={styles.terminalExitCode}>Tests exited with code {meta.exitCode}</Text>
+                )}
+              </View>
+            </View>
+          )}
+
           {activity.kind === 'search' && (
             <View>
               {!!meta.query && <Text style={styles.detailMetaText}>Search Query: "{meta.query}"</Text>}
-              {meta.results && meta.results.map((res: any, idx: number) => (
-                <View key={idx} style={styles.searchResultRow}>
-                  <Text style={styles.searchResultTitle} onPress={() => {}}>{res.title}</Text>
-                  <Text style={styles.searchResultUrl}>{res.url}</Text>
-                  <Text style={styles.searchResultSnippet}>{res.snippet}</Text>
+              {meta.results && Array.isArray(meta.results) ? (
+                meta.results.map((res: any, idx: number) => (
+                  <View key={idx} style={styles.searchResultRow}>
+                    {!!res.title && <Text style={styles.searchResultTitle}>{res.title}</Text>}
+                    {!!res.url && <Text style={styles.searchResultUrl}>{res.url}</Text>}
+                    {!!res.snippet && <Text style={styles.searchResultSnippet}>{res.snippet}</Text>}
+                  </View>
+                ))
+              ) : (
+                <View>
+                  {!!meta.stdout && (
+                    <ScrollView horizontal style={styles.codeBlockScroll} contentContainerStyle={styles.codeBlockScrollContent}>
+                      <Text style={styles.codeBlockText}>{meta.stdout}</Text>
+                    </ScrollView>
+                  )}
+                  {!!meta.content && (
+                    <ScrollView horizontal style={styles.codeBlockScroll} contentContainerStyle={styles.codeBlockScrollContent}>
+                      <Text style={styles.codeBlockText}>{meta.content}</Text>
+                    </ScrollView>
+                  )}
                 </View>
-              ))}
+              )}
+            </View>
+          )}
+
+          {!['command', 'file_read', 'file_write', 'search', 'test'].includes(activity.kind) && (
+            <View>
+              {Object.keys(meta).map((key) => {
+                const val = meta[key];
+                if (val === undefined || val === null) return null;
+                const displayVal = typeof val === 'object' ? JSON.stringify(val, null, 2) : String(val);
+                return (
+                  <View key={key} style={{ flexDirection: 'row', marginBottom: 4, flexWrap: 'wrap' }}>
+                    <Text style={styles.detailRawMetaKey}>{key}: </Text>
+                    <Text style={styles.detailRawMetaVal}>{displayVal}</Text>
+                  </View>
+                );
+              })}
             </View>
           )}
         </View>
@@ -1002,7 +1073,21 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             <MaterialIcons name={iconName} size={16} color={iconColor} />
           )}
           <View style={styles.statusTextWrap}>
-            <Text style={styles.statusTitle}>{activity.label}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+              <Text style={styles.statusTitle}>{activity.label}</Text>
+              {!!activity.kind && (
+                <View style={[
+                  styles.toolBadge,
+                  activity.kind === 'command' && styles.commandBadge,
+                  activity.kind === 'file_read' && styles.readBadge,
+                  activity.kind === 'file_write' && styles.writeBadge,
+                  activity.kind === 'search' && styles.searchBadge,
+                  activity.kind === 'test' && styles.testBadge,
+                ]}>
+                  <Text style={styles.toolBadgeText}>{activity.kind}</Text>
+                </View>
+              )}
+            </View>
             {!!activity.summary && <Text style={styles.statusSubtitle}>{activity.summary}</Text>}
           </View>
           {hasMeta && (
@@ -1384,6 +1469,13 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               }
             />
 
+            <SlashCommandsAutocomplete
+              inputPrompt={inputPrompt}
+              setInputPrompt={setInputPrompt}
+              inputHeight={isRecording ? 48 : Math.max(48, inputHeight)}
+              textInputRef={textInputRef}
+            />
+
             <View style={styles.bottomBar}>
               <View style={[styles.inputWrapper, { minHeight: 48, height: isRecording ? 48 : Math.max(48, inputHeight) }]}>
                 {isRecording ? (
@@ -1397,8 +1489,9 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
                     placeholder={capability.canSubmit ? 'Ask OpenCode to change code...' : 'OpenCode is not ready'}
                     placeholderTextColor="rgba(255, 255, 255, 0.35)"
                     multiline
+                    scrollEnabled={true}
                     onContentSizeChange={(e) => {
-                      setInputHeight(Math.min(150, Math.max(44, e.nativeEvent.contentSize.height + 12)));
+                      setInputHeight(Math.min(180, Math.max(44, e.nativeEvent.contentSize.height + 12)));
                     }}
                     editable={socketStatus === 'connected' && capability.canSubmit && !running && !isTranscribing}
                   />
@@ -1439,6 +1532,11 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
                 </View>
               </View>
             </View>
+            <CredentialsModal
+              visible={showConnectModal}
+              onClose={() => setShowConnectModal(false)}
+              socket={socketRef.current}
+            />
           </>
         ) : (
           renderSetupPanel()
@@ -1811,7 +1909,7 @@ const styles = StyleSheet.create({
   },
   textInput: {
     flex: 1,
-    maxHeight: 110,
+    maxHeight: 180,
     color: Theme.colors.text.primary,
     fontSize: 14,
     lineHeight: 20,
@@ -2124,5 +2222,51 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: Theme.colors.text.secondary,
     lineHeight: 17,
+  },
+  toolBadge: {
+    marginLeft: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderWidth: 0.5,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  toolBadgeText: {
+    fontSize: 9,
+    fontWeight: 'bold',
+    color: Theme.colors.text.secondary,
+    textTransform: 'uppercase',
+  },
+  commandBadge: {
+    backgroundColor: 'rgba(52, 211, 153, 0.08)',
+    borderColor: 'rgba(52, 211, 153, 0.2)',
+  },
+  readBadge: {
+    backgroundColor: 'rgba(99, 102, 241, 0.08)',
+    borderColor: 'rgba(99, 102, 241, 0.2)',
+  },
+  writeBadge: {
+    backgroundColor: 'rgba(244, 63, 94, 0.08)',
+    borderColor: 'rgba(244, 63, 94, 0.2)',
+  },
+  searchBadge: {
+    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+    borderColor: 'rgba(16, 185, 129, 0.2)',
+  },
+  testBadge: {
+    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+    borderColor: 'rgba(245, 158, 11, 0.2)',
+  },
+  detailRawMetaKey: {
+    fontWeight: 'bold',
+    color: Theme.colors.text.secondary,
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  detailRawMetaVal: {
+    color: Theme.colors.text.primary,
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
 });

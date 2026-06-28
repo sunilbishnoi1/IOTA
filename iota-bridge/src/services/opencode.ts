@@ -242,7 +242,7 @@ class OpenCodeRunner {
       
       while (true) {
         attemptCount++;
-        const args = this.buildRunArgs(options.prompt, options.sessionId, attach);
+        const args = this.buildRunArgs(options.prompt, options.sessionId, attach, options.conversationId);
         logInfo(`[OpenCodeRunner] Spawning process (attempt ${attemptCount}): opencode ${args.join(' ')}`);
         
         const child = this.spawnProcess('opencode', args, {
@@ -447,6 +447,165 @@ class OpenCodeRunner {
     }
   }
 
+  public async runModelsQuery(): Promise<string> {
+    logInfo(`[OpenCodeRunner] runModelsQuery: executing opencode models`);
+    const result = await this.runCommand('opencode', ['models'], 15000);
+    if (result.exitCode === 0) {
+      return result.stdout.trim();
+    }
+    throw new Error(result.stderr || `Failed to query models (code ${result.exitCode})`);
+  }
+
+  public async runStatsQuery(): Promise<string> {
+    logInfo(`[OpenCodeRunner] runStatsQuery: executing opencode stats`);
+    const result = await this.runCommand('opencode', ['stats'], 15000);
+    if (result.exitCode === 0) {
+      return result.stdout.trim();
+    }
+    throw new Error(result.stderr || `Failed to query stats (code ${result.exitCode})`);
+  }
+
+  public async runSessionsQuery(): Promise<string> {
+    logInfo(`[OpenCodeRunner] runSessionsQuery: executing opencode session list`);
+    const result = await this.runCommand('opencode', ['session', 'list', '--format', 'json'], 15000);
+    if (result.exitCode !== 0) {
+      throw new Error(result.stderr || `Failed to list sessions (code ${result.exitCode})`);
+    }
+    try {
+      const parsed = JSON.parse(result.stdout);
+      const list = Array.isArray(parsed) ? parsed : [parsed];
+      if (list.length === 0) {
+        return 'No active sessions found.';
+      }
+      let md = `### Active Sessions\n\n| Session ID | Title | Created | Updated |\n| :--- | :--- | :--- | :--- |\n`;
+      for (const ses of list) {
+        const createdDate = ses.created ? new Date(ses.created).toLocaleString() : 'N/A';
+        const updatedDate = ses.updated ? new Date(ses.updated).toLocaleString() : 'N/A';
+        md += `| \`${ses.id}\` | ${ses.title || 'Untitled'} | ${createdDate} | ${updatedDate} |\n`;
+      }
+      return md.trim();
+    } catch (err: any) {
+      logError(`[OpenCodeRunner] runSessionsQuery: failed to parse/format session list: ${err.message}`);
+      return `Failed to parse session list JSON. Raw output:\n\n\`\`\`\n${result.stdout}\n\`\`\``;
+    }
+  }
+
+  public async runSessionDelete(sessionId: string): Promise<string> {
+    logInfo(`[OpenCodeRunner] runSessionDelete: deleting session ${sessionId}`);
+    const result = await this.runCommand('opencode', ['session', 'delete', sessionId], 15000);
+    if (result.exitCode === 0) {
+      return result.stdout.trim() || `Session \`${sessionId}\` deleted successfully.`;
+    }
+    throw new Error(result.stderr || `Failed to delete session (code ${result.exitCode})`);
+  }
+
+  public async runExportQuery(sessionId?: string): Promise<string> {
+    let targetSessionId = sessionId;
+    if (!targetSessionId) {
+      const sessions = await this.listSessions();
+      if (sessions && sessions.length > 0) {
+        const first = sessions[0] as { id?: string; sessionId?: string; session_id?: string };
+        targetSessionId = first.id || first.sessionId || first.session_id;
+      }
+    }
+    if (!targetSessionId) {
+      throw new Error('No active sessions found to export.');
+    }
+    logInfo(`[OpenCodeRunner] runExportQuery: exporting session ${targetSessionId}`);
+    const result = await this.runCommand('opencode', ['export', targetSessionId], 15000);
+    if (result.exitCode === 0) {
+      return `\`\`\`json\n${result.stdout.trim()}\n\`\`\``;
+    }
+    throw new Error(result.stderr || `Failed to export session (code ${result.exitCode})`);
+  }
+
+  public async runCompactQuery(conversationId?: string): Promise<string> {
+    logInfo(`[OpenCodeRunner] runCompactQuery: executing opencode run with summarize instructions`);
+    const conversation = conversationId ? opencodeStore.getConversation(conversationId) : undefined;
+    const model = conversation?.activeModel || 'opencode/deepseek-v4-flash-free';
+    const result = await this.runCommand(
+      'opencode',
+      ['run', '--model', model, '--dangerously-skip-permissions', 'Please summarize our conversation and the changes made in the workspace so far.', '--format', 'json'],
+      30000
+    );
+    if (result.exitCode !== 0) {
+      throw new Error(result.stderr || `Failed to generate conversation summary (code ${result.exitCode})`);
+    }
+    try {
+      const lines = result.stdout.split(/\r?\n/).filter(Boolean);
+      let summaryText = '';
+      for (const line of lines) {
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed.type === 'text' && parsed.part?.text) {
+            summaryText += parsed.part.text;
+          } else if (parsed.type === 'text_delta' && parsed.content) {
+            summaryText += parsed.content;
+          }
+        } catch {
+          if (!line.trim().startsWith('{')) {
+            summaryText += line + '\n';
+          }
+        }
+      }
+      const trimmed = summaryText.trim();
+      return trimmed || result.stdout.trim() || 'Conversation summarized successfully.';
+    } catch (err) {
+      return result.stdout.trim() || 'Conversation summarized successfully.';
+    }
+  }
+
+  public async runSkillsQuery(): Promise<string> {
+    logInfo(`[OpenCodeRunner] runSkillsQuery: reading local skills directory`);
+    const workspaceRoot = this.getWorkspaceRootSync();
+    const skillsPath = path.join(workspaceRoot, '.agents', 'skills');
+    try {
+      if (!fs.existsSync(skillsPath)) {
+        return 'No custom agent skills found (.agents/skills directory does not exist).';
+      }
+      const files = await fs.promises.readdir(skillsPath, { withFileTypes: true });
+      const skillDirs = files.filter(f => f.isDirectory()).map(f => f.name);
+      if (skillDirs.length === 0) {
+        return 'No custom agent skills found in `.agents/skills`.';
+      }
+      let md = `### Custom Agent Skills\n\n`;
+      for (const skill of skillDirs) {
+        const skillMdPath = path.join(skillsPath, skill, 'SKILL.md');
+        let description = '';
+        if (fs.existsSync(skillMdPath)) {
+          const content = await fs.promises.readFile(skillMdPath, 'utf8');
+          const descMatch = content.match(/description:\s*["']?([^"'\r\n]+)["']?/i);
+          if (descMatch) {
+            description = descMatch[1].trim();
+          }
+        }
+        md += `- **\`${skill}\`**${description ? `: ${description}` : ''}\n`;
+      }
+      return md.trim();
+    } catch (err: any) {
+      logError(`[OpenCodeRunner] runSkillsQuery failed: ${err.message}`);
+      return `Failed to read custom skills: ${err.message}`;
+    }
+  }
+
+  public async runInitQuery(): Promise<string> {
+    logInfo(`[OpenCodeRunner] runInitQuery: initializing workspace context`);
+    const isWin = process.platform === 'win32';
+    const scriptPath = isWin
+      ? path.join('.specify', 'extensions', 'agent-context', 'scripts', 'powershell', 'update-agent-context.ps1')
+      : path.join('.specify', 'extensions', 'agent-context', 'scripts', 'bash', 'update-agent-context.sh');
+    const cmd = isWin ? 'powershell' : 'bash';
+    const args = isWin
+      ? ['-ExecutionPolicy', 'Bypass', '-File', scriptPath]
+      : [scriptPath];
+    const result = await this.runCommand(cmd, args, 30000);
+    if (result.exitCode === 0) {
+      return result.stdout.trim() || 'Workspace initialized successfully.';
+    }
+    throw new Error(result.stderr || `Failed to initialize workspace (code ${result.exitCode})`);
+  }
+
+
   public writeInput(input: string): boolean {
     if (this.activeRun && this.activeRun.stdin && this.activeRun.stdin.writable) {
       this.activeRun.stdin.write(input);
@@ -482,8 +641,10 @@ class OpenCodeRunner {
     }
   }
 
-  private buildRunArgs(prompt: string, sessionId?: string, attach = false): string[] {
-    const args = ['run', '--model', 'opencode/deepseek-v4-flash-free', '--dangerously-skip-permissions'];
+  private buildRunArgs(prompt: string, sessionId?: string, attach = false, conversationId?: string): string[] {
+    const conversation = conversationId ? opencodeStore.getConversation(conversationId) : undefined;
+    const model = conversation?.activeModel || 'opencode/deepseek-v4-flash-free';
+    const args = ['run', '--model', model, '--dangerously-skip-permissions'];
     if (attach) args.push('--attach', OPENCODE_URL);
     if (sessionId) args.push('--continue', '--session', sessionId);
     args.push(prompt, '--format', 'json');

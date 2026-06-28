@@ -46,8 +46,8 @@ const mapToolKind = (tool?: string): OpenCodeToolKind => {
   const normalized = (tool || '').toLowerCase();
   if (normalized.includes('command') || normalized.includes('shell') || normalized.includes('bash')) return 'command';
   if (normalized.includes('read')) return 'file_read';
-  if (normalized.includes('write') || normalized.includes('edit')) return 'file_write';
-  if (normalized.includes('search') || normalized.includes('grep')) return 'search';
+  if (normalized.includes('write') || normalized.includes('edit') || normalized.includes('todowrite') || normalized.includes('apply_patch')) return 'file_write';
+  if (normalized.includes('search') || normalized.includes('grep') || normalized.includes('glob') || normalized.includes('webfetch') || normalized.includes('websearch')) return 'search';
   if (normalized.includes('test')) return 'test';
   return 'other';
 };
@@ -173,6 +173,18 @@ export function normalizeOpenCodePayload(
     return events;
   }
 
+  if (type === 'reasoning') {
+    const content = extractText(event);
+    events.push({
+      type: 'message_delta',
+      conversationId,
+      messageId: assistantMessageId,
+      content,
+      done: false,
+    });
+    return events;
+  }
+
   if (type === 'message' || type === 'assistant_message' || type === 'text') {
     const content = extractText(event);
     events.push({
@@ -191,42 +203,96 @@ export function normalizeOpenCodePayload(
   }
 
   if (type === 'tool_start' || type === 'tool' || type === 'tool_update' || type === 'tool_use' || type === 'tool_finish' || type === 'tool_completed' || type === 'tool_end' || type === 'tool_done') {
-    const tool = getVal(['tool', 'name']);
-    const isStart = type === 'tool_start' || type === 'tool_use';
-    const isFinish = type === 'tool_finish' || type === 'tool_completed' || type === 'tool_end' || type === 'tool_done';
-    const statusVal = getVal(['status']);
-    const status: OpenCodeToolActivity['status'] = isStart 
-      ? 'started' 
-      : isFinish 
-        ? (statusVal === 'failed' ? 'failed' : 'completed') 
-        : ((statusVal as OpenCodeToolActivity['status']) || 'running');
+    const part = (event.part && typeof event.part === 'object' ? event.part : {}) as Record<string, any>;
+    const state = (part.state && typeof part.state === 'object' ? part.state : (event.state && typeof event.state === 'object' ? event.state : {})) as Record<string, any>;
+    
+    const tool = valueAsString(part.tool) || getVal(['tool', 'name']) || 'unknown';
+    
+    const rawStatus = valueAsString(state.status) || valueAsString(part.status) || valueAsString(event.status);
+    const status: OpenCodeToolActivity['status'] = rawStatus === 'completed' ? 'completed'
+      : rawStatus === 'error' || rawStatus === 'failed' ? 'failed'
+      : rawStatus === 'running' ? 'running'
+      : (type === 'tool_start' || type === 'tool_use' ? 'started' : 'running');
 
     const extractMetadata = (): Record<string, any> => {
-      const src = (event.part && typeof event.part === 'object' ? { ...event, ...(event.part as any) } : event) as Record<string, any>;
       const meta: Record<string, any> = {};
-      if (src.metadata && typeof src.metadata === 'object') {
-        Object.assign(meta, src.metadata);
+      
+      // 1. Grab old flat structure from event.metadata
+      const oldSrc = (event.part && typeof event.part === 'object' ? { ...event, ...(event.part as any) } : event) as Record<string, any>;
+      if (oldSrc.metadata && typeof oldSrc.metadata === 'object') {
+        Object.assign(meta, oldSrc.metadata);
       }
+      
+      // 2. Grab new nested structure from state.metadata, state.input, state.output
+      if (state.metadata && typeof state.metadata === 'object') {
+        Object.assign(meta, state.metadata);
+      }
+      
+      // 3. Map keys from state.input / state.output / state.metadata
+      if (state.input && typeof state.input === 'object' && state.input !== null) {
+        const inputObj = state.input as Record<string, any>;
+        if (inputObj.command !== undefined) meta.commandLine = String(inputObj.command);
+        if (inputObj.filePath !== undefined) meta.filePath = String(inputObj.filePath);
+        if (inputObj.pattern !== undefined) meta.query = String(inputObj.pattern);
+        if (inputObj.query !== undefined) meta.query = String(inputObj.query);
+        if (inputObj.cwd !== undefined) meta.cwd = String(inputObj.cwd);
+        if (inputObj.content !== undefined) meta.content = String(inputObj.content);
+        if (inputObj.patch !== undefined) meta.content = String(inputObj.patch);
+      }
+      
+      if (state.output !== undefined) {
+        if (typeof state.output === 'string') {
+          meta.stdout = state.output;
+        } else {
+          meta.stdout = JSON.stringify(state.output, null, 2);
+        }
+      }
+      
+      if (state.metadata && typeof state.metadata === 'object' && state.metadata !== null) {
+        const metaObj = state.metadata as Record<string, any>;
+        if (metaObj.exit !== undefined) {
+          meta.exitCode = metaObj.exit;
+        }
+      }
+      
+      // 4. Map direct keys on oldSrc (for backwards compatibility/tests)
       const directKeys = [
         'query', 'results', 'domain',
         'filePath', 'startLine', 'endLine', 'content', 'fileSize',
         'commandLine', 'cwd', 'stdout', 'stderr', 'exitCode'
       ];
       for (const k of directKeys) {
-        if (src[k] !== undefined) {
-          meta[k] = src[k];
+        if (oldSrc[k] !== undefined) {
+          meta[k] = oldSrc[k];
         }
       }
+      
       return meta;
     };
+
+    const isFinish = status === 'completed' || status === 'failed';
+    const label = valueAsString(state.title) || getVal(['label']) || (tool ? `Running ${tool}` : 'Running tool');
+    
+    // Determine summary
+    let summary = getVal(['summary', 'input']);
+    if (!summary) {
+      if (state.summary && typeof state.summary === 'string') {
+        summary = state.summary;
+      } else if (state.output && typeof state.output === 'string') {
+        summary = state.output.slice(0, 100);
+      } else if (state.input && typeof state.input === 'object' && state.input !== null) {
+        const inputObj = state.input as Record<string, any>;
+        summary = inputObj.command || inputObj.filePath || inputObj.query || undefined;
+      }
+    }
 
     const activity: OpenCodeToolActivity = {
       id: stableId('tool', event),
       conversationId,
-      label: getVal(['label']) || (tool ? `Running ${tool}` : 'Running tool'),
+      label,
       kind: mapToolKind(tool),
       status,
-      summary: getVal(['summary', 'input']),
+      summary,
       startedAt: now(),
       completedAt: isFinish ? now() : undefined,
       metadata: extractMetadata(),

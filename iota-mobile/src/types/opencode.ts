@@ -119,6 +119,7 @@ export interface OpenCodeConversation {
   activeRequestId?: string;
   lastRunPhase?: OpenCodeRunPhase;
   lastError?: string;
+  activeModel?: string;
 }
 
 export interface OpenCodeTimelineState {

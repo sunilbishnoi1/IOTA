@@ -82,3 +82,12 @@ export const emitOpenCodeStop = (socket: Socket | null | undefined, conversation
   console.log('[SocketClient] Emitting opencode:stop for conversation:', conversationId);
   socket?.emit('opencode:stop', { conversationId });
 };
+
+export const emitOpenCodeCredentials = (
+  socket: Socket | null | undefined,
+  credentials: Record<string, string>
+) => {
+  console.log('[SocketClient] Emitting opencode:credentials:', JSON.stringify(Object.keys(credentials)));
+  socket?.emit('opencode:credentials', credentials);
+};
+
