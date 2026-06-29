@@ -271,11 +271,16 @@ The \`.iota/preview.json\` file expects this format:
       "name": "User-friendly Server Name",
       "cwd": "subdirectory relative to workspace root (e.g. '.' or 'frontend')",
       "command": "command to start dev server (e.g. 'npm run dev')",
-      "port": 3000,
+      "port": 3001, // NOTE: Use 3001 or 3002 for web apps. Use 8082 or 8083 for Expo Go apps.
       "type": "web" // 'web' or 'expo-go'
     }
   ]
 }
+
+CRITICAL FOR CODESPACES: GitHub Codespaces blocks arbitrary ports. You MUST configure the preview server to use:
+- Web Apps: Port 3001 or 3002.
+- Expo Go Apps: Port 8082 or 8083.
+These ports are pre-forwarded as public in devcontainer.json. Do NOT use other ports.
 
 Once you have auto-detected and configured the correct servers, write the configuration to \`.iota/preview.json\` and make sure to remove the "isPlaceholder": true field from the JSON root.`;
 
@@ -406,11 +411,16 @@ The \`.iota/preview.json\` file expects this format:
       "name": "User-friendly Server Name",
       "cwd": "subdirectory relative to workspace root (e.g. '.' or 'frontend')",
       "command": "command to start dev server (e.g. 'npm run dev')",
-      "port": 3000,
+      "port": 3001, // NOTE: Use 3001 or 3002 for web apps. Use 8082 or 8083 for Expo Go apps.
       "type": "web" // 'web' or 'expo-go'
     }
   ]
 }
+
+CRITICAL FOR CODESPACES: GitHub Codespaces blocks arbitrary ports. You MUST configure the preview server to use:
+- Web Apps: Port 3001, or 3002.
+- Expo Go Apps: Port 8082 or 8083.
+These ports are pre-forwarded as public in devcontainer.json. Do NOT use other ports.
 
 Once you have auto-detected and configured the correct servers, write the configuration to \`.iota/preview.json\` and make sure to remove the "isPlaceholder": true field from the JSON root.`}
                 </Text>

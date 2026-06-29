@@ -171,7 +171,11 @@ export class PreviewService {
     onStatusChange(state);
 
     // 3. Make port public
-    await this.setPortVisibility(port, 'public');
+    try {
+      await this.setPortVisibility(port, 'public');
+    } catch (err: any) {
+      logError(`Non-fatal: Failed to set port visibility for ${port}: ${err.message || err}`);
+    }
 
     // 4. Resolve cwd
     const workspaceRoot = getWorkspaceRoot();
@@ -199,6 +203,10 @@ export class PreviewService {
     if (codespaceName) {
       env.EXPO_PACKAGER_PROXY_URL = `https://${codespaceName}-${port}.${portForwardingDomain}`;
       env.REACT_NATIVE_PACKAGER_HOSTNAME = `${codespaceName}-${port}.${portForwardingDomain}`;
+      const publicPorts = [3001, 3002, 8082, 8083];
+      if (!publicPorts.includes(port)) {
+        logInfo(`[WARNING] Preview port ${port} is not in the pre-forwarded public ports list (3001, 3002, 8082, 8083). The preview might be inaccessible on mobile/external browsers unless manually made public in your Codespaces/VS Code Ports panel.`);
+      }
     }
     let child: ChildProcess;
 
@@ -284,7 +292,11 @@ export class PreviewService {
     }
 
     // Set port back to private
-    await this.setPortVisibility(resolvedPort, 'private');
+    try {
+      await this.setPortVisibility(resolvedPort, 'private');
+    } catch (err: any) {
+      logError(`Non-fatal: Failed to revert port visibility for ${resolvedPort}: ${err.message || err}`);
+    }
     this.activePreviews.delete(resolvedPort);
   }
 

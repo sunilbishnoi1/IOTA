@@ -1,12 +1,35 @@
 {
   "name": "IOTA Codespace",
   "image": "mcr.microsoft.com/devcontainers/typescript-node:20",
-  "forwardPorts": [3000],
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "forwardPorts": [3000, 3001, 3002, 8082, 8083],
   "portsAttributes": {
     "3000": {
       "label": "IOTA Bridge",
       "onAutoForward": "silent",
       "visibility": "private"
+    },
+    "3001": {
+      "label": "Web Preview (Default)",
+      "onAutoForward": "notify",
+      "visibility": "public"
+    },
+    "3002": {
+      "label": "Web Preview (Shifted)",
+      "onAutoForward": "notify",
+      "visibility": "public"
+    },
+    "8082": {
+      "label": "Expo Go Metro (Default)",
+      "onAutoForward": "notify",
+      "visibility": "public"
+    },
+    "8083": {
+      "label": "Expo Go Metro (Shifted)",
+      "onAutoForward": "notify",
+      "visibility": "public"
     }
   },
   "postCreateCommand": "npm install",
