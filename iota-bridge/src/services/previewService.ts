@@ -2,6 +2,23 @@ import { ChildProcess, exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
+import * as net from 'net';
+
+function getLocalIpAddress(): string {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    const iface = interfaces[name];
+    if (iface) {
+      for (const alias of iface) {
+        if (alias.family === 'IPv4' && !alias.internal) {
+          return alias.address;
+        }
+      }
+    }
+  }
+  return 'localhost';
+}
 import { PreviewProcessState, PreviewServerConfig, PreviewStatus } from '../types/preview';
 import { getWorkspaceRoot, logInfo, logError } from './logger';
 
@@ -25,6 +42,13 @@ export class PreviewService {
 
   // Helper to kill anything on port
   public async killProcessOnPort(port: number): Promise<void> {
+    const isTest = process.env.NODE_ENV === 'test';
+    const bridgePort = Number(process.env.PORT) || 3000;
+    const reservedPorts = [bridgePort, 8081];
+    if (reservedPorts.includes(port) && !isTest) {
+      logInfo(`Skipping kill request on port ${port} because it is a reserved development port (Bridge/Metro).`);
+      return;
+    }
     logInfo(`Attempting to kill any process occupying port ${port}`);
     if (process.platform === 'win32') {
       try {
@@ -86,7 +110,14 @@ export class PreviewService {
     onError: (err: string) => void,
     onStatusChange: (state: PreviewProcessState) => void
   ): Promise<PreviewProcessState> {
-    const port = config.port;
+    let port = config.port;
+    const isTest = process.env.NODE_ENV === 'test';
+    const bridgePort = Number(process.env.PORT) || 3000;
+    const reservedPorts = [bridgePort, 8081];
+    if (reservedPorts.includes(port) && !isTest) {
+      port = await this.findFreePort(port + 1);
+      logInfo(`Port ${config.port} is a reserved development port. Shifting preview to port ${port}.`);
+    }
     
     // 1. Kill existing processes on the port
     await this.killProcessOnPort(port);
@@ -95,19 +126,42 @@ export class PreviewService {
     const codespaceName = process.env.CODESPACE_NAME;
     const portForwardingDomain = process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN || 'app.github.dev';
     
-    let resolvedUrl = codespaceName
-      ? `https://${codespaceName}-${port}.${portForwardingDomain}`
-      : `http://localhost:${port}`;
+    let resolvedUrl = '';
+    if (codespaceName) {
+      resolvedUrl = `https://${codespaceName}-${port}.${portForwardingDomain}`;
+    } else {
+      const localIp = getLocalIpAddress();
+      resolvedUrl = `http://${localIp}:${port}`;
+    }
       
     if (config.type === 'expo-go') {
       resolvedUrl = resolvedUrl.replace(/^https:/, 'exps:').replace(/^http:/, 'exp:');
+    }
+
+    // Parse command and replace/append ports if shifted
+    let finalCommand = config.command;
+    if (port !== config.port) {
+      if (finalCommand.includes('--port') || finalCommand.includes('-p') || finalCommand.includes('--web-port')) {
+        finalCommand = finalCommand
+          .replace(/--port\s+\d+/, `--port ${port}`)
+          .replace(/-p\s+\d+/, `-p ${port}`)
+          .replace(/--web-port\s+\d+/, `--web-port ${port}`);
+      } else {
+        if (finalCommand.startsWith('npx expo start') || finalCommand.startsWith('expo start')) {
+          finalCommand = `${finalCommand} --port ${port}`;
+        } else if (finalCommand.startsWith('npx next dev') || finalCommand.startsWith('next dev')) {
+          finalCommand = `${finalCommand} -p ${port}`;
+        } else if (finalCommand.startsWith('npx vite') || finalCommand.startsWith('vite')) {
+          finalCommand = `${finalCommand} --port ${port}`;
+        }
+      }
     }
 
     const state: PreviewProcessState = {
       port,
       pid: null,
       status: 'starting',
-      command: config.command,
+      command: finalCommand,
       url: resolvedUrl
     };
 
@@ -121,12 +175,10 @@ export class PreviewService {
     const workspaceRoot = getWorkspaceRoot();
     const resolvedCwd = config.cwd ? path.resolve(workspaceRoot, config.cwd) : workspaceRoot;
 
-    logInfo(`Spawning preview process on port ${port} with command: ${config.command} in cwd: ${resolvedCwd}`);
+    logInfo(`Spawning preview process on port ${port} with command: ${finalCommand} in cwd: ${resolvedCwd}`);
 
-    // Parse command
-    let finalCommand = config.command;
     // T015: Enhance bridge preview subprocess manager to handle Flutter Web execution modes
-    if (config.command.startsWith('flutter run') && !config.command.includes('-d web-server') && !config.command.includes('--web-port')) {
+    if (finalCommand.startsWith('flutter run') && !finalCommand.includes('-d web-server') && !finalCommand.includes('--web-port')) {
       finalCommand = `flutter run -d web-server --web-port ${port} --web-hostname 0.0.0.0`;
       logInfo(`Enhanced Flutter command to: ${finalCommand}`);
     }
@@ -135,7 +187,12 @@ export class PreviewService {
     const baseCommand = parts[0];
     const args = parts.slice(1);
 
-    const env = { ...process.env };
+    const env = { 
+      ...process.env,
+      WORKSPACE_ROOT: workspaceRoot,
+      IOTA_WORKSPACE_ROOT: workspaceRoot,
+      PORT: String(port),
+    };
     let child: ChildProcess;
 
     try {
@@ -328,5 +385,29 @@ export class PreviewService {
     }
 
     return configs;
+  }
+
+  private async findFreePort(startPort: number): Promise<number> {
+    const checkPort = (p: number): Promise<boolean> => {
+      return new Promise((resolve) => {
+        const server = net.createServer();
+        server.once('error', () => {
+          resolve(false);
+        });
+        server.once('listening', () => {
+          server.close(() => resolve(true));
+        });
+        server.listen(p, '127.0.0.1');
+      });
+    };
+
+    let currentPort = startPort;
+    while (!(await checkPort(currentPort))) {
+      currentPort++;
+      if (currentPort > startPort + 100) {
+        break;
+      }
+    }
+    return currentPort;
   }
 }

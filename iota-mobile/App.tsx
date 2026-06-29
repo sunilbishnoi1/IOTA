@@ -7,18 +7,42 @@ import {
   ActivityIndicator,
   Platform,
   AppState,
+  NativeModules,
 } from 'react-native';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { DashboardScreen } from './src/screens/DashboardScreen';
 import { ControlScreen } from './src/screens/ControlScreen';
+import { PreviewScreen } from './src/screens/PreviewScreen';
 import { ShipScreen } from './src/screens/ShipScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
 import { secureStoreService } from './src/services/secureStore';
 import { Theme } from './src/styles/theme';
 import { CodespaceVM } from './src/types';
 import { MaterialIcons } from '@expo/vector-icons';
+import { Socket } from 'socket.io-client';
 
-type TabType = 'dashboard' | 'terminal' | 'ship' | 'settings';
+type TabType = 'dashboard' | 'terminal' | 'preview' | 'ship' | 'settings';
+
+const DEFAULT_BRIDGE_URL = Platform.select({
+  android: 'http://10.0.2.2:3000',
+  ios: 'http://localhost:3000',
+  default: 'http://localhost:3000',
+}) || 'http://localhost:3000';
+
+const getLocalBridgeUrlFromBundle = (): string | null => {
+  try {
+    const scriptURL = NativeModules.SourceCode?.scriptURL;
+    if (scriptURL && (scriptURL.startsWith('http://') || scriptURL.startsWith('https://'))) {
+      const match = scriptURL.match(/^(https?:\/\/[^\/:]+)/);
+      if (match && match[1]) {
+        return `${match[1]}:3000`;
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+  return null;
+};
 
 export default function App() {
   const [isLoading, setIsLoading] = useState(true);
@@ -28,15 +52,27 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
   const [activeCodespace, setActiveCodespace] = useState<CodespaceVM | null>(null);
   const [openedWorkspaces, setOpenedWorkspaces] = useState<Record<string, CodespaceVM>>({});
-  const [bridgeUrl, setBridgeUrl] = useState<string>('http://localhost:3000');
+  const [bridgeUrl, setBridgeUrl] = useState<string>(DEFAULT_BRIDGE_URL);
   const [keepAliveDuration, setKeepAliveDuration] = useState<number>(0);
   const [allCodespaces, setAllCodespaces] = useState<CodespaceVM[]>([]);
+  const [workspaceSockets, setWorkspaceSockets] = useState<Record<string, Socket | null>>({});
 
   useEffect(() => {
     async function init() {
       try {
         const savedUrl = await secureStoreService.getBridgeUrl();
-        if (savedUrl) {
+        const detectedUrl = getLocalBridgeUrlFromBundle();
+        
+        // If we have a saved remote codespace URL, use it.
+        // Otherwise, if we are in local development and detected a bridge URL, use the detected one.
+        // Otherwise, fallback to saved URL or DEFAULT_BRIDGE_URL.
+        const isRemoteUrl = savedUrl && !savedUrl.includes('localhost') && !savedUrl.includes('127.0.0.1') && !savedUrl.includes('10.0.2.2') && !/http:\/\/\d+\.\d+\.\d+\.\d+/.test(savedUrl);
+        
+        if (savedUrl && isRemoteUrl) {
+          setBridgeUrl(savedUrl);
+        } else if (detectedUrl) {
+          setBridgeUrl(detectedUrl);
+        } else if (savedUrl) {
           setBridgeUrl(savedUrl);
         }
 
@@ -217,7 +253,7 @@ export default function App() {
 
       {Object.entries(openedWorkspaces).map(([csId, codespace]) => (
         <View
-          key={`control-${csId}`}
+          key={`control-${csId}-${codespace.repositoryName}`}
           style={[styles.screenContainer, { display: activeTab === 'terminal' && activeCodespace?.id === csId ? 'flex' : 'none' }]}
         >
           <ControlScreen
@@ -231,6 +267,30 @@ export default function App() {
             }}
             onGoToShip={() => {
               setActiveTab('ship');
+            }}
+            onGoToPreview={() => {
+              setActiveTab('preview');
+            }}
+            onSocketChange={(socket) => {
+              setWorkspaceSockets((prev) => ({ ...prev, [csId]: socket }));
+            }}
+          />
+        </View>
+      ))}
+
+      {Object.entries(openedWorkspaces).map(([csId, codespace]) => (
+        <View
+          key={`preview-${csId}-${codespace.repositoryName}`}
+          style={[styles.screenContainer, { display: activeTab === 'preview' && activeCodespace?.id === csId ? 'flex' : 'none' }]}
+        >
+          <PreviewScreen
+            socket={workspaceSockets[csId] || null}
+            bridgeUrl={bridgeUrl}
+            token={user.token}
+            activeCodespace={codespace}
+            isVisible={activeTab === 'preview' && activeCodespace?.id === csId}
+            onBackToChat={() => {
+              setActiveTab('terminal');
             }}
           />
         </View>

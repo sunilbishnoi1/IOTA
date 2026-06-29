@@ -2,8 +2,29 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 let logStream: fs.WriteStream | null = null;
+let activeWorkspaceRoot: string | null = null;
+
+export function setWorkspaceRoot(newRoot: string) {
+  if (fs.existsSync(newRoot)) {
+    activeWorkspaceRoot = newRoot;
+    initLogger(true);
+  }
+}
 
 export function getWorkspaceRoot(): string {
+  // If a workspace root has been dynamically selected, prefer it!
+  if (activeWorkspaceRoot) {
+    return activeWorkspaceRoot;
+  }
+
+  // 0. Check for custom environment variable overrides (local testing)
+  if (process.env.IOTA_WORKSPACE_ROOT && fs.existsSync(process.env.IOTA_WORKSPACE_ROOT)) {
+    return process.env.IOTA_WORKSPACE_ROOT;
+  }
+  if (process.env.WORKSPACE_ROOT && fs.existsSync(process.env.WORKSPACE_ROOT)) {
+    return process.env.WORKSPACE_ROOT;
+  }
+
   // 1. Check CODESPACE_VSCODE_FOLDER environment variable
   if (process.env.CODESPACE_VSCODE_FOLDER && fs.existsSync(process.env.CODESPACE_VSCODE_FOLDER)) {
     return process.env.CODESPACE_VSCODE_FOLDER;
@@ -46,15 +67,27 @@ export function getWorkspaceRoot(): string {
     }
   }
 
-  // 4. Default fallback: resolve relative to current file or process.cwd()
-  // If we are running in the bridge (either locally or in /tmp/iota/iota-bridge),
-  // process.cwd() is /path/to/iota-bridge. So path.resolve(process.cwd(), '..') is /path/to/iota.
+  // 4. Default fallback: resolve relative to current file (__dirname) to get the IOTA root project directory.
+  // Relative to iota-bridge/src/services/logger.ts, the project root is 3 levels up.
+  const relativeRoot = path.resolve(__dirname, '..', '..', '..');
+  if (fs.existsSync(relativeRoot)) {
+    return relativeRoot;
+  }
+
+  // Final fallback: parent of process.cwd()
   return path.resolve(process.cwd(), '..');
 }
 
 
-export const initLogger = () => {
-  if (logStream) return;
+export const initLogger = (force = false) => {
+  if (logStream && !force) return;
+  if (logStream) {
+    try {
+      logStream.end();
+    } catch (e) {
+      // ignore
+    }
+  }
   const rootDir = getWorkspaceRoot();
   const logPath = path.join(rootDir, 'bridge.log');
   logStream = fs.createWriteStream(logPath, { flags: 'a', encoding: 'utf8' });

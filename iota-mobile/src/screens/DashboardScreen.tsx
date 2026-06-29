@@ -69,6 +69,10 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   const [reposLoading, setReposLoading] = useState<boolean>(false);
   const [repoModalVisible, setRepoModalVisible] = useState<boolean>(false);
 
+  const [localFoldersModalVisible, setLocalFoldersModalVisible] = useState<boolean>(false);
+  const [localFolders, setLocalFolders] = useState<string[]>([]);
+  const [foldersLoading, setFoldersLoading] = useState<boolean>(false);
+
   const pollingIntervals = useRef<Record<string, NodeJS.Timeout>>({});
 
   useEffect(() => {
@@ -90,6 +94,54 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   const handleOpenRepoModal = () => {
     setRepoModalVisible(true);
     fetchRepositories();
+  };
+
+  const handleOpenFoldersModal = () => {
+    setLocalFoldersModalVisible(true);
+    fetchLocalFolders();
+  };
+
+  const fetchLocalFolders = async () => {
+    setFoldersLoading(true);
+    try {
+      const response = await fetch(`${bridgeUrl}/api/local-workspaces`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data && data.folders) {
+          setLocalFolders(data.folders);
+        }
+      } else {
+        console.warn('Failed to fetch local folders:', response.status);
+      }
+    } catch (err) {
+      console.warn('Failed to fetch local folders:', err);
+    } finally {
+      setFoldersLoading(false);
+    }
+  };
+
+  const handleSelectLocalFolder = async (folderName: string) => {
+    setFoldersLoading(true);
+    try {
+      const response = await fetch(`${bridgeUrl}/api/local-workspace/select`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ folderName }),
+      });
+      if (response.ok) {
+        setLocalFoldersModalVisible(false);
+        fetchCodespaces(true);
+      } else {
+        const errorData = await response.json();
+        Alert.alert('Error', errorData.error || 'Failed to change local workspace.');
+      }
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to change local workspace.');
+    } finally {
+      setFoldersLoading(false);
+    }
   };
 
   const triggerCodespaceCreation = async (repo: GitHubRepository) => {
@@ -176,25 +228,69 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
     if (!isSilent) setLoading(true);
     setErrorMsg(null);
     const targetUrl = customUrl || bridgeUrl;
-    try {
-      const data = await listUserCodespaces(targetUrl, user.token);
-      setCodespaces(data);
+    
+    let fetchedCodespaces: CodespaceVM[] = [];
+    let isLocalBridgeActive = false;
+    let activeLocalFolder = 'Local Dev Workspace';
+    let fetchError: any = null;
 
-      // Check if any codespace is starting, if so start polling for it
-      data.forEach((cs: CodespaceVM) => {
-        if (cs.status === 'starting' && !pollingIntervals.current[cs.id]) {
-          startPollingCodespace(cs.id);
-        }
+    // 1. Check if the local bridge is active
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+      const pingResponse = await fetch(`${targetUrl}/api/ping`, {
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
+      if (pingResponse.ok) {
+        isLocalBridgeActive = true;
+        const pingData = await pingResponse.json();
+        if (pingData && pingData.activeLocalFolder) {
+          activeLocalFolder = pingData.activeLocalFolder;
+        }
+      }
+    } catch (e) {
+      // local bridge is unreachable
+    }
+
+    // 2. Fetch remote codespaces
+    try {
+      fetchedCodespaces = await listUserCodespaces(targetUrl, user.token);
     } catch (error: any) {
       console.warn('Error fetching codespaces:', error);
+      fetchError = error;
+    }
+
+    // 3. Prepend local workspace virtual item
+    const localWorkspace: CodespaceVM = {
+      id: 'local-workspace',
+      repositoryName: activeLocalFolder,
+      branchName: 'local',
+      status: isLocalBridgeActive ? 'active' : 'sleeping',
+      freeHoursRemaining: 0,
+      connectionUrl: targetUrl,
+      rawState: isLocalBridgeActive ? 'Available' : 'Unavailable',
+    };
+
+    const finalCodespaces = [localWorkspace, ...fetchedCodespaces];
+    setCodespaces(finalCodespaces);
+
+    // Start polling for any starting remote codespaces
+    fetchedCodespaces.forEach((cs: CodespaceVM) => {
+      if (cs.status === 'starting' && !pollingIntervals.current[cs.id]) {
+        startPollingCodespace(cs.id);
+      }
+    });
+
+    // Only show error message if we couldn't fetch codespaces AND the local bridge is offline
+    if (fetchError && !isLocalBridgeActive) {
       setErrorMsg(
         `Unable to reach IOTA Bridge or GitHub API.\nMake sure you are connected to the network or the bridge server is running.`
       );
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
     }
+
+    if (!isSilent) setLoading(false);
+    setRefreshing(false);
   }, [bridgeUrl, user.token]);
 
   useEffect(() => {
@@ -229,6 +325,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
 
   // Poll a single codespace's status until it's active or sleeping
   const startPollingCodespace = (id: string) => {
+    if (id === 'local-workspace') return;
     if (!isVisible) {
       console.log(`[Codespace Poller] Skipping start of poll for ${id} because dashboard is hidden`);
       return;
@@ -281,8 +378,29 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
     pollingIntervals.current[id] = timer;
   };
 
+  // Intercept clicking on the virtual local workspace card
+  const handlePressCard = (item: CodespaceVM) => {
+    if (item.id === 'local-workspace') {
+      if (item.status !== 'active') {
+        Alert.alert(
+          'Local Workspace Offline',
+          "To test locally, first start the IOTA bridge in your terminal:\n\nWORKSPACE_ROOT=/path/to/project npm run bridge:dev\n\nMake sure your mobile app's Bridge URL is correctly configured in settings."
+        );
+        return;
+      }
+    }
+    onSelectCodespace(item);
+  };
+
   // Trigger wake up or stop request
   const handlePowerToggle = async (id: string) => {
+    if (id === 'local-workspace') {
+      Alert.alert(
+        'Local Workspace',
+        "The local workspace is managed directly on your computer.\n\nTo start it:\nrun 'npm run bridge:dev' in your terminal.\n\nTo stop it:\nstop the terminal process on your computer."
+      );
+      return;
+    }
     const target = codespaces.find((cs) => cs.id === id);
     if (!target) return;
 
@@ -337,6 +455,10 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
 
   // Delete a codespace permanently
   const handleDeleteCodespace = async (id: string) => {
+    if (id === 'local-workspace') {
+      Alert.alert('Cannot Delete', 'The local workspace is virtual and cannot be deleted.');
+      return;
+    }
     // Optimistically remove from list
     setCodespaces((prev) => prev.filter((cs) => cs.id !== id));
     onDeleteCodespace?.(id);
@@ -420,7 +542,8 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
                 item={item}
                 onPowerToggle={handlePowerToggle}
                 onDelete={handleDeleteCodespace}
-                onPress={onSelectCodespace}
+                onPress={handlePressCard}
+                onSelectLocalFolder={handleOpenFoldersModal}
               />
             )}
             ListHeaderComponent={renderHeader}
@@ -473,6 +596,56 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
               onSelectRepository={handleCreateCodespace}
               onClose={() => setRepoModalVisible(false)}
             />
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Local Folder Selection Modal */}
+      <Modal
+        visible={localFoldersModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setLocalFoldersModalVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalBackdrop}
+          activeOpacity={1}
+          onPress={() => setLocalFoldersModalVisible(false)}
+        >
+          <View style={styles.modalContent} onStartShouldSetResponder={() => true}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Select Local Workspace</Text>
+              <TouchableOpacity onPress={() => setLocalFoldersModalVisible(false)}>
+                <MaterialIcons name="close" size={24} color={Theme.colors.text.primary} />
+              </TouchableOpacity>
+            </View>
+
+            {foldersLoading ? (
+              <View style={styles.modalCenterContainer}>
+                <ActivityIndicator size="large" color={Theme.colors.primary.default} />
+                <Text style={styles.loadingText}>Scanning workspace directory...</Text>
+              </View>
+            ) : (
+              <FlatList
+                data={localFolders}
+                keyExtractor={(item) => item}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={styles.folderItem}
+                    onPress={() => handleSelectLocalFolder(item)}
+                  >
+                    <MaterialIcons name="folder" size={22} color={Theme.colors.primary.glow} style={{ marginRight: 12 }} />
+                    <Text style={styles.folderItemText}>{item}</Text>
+                    <MaterialIcons name="chevron-right" size={20} color={Theme.colors.text.muted} style={{ marginLeft: 'auto' }} />
+                  </TouchableOpacity>
+                )}
+                ListEmptyComponent={
+                  <View style={styles.modalCenterContainer}>
+                    <Text style={styles.emptyText}>No local folders found.</Text>
+                  </View>
+                }
+              />
+            )}
           </View>
         </TouchableOpacity>
       </Modal>
@@ -676,5 +849,37 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     overflow: 'hidden',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 24,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: Theme.colors.text.primary,
+  },
+  modalCenterContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 40,
+  },
+  folderItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.02)',
+  },
+  folderItemText: {
+    fontSize: 15,
+    color: Theme.colors.text.primary,
+    fontWeight: '500',
   },
 });

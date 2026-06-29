@@ -18,9 +18,10 @@ interface BentoCardProps {
   onPowerToggle: (name: string) => void;
   onDelete: (name: string) => void;
   onPress: (item: CodespaceVM) => void;
+  onSelectLocalFolder?: () => void;
 }
 
-export const BentoCard: React.FC<BentoCardProps> = ({ item, onPowerToggle, onDelete, onPress }) => {
+export const BentoCard: React.FC<BentoCardProps> = ({ item, onPowerToggle, onDelete, onPress, onSelectLocalFolder }) => {
   const pulseAnim = useRef(new Animated.Value(0.4)).current;
 
   // Pulse animation for starting state
@@ -104,8 +105,8 @@ export const BentoCard: React.FC<BentoCardProps> = ({ item, onPowerToggle, onDel
         styles.card,
         isActive && styles.activeCard,
       ]}
-      onPress={() => isActive && onPress(item)}
-      activeOpacity={isActive ? 0.7 : 0.95}
+      onPress={() => (isActive || item.id === 'local-workspace') && onPress(item)}
+      activeOpacity={(isActive || item.id === 'local-workspace') ? 0.7 : 0.95}
     >
       <View style={styles.cardHeader}>
         <View style={styles.statusIndicator}>
@@ -121,30 +122,46 @@ export const BentoCard: React.FC<BentoCardProps> = ({ item, onPowerToggle, onDel
         </View>
         
         <View style={styles.cardActions}>
+          {/* Select Local Folder Button */}
+          {item.id === 'local-workspace' && onSelectLocalFolder && (
+            <TouchableOpacity
+              style={styles.folderButton}
+              onPress={onSelectLocalFolder}
+            >
+              <MaterialIcons
+                name="folder-open"
+                size={18}
+                color={Theme.colors.primary.glow}
+              />
+            </TouchableOpacity>
+          )}
+
           {/* Delete Button */}
-          <TouchableOpacity
-            style={styles.deleteButton}
-            onPress={() => {
-              Alert.alert(
-                'Delete Codespace',
-                `Are you sure you want to permanently delete the codespace for "${item.repositoryName}"?\n\nThis action cannot be undone.`,
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  {
-                    text: 'Delete',
-                    style: 'destructive',
-                    onPress: () => onDelete(item.id),
-                  },
-                ]
-              );
-            }}
-          >
-            <MaterialIcons
-              name="delete-outline"
-              size={16}
-              color={'#ef4444'}
-            />
-          </TouchableOpacity>
+          {item.id !== 'local-workspace' && (
+            <TouchableOpacity
+              style={styles.deleteButton}
+              onPress={() => {
+                Alert.alert(
+                  'Delete Codespace',
+                  `Are you sure you want to permanently delete the codespace for "${item.repositoryName}"?\n\nThis action cannot be undone.`,
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Delete',
+                      style: 'destructive',
+                      onPress: () => onDelete(item.id),
+                    },
+                  ]
+                );
+              }}
+            >
+              <MaterialIcons
+                name="delete-outline"
+                size={16}
+                color={'#ef4444'}
+              />
+            </TouchableOpacity>
+          )}
 
           {/* Power Toggle Button */}
           <TouchableOpacity
@@ -170,14 +187,19 @@ export const BentoCard: React.FC<BentoCardProps> = ({ item, onPowerToggle, onDel
       </View>
 
       <Text style={styles.repoName} numberOfLines={1} ellipsizeMode="tail">
-        {item.repositoryName.split('/')[1] || item.repositoryName}
+        {item.id === 'local-workspace' ? item.repositoryName : (item.repositoryName.split('/')[1] || item.repositoryName)}
       </Text>
       <Text style={styles.ownerName} numberOfLines={1} ellipsizeMode="tail">
-        {item.repositoryName.split('/')[0] || 'github'}
+        {item.id === 'local-workspace' ? 'Local Machine' : (item.repositoryName.split('/')[0] || 'github')}
       </Text>
 
       <View style={styles.branchContainer}>
-        <MaterialIcons name="call-split" size={14} color={Theme.colors.text.muted} style={styles.branchIcon} />
+        <MaterialIcons 
+          name={item.id === 'local-workspace' ? "folder" : "call-split"} 
+          size={14} 
+          color={Theme.colors.text.muted} 
+          style={[styles.branchIcon, item.id === 'local-workspace' && { transform: [] }]} 
+        />
         <Text style={styles.branchText} numberOfLines={1} ellipsizeMode="tail">
           {item.branchName}
         </Text>
@@ -185,11 +207,13 @@ export const BentoCard: React.FC<BentoCardProps> = ({ item, onPowerToggle, onDel
 
       <View style={styles.cardFooter}>
         <Text style={styles.computeText}>
-          {item.freeHoursRemaining} / 60 hrs free
+          {item.id === 'local-workspace' ? 'Unlimited Hours' : `${item.freeHoursRemaining} / 60 hrs free`}
         </Text>
-        {isActive && (
+        {(isActive || item.id === 'local-workspace') && (
           <View style={styles.connectLink}>
-            <Text style={styles.connectLinkText}>Enter Workspace</Text>
+            <Text style={styles.connectLinkText}>
+              {item.id === 'local-workspace' && !isActive ? 'Connect Setup' : 'Enter Workspace'}
+            </Text>
             <MaterialIcons name="chevron-right" size={16} color={Theme.colors.primary.glow} />
           </View>
         )}
@@ -248,6 +272,16 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
+  },
+  folderButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(99, 102, 241, 0.08)',
+    borderColor: 'rgba(99, 102, 241, 0.2)',
+    borderWidth: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   powerButton: {
     width: 36,

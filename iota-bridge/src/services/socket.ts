@@ -725,7 +725,37 @@ export const initSocketIO = (server: HttpServer) => {
             logError(`Failed to auto-persist preview config over socket: ${err.message}`);
           }
         }
-        socket.emit('preview:config_response', { servers });
+        // Shift any server configured on reserved ports (3000, 8081) dynamically
+        const bridgePort = Number(process.env.PORT) || 3000;
+        const reservedPorts = [bridgePort, 8081];
+        const mappedServers = servers.map(s => {
+          if (reservedPorts.includes(s.port)) {
+            const shiftedPort = s.port + 1;
+            let shiftedCommand = s.command;
+            if (shiftedCommand.includes('--port') || shiftedCommand.includes('-p') || shiftedCommand.includes('--web-port')) {
+              shiftedCommand = shiftedCommand
+                .replace(/--port\s+\d+/, `--port ${shiftedPort}`)
+                .replace(/-p\s+\d+/, `-p ${shiftedPort}`)
+                .replace(/--web-port\s+\d+/, `--web-port ${shiftedPort}`);
+            } else {
+              if (shiftedCommand.startsWith('npx expo start') || shiftedCommand.startsWith('expo start')) {
+                shiftedCommand = `${shiftedCommand} --port ${shiftedPort}`;
+              } else if (shiftedCommand.startsWith('npx next dev') || shiftedCommand.startsWith('next dev')) {
+                shiftedCommand = `${shiftedCommand} -p ${shiftedPort}`;
+              } else if (shiftedCommand.startsWith('npx vite') || shiftedCommand.startsWith('vite')) {
+                shiftedCommand = `${shiftedCommand} --port ${shiftedPort}`;
+              }
+            }
+            return {
+              ...s,
+              port: shiftedPort,
+              command: shiftedCommand
+            };
+          }
+          return s;
+        });
+
+        socket.emit('preview:config_response', { servers: mappedServers });
       } catch (err: any) {
         logError(`Failed to fetch preview config over socket: ${err.message}`);
         socket.emit('preview:error', { port: 0, error: `Failed to fetch config: ${err.message}` });

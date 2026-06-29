@@ -1,6 +1,7 @@
 import express from 'express';
 import { createServer } from 'http';
 import dotenv from 'dotenv';
+import * as os from 'os';
 import { initSocketIO } from './services/socket';
 import { requireAuth } from './middleware/auth';
 import statusRouter from './routes/status';
@@ -36,7 +37,24 @@ app.use('/api', gitRouter);
 // Initialize Socket.io
 initSocketIO(server);
 
+function getLocalIpAddress(): string {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    const iface = interfaces[name];
+    if (iface) {
+      for (const alias of iface) {
+        if (alias.family === 'IPv4' && !alias.internal) {
+          return alias.address;
+        }
+      }
+    }
+  }
+  return 'localhost';
+}
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
+  const localIp = getLocalIpAddress();
   console.log(`IOTA Bridge server listening on port ${PORT}`);
+  console.log(`Local Dev Mode: configure your mobile app's Bridge URL to: http://${localIp}:${PORT}`);
 });

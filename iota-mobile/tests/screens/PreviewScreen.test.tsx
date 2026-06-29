@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, fireEvent, waitFor, act } from '@testing-library/react-native';
-import { PreviewPanel } from '../../src/components/control/PreviewPanel';
+import { PreviewScreen } from '../../src/screens/PreviewScreen';
 import { fetchPreviewConfig } from '../../src/services/apiService';
 import { Linking } from 'react-native';
 
@@ -55,33 +55,54 @@ jest.mock('@expo/vector-icons', () => {
   };
 });
 
+const mockCodespace = {
+  id: 'test-codespace',
+  repositoryName: 'user/test-repo',
+  branchName: 'main',
+  connectionUrl: 'http://localhost:3000',
+  status: 'active' as const,
+  displayName: 'Test Repo',
+  ownerLogin: 'user',
+};
+
 describe('PreviewScreen Client-side Component Tests', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  test('should load and render preview server list options', async () => {
+  test('should load and display preview screen with server info in menu', async () => {
     const { getByText } = render(
-      <PreviewPanel socket={mockSocket as any} bridgeUrl="http://localhost:3000" token="test-token" />
+      <PreviewScreen
+        socket={mockSocket as any}
+        bridgeUrl="http://localhost:3000"
+        token="test-token"
+        activeCodespace={mockCodespace as any}
+        isVisible={true}
+        onBackToChat={() => {}}
+      />
     );
 
+    // Wait for config to load and check the stopped state CTA is shown
     await waitFor(() => {
-      expect(getByText('Expo Go App')).toBeTruthy();
-      expect(getByText('Admin Web')).toBeTruthy();
+      expect(getByText('Preview Ready')).toBeTruthy();
     });
   });
 
-  test('should render start button and start preview on tap', async () => {
+  test('should render start button in stopped state and emit start event', async () => {
     const { getByText } = render(
-      <PreviewPanel socket={mockSocket as any} bridgeUrl="http://localhost:3000" token="test-token" />
+      <PreviewScreen
+        socket={mockSocket as any}
+        bridgeUrl="http://localhost:3000"
+        token="test-token"
+        activeCodespace={mockCodespace as any}
+        isVisible={true}
+        onBackToChat={() => {}}
+      />
     );
 
-    await waitFor(() => expect(getByText('Expo Go App')).toBeTruthy());
+    await waitFor(() => expect(getByText('Start Server')).toBeTruthy());
 
-    const startBtn = getByText('Start');
-    expect(startBtn).toBeTruthy();
-
-    fireEvent.press(startBtn);
+    fireEvent.press(getByText('Start Server'));
 
     // Verify it sent start preview socket event
     expect(mockSocket.emit).toHaveBeenCalledWith('preview:start', expect.objectContaining({
@@ -91,18 +112,29 @@ describe('PreviewScreen Client-side Component Tests', () => {
     }));
   });
 
-  test('should render WebView and navigation controls for web preview', async () => {
+  test('should render WebView and navigation controls for web preview when running', async () => {
     const { getByText, getByTestId } = render(
-      <PreviewPanel socket={mockSocket as any} bridgeUrl="http://localhost:3000" token="test-token" />
+      <PreviewScreen
+        socket={mockSocket as any}
+        bridgeUrl="http://localhost:3000"
+        token="test-token"
+        activeCodespace={mockCodespace as any}
+        isVisible={true}
+        onBackToChat={() => {}}
+      />
     );
 
-    await waitFor(() => expect(getByText('Admin Web')).toBeTruthy());
+    await waitFor(() => expect(getByText('Start Server')).toBeTruthy());
 
-    // Switch to Admin Web tab
+    // Open the menu and switch to Admin Web
+    fireEvent.press(getByText('more-vert')); // three-dot menu icon
+
+    await waitFor(() => expect(getByText('Admin Web')).toBeTruthy());
     fireEvent.press(getByText('Admin Web'));
 
-    // Start it
-    fireEvent.press(getByText('Start'));
+    // Start the server from the menu
+    const startButtons = await waitFor(() => getByText('Start Server'));
+    fireEvent.press(startButtons);
 
     // Retrieve status handler and trigger running event
     const statusCalls = mockSocket.on.mock.calls.filter((call: any) => call[0] === 'preview:status');

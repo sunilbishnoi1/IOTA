@@ -662,7 +662,13 @@ class OpenCodeRunner {
       stdio?: any;
     }
   ): ChildProcess {
-    const env = { ...process.env, ...options.env, PATH: this.buildInstallerPath() };
+    const env = { 
+      ...process.env, 
+      ...options.env, 
+      WORKSPACE_ROOT: options.cwd,
+      IOTA_WORKSPACE_ROOT: options.cwd,
+      PATH: this.buildInstallerPath() 
+    };
     logInfo(`[OpenCodeRunner] spawnProcess - command="${command}" args=${JSON.stringify(args)}`);
     logInfo(`[OpenCodeRunner] spawnProcess - cwd="${options.cwd}" PATH length: ${env.PATH?.length || 0}`);
     const keysPresent = Object.keys(options.env || {}).filter(k => k.includes('KEY') || k.includes('TOKEN'));

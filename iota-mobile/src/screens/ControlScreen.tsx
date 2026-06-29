@@ -24,7 +24,6 @@ import {
   registerOpenCodeSocketHandlers,
 } from '../services/opencodeSocket';
 import { useSlashCommands, SlashCommandsAutocomplete, CredentialsModal } from '../components/control/ControlSlashCommands';
-import { PreviewPanel } from '../components/control/PreviewPanel';
 import { CodespaceVM } from '../types';
 import {
   OpenCodeApprovalRequest,
@@ -62,6 +61,8 @@ interface ControlScreenProps {
   isVisible: boolean;
   onBackToDashboard: () => void;
   onGoToShip: () => void;
+  onGoToPreview: () => void;
+  onSocketChange?: (socket: Socket | null) => void;
 }
 
 // ─── Main component ─────────────────────────────────────────────────────────
@@ -74,6 +75,8 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   isVisible,
   onBackToDashboard,
   onGoToShip,
+  onGoToPreview,
+  onSocketChange,
 }) => {
   const [inputPrompt, setInputPrompt] = useState('');
   const [socketStatus, setSocketStatus] = useState<SocketStatus>('disconnected');
@@ -90,7 +93,6 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const [isSyncing, setIsSyncing] = useState(true);
 
   const [inputHeight, setInputHeight] = useState(44);
-  const [activeTab, setActiveTab] = useState<'chat' | 'preview'>('chat');
 
   const conversationScope = useMemo(() => sanitizeConversationScope(activeCodespace.id || activeCodespace.repositoryName || activeCodespace.connectionUrl || 'default'), [activeCodespace.id, activeCodespace.repositoryName, activeCodespace.connectionUrl]);
   const defaultConversationId = useMemo(() => `opencode-${conversationScope}`, [conversationScope]);
@@ -350,6 +352,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           reconnectionDelay: 2000,
         });
         socketRef.current = socket;
+        onSocketChange?.(socket);
 
         socket.on('connect', () => {
           if (!active) return;
@@ -455,6 +458,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
       active = false;
       socket?.disconnect();
       socketRef.current = null;
+      onSocketChange?.(null);
     };
   }, [user.token, activeCodespace.id, defaultConversationId, conversationScope, keepAliveDuration]);
 
@@ -671,10 +675,10 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           <View style={styles.headerRight}>
             <TouchableOpacity
               style={[styles.iconButton, { marginRight: 8 }]}
-              onPress={() => setActiveTab(activeTab === 'chat' ? 'preview' : 'chat')}
+              onPress={onGoToPreview}
               activeOpacity={0.7}
             >
-              <MaterialIcons name={activeTab === 'chat' ? 'layers' : 'chat'} size={22} color={Theme.colors.primary.glow} />
+              <MaterialIcons name="layers" size={22} color={Theme.colors.primary.glow} />
             </TouchableOpacity>
             <TouchableOpacity style={styles.iconButton} onPress={handleNewChatPress} activeOpacity={0.7}>
               <MaterialIcons name="add-comment" size={20} color={Theme.colors.primary.glow} />
@@ -717,66 +721,58 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
         )}
 
         {isOpenCodeReady ? (
-          activeTab === 'preview' ? (
-            <PreviewPanel
+          <>
+            <ChatTimeline
+              groupedTimelineItems={groupedTimelineItems}
+              running={running}
+              runStatusText={runStatusText}
+              isSyncing={isSyncing}
+              expandedTurns={expandedTurns}
+              onToggleTurn={handleToggleTurn}
+              expandedTools={expandedTools}
+              onToggleTool={handleToggleTool}
+              expandedThoughts={expandedThoughts}
+              onToggleThought={handleToggleThought}
+              conversationId={conversationId}
               socket={socketRef.current}
-              bridgeUrl={bridgeUrl}
-              token={user.token}
+              onPillPress={handlePillPress}
+              showScrollToBottom={showScrollToBottom}
+              inputHeight={inputHeight}
+              isRecording={false}
+              flatListRef={flatListRef}
+              onScroll={handleScroll}
+              onContentSizeChange={handleContentSizeChange}
+              onScrollToBottom={() => scrollToBottom(true)}
             />
-          ) : (
-            <>
-              <ChatTimeline
-                groupedTimelineItems={groupedTimelineItems}
-                running={running}
-                runStatusText={runStatusText}
-                isSyncing={isSyncing}
-                expandedTurns={expandedTurns}
-                onToggleTurn={handleToggleTurn}
-                expandedTools={expandedTools}
-                onToggleTool={handleToggleTool}
-                expandedThoughts={expandedThoughts}
-                onToggleThought={handleToggleThought}
-                conversationId={conversationId}
-                socket={socketRef.current}
-                onPillPress={handlePillPress}
-                showScrollToBottom={showScrollToBottom}
-                inputHeight={inputHeight}
-                isRecording={false}
-                flatListRef={flatListRef}
-                onScroll={handleScroll}
-                onContentSizeChange={handleContentSizeChange}
-                onScrollToBottom={() => scrollToBottom(true)}
-              />
 
-              <ChatInputBar
-                inputPrompt={inputPrompt}
-                onChangePrompt={setInputPrompt}
-                onSubmit={handleSubmitPrompt}
-                canSubmit={canSubmit}
-                running={running}
-                socketStatus={socketStatus}
-                capability={capability}
-                inputHeight={inputHeight}
-                onInputHeightChange={setInputHeight}
-                textInputRef={textInputRef}
-                isVisible={isVisible}
-                slashCommandsAutocomplete={
-                  <SlashCommandsAutocomplete
-                    inputPrompt={inputPrompt}
-                    setInputPrompt={setInputPrompt}
-                    inputHeight={Math.max(48, inputHeight)}
-                    textInputRef={textInputRef}
-                  />
-                }
-              />
+            <ChatInputBar
+              inputPrompt={inputPrompt}
+              onChangePrompt={setInputPrompt}
+              onSubmit={handleSubmitPrompt}
+              canSubmit={canSubmit}
+              running={running}
+              socketStatus={socketStatus}
+              capability={capability}
+              inputHeight={inputHeight}
+              onInputHeightChange={setInputHeight}
+              textInputRef={textInputRef}
+              isVisible={isVisible}
+              slashCommandsAutocomplete={
+                <SlashCommandsAutocomplete
+                  inputPrompt={inputPrompt}
+                  setInputPrompt={setInputPrompt}
+                  inputHeight={Math.max(48, inputHeight)}
+                  textInputRef={textInputRef}
+                />
+              }
+            />
 
-              <CredentialsModal
-                visible={showConnectModal}
-                onClose={() => setShowConnectModal(false)}
-                socket={socketRef.current}
-              />
-            </>
-          )
+            <CredentialsModal
+              visible={showConnectModal}
+              onClose={() => setShowConnectModal(false)}
+              socket={socketRef.current}
+            />
+          </>
         ) : (
           renderSetupPanel()
         )}

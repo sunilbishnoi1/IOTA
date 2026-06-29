@@ -6,10 +6,65 @@ import { getRepoPath, getBranch } from '../services/git';
 import { opencodeRunner } from '../services/opencode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { getWorkspaceRoot } from '../services/logger';
+import { getWorkspaceRoot, setWorkspaceRoot } from '../services/logger';
 import { PreviewService } from '../services/previewService';
 
 const router = Router();
+
+// GET /api/ping - Simple public health check to verify bridge reachability
+router.get('/ping', (req, res) => {
+  res.json({
+    status: 'ok',
+    activeLocalFolder: path.basename(getWorkspaceRoot())
+  });
+});
+
+// GET /api/local-workspaces - Retrieve list of folders in the parent of the resolved workspace root
+router.get('/local-workspaces', (req, res) => {
+  try {
+    const currentRoot = getWorkspaceRoot();
+    const parentDir = path.dirname(currentRoot);
+    if (!fs.existsSync(parentDir)) {
+      return res.status(404).json({ error: 'Parent directory not found' });
+    }
+    const entries = fs.readdirSync(parentDir, { withFileTypes: true });
+    const folders = entries
+      .filter(entry => entry.isDirectory() && !entry.name.startsWith('.'))
+      .map(entry => entry.name);
+    res.json({
+      parentDir,
+      folders
+    });
+  } catch (err: any) {
+    console.error('Failed to list local workspaces:', err);
+    res.status(500).json({ error: err.message || 'Failed to list local workspaces' });
+  }
+});
+
+// POST /api/local-workspace/select - Dynamically select which folder under D:\Desktop\codes to use
+router.post('/local-workspace/select', (req, res) => {
+  try {
+    const { folderName } = req.body;
+    if (!folderName) {
+      return res.status(400).json({ error: 'folderName parameter is required' });
+    }
+    const currentRoot = getWorkspaceRoot();
+    const parentDir = path.dirname(currentRoot);
+    const newRoot = path.join(parentDir, folderName);
+    if (!fs.existsSync(newRoot)) {
+      return res.status(404).json({ error: `Directory not found: ${newRoot}` });
+    }
+    setWorkspaceRoot(newRoot);
+    res.json({
+      success: true,
+      activeFolder: folderName,
+      activePath: newRoot
+    });
+  } catch (err: any) {
+    console.error('Failed to change workspace:', err);
+    res.status(500).json({ error: err.message || 'Failed to change workspace' });
+  }
+});
 
 // GET /api/status - Retrieve bridge/workspace status and OpenCode capability.
 router.get('/status', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
@@ -41,6 +96,7 @@ router.get('/status', requireAuth, async (req: AuthenticatedRequest, res: Respon
       canSubmit: capability.canSubmit,
       canInstall: capability.canInstall,
       errorSummary: capability.errorSummary,
+      activeLocalFolder: path.basename(getWorkspaceRoot()),
     });
   } catch (error: any) {
     console.error('Failed to get status:', error);
@@ -249,23 +305,56 @@ router.get('/preview/config', requireAuth, async (req: AuthenticatedRequest, res
   try {
     const rootDir = getWorkspaceRoot();
     const configPath = path.join(rootDir, '.iota', 'preview.json');
+    let servers: any[] = [];
     if (!fs.existsSync(configPath)) {
       // Auto-detect preview configurations for the current project
-      const detected = PreviewService.getInstance().detectServers();
+      servers = PreviewService.getInstance().detectServers();
       try {
         const configDir = path.dirname(configPath);
         if (!fs.existsSync(configDir)) {
           fs.mkdirSync(configDir, { recursive: true });
         }
-        fs.writeFileSync(configPath, JSON.stringify({ servers: detected }, null, 2), 'utf8');
+        fs.writeFileSync(configPath, JSON.stringify({ servers }, null, 2), 'utf8');
       } catch (err) {
         console.error('Failed to auto-persist preview config:', err);
       }
-      return res.json({ servers: detected });
+    } else {
+      const content = fs.readFileSync(configPath, 'utf8');
+      const parsed = JSON.parse(content);
+      servers = parsed.servers || [];
     }
-    const content = fs.readFileSync(configPath, 'utf8');
-    const parsed = JSON.parse(content);
-    res.json(parsed);
+
+    // Shift any server configured on reserved ports (3000, 8081) dynamically
+    const bridgePort = Number(process.env.PORT) || 3000;
+    const reservedPorts = [bridgePort, 8081];
+    const mappedServers = servers.map(s => {
+      if (reservedPorts.includes(s.port)) {
+        const shiftedPort = s.port + 1;
+        let shiftedCommand = s.command;
+        if (shiftedCommand.includes('--port') || shiftedCommand.includes('-p') || shiftedCommand.includes('--web-port')) {
+          shiftedCommand = shiftedCommand
+            .replace(/--port\s+\d+/, `--port ${shiftedPort}`)
+            .replace(/-p\s+\d+/, `-p ${shiftedPort}`)
+            .replace(/--web-port\s+\d+/, `--web-port ${shiftedPort}`);
+        } else {
+          if (shiftedCommand.startsWith('npx expo start') || shiftedCommand.startsWith('expo start')) {
+            shiftedCommand = `${shiftedCommand} --port ${shiftedPort}`;
+          } else if (shiftedCommand.startsWith('npx next dev') || shiftedCommand.startsWith('next dev')) {
+            shiftedCommand = `${shiftedCommand} -p ${shiftedPort}`;
+          } else if (shiftedCommand.startsWith('npx vite') || shiftedCommand.startsWith('vite')) {
+            shiftedCommand = `${shiftedCommand} --port ${shiftedPort}`;
+          }
+        }
+        return {
+          ...s,
+          port: shiftedPort,
+          command: shiftedCommand
+        };
+      }
+      return s;
+    });
+
+    res.json({ servers: mappedServers });
   } catch (error: any) {
     console.error('Failed to read preview config:', error);
     res.status(500).json({ error: 'Failed to read preview config' });
