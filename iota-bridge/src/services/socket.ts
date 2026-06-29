@@ -36,6 +36,7 @@ export const initSocketIO = (server: HttpServer) => {
     },
   });
   ioInstance = io;
+  startPreviewConfigWatcher(io);
 
   io.use(async (socket: Socket, next: (err?: Error) => void) => {
     let token = socket.handshake.query.token as string;
@@ -708,76 +709,8 @@ export const initSocketIO = (server: HttpServer) => {
       pokeSelfKeepAlive();
       logInfo(`[Socket] Received preview:config_request`);
       try {
-        const rootDir = getWorkspaceRoot();
-        const configPath = path.join(rootDir, '.iota', 'preview.json');
-        let servers: PreviewServerConfig[] = [];
-        let isPlaceholder = false;
-        if (fs.existsSync(configPath)) {
-          const content = fs.readFileSync(configPath, 'utf8');
-          const parsed = JSON.parse(content);
-          servers = parsed.servers || [];
-          isPlaceholder = parsed.isPlaceholder === true;
-        } else {
-          servers = PreviewService.getInstance().detectServers();
-          isPlaceholder = servers.length === 0;
-          try {
-            const configDir = path.dirname(configPath);
-            if (!fs.existsSync(configDir)) {
-              fs.mkdirSync(configDir, { recursive: true });
-            }
-            if (isPlaceholder) {
-              const placeholderConfig = {
-                isPlaceholder: true,
-                servers: [
-                  {
-                    name: "Configure Server Name (e.g. My Web App)",
-                    cwd: ".",
-                    command: "npm run start",
-                    port: 3000,
-                    type: "web" as const
-                  }
-                ]
-              };
-              fs.writeFileSync(configPath, JSON.stringify(placeholderConfig, null, 2), 'utf8');
-              servers = placeholderConfig.servers;
-            } else {
-              fs.writeFileSync(configPath, JSON.stringify({ servers }, null, 2), 'utf8');
-            }
-          } catch (err: any) {
-            logError(`Failed to auto-persist preview config over socket: ${err.message}`);
-          }
-        }
-        // Shift any server configured on reserved ports (3000, 8081) dynamically
-        const bridgePort = Number(process.env.PORT) || 3000;
-        const reservedPorts = [bridgePort, 8081];
-        const mappedServers = servers.map(s => {
-          if (reservedPorts.includes(s.port)) {
-            const shiftedPort = s.port + 1;
-            let shiftedCommand = s.command;
-            if (shiftedCommand.includes('--port') || shiftedCommand.includes('-p') || shiftedCommand.includes('--web-port')) {
-              shiftedCommand = shiftedCommand
-                .replace(/--port\s+\d+/, `--port ${shiftedPort}`)
-                .replace(/-p\s+\d+/, `-p ${shiftedPort}`)
-                .replace(/--web-port\s+\d+/, `--web-port ${shiftedPort}`);
-            } else {
-              if (shiftedCommand.startsWith('npx expo start') || shiftedCommand.startsWith('expo start')) {
-                shiftedCommand = `${shiftedCommand} --port ${shiftedPort}`;
-              } else if (shiftedCommand.startsWith('npx next dev') || shiftedCommand.startsWith('next dev')) {
-                shiftedCommand = `${shiftedCommand} -p ${shiftedPort}`;
-              } else if (shiftedCommand.startsWith('npx vite') || shiftedCommand.startsWith('vite')) {
-                shiftedCommand = `${shiftedCommand} --port ${shiftedPort}`;
-              }
-            }
-            return {
-              ...s,
-              port: shiftedPort,
-              command: shiftedCommand
-            };
-          }
-          return s;
-        });
-
-        socket.emit('preview:config_response', { servers: mappedServers, isPlaceholder });
+        const config = PreviewService.getInstance().getPreviewConfigPayload();
+        socket.emit('preview:config_response', config);
       } catch (err: any) {
         logError(`Failed to fetch preview config over socket: ${err.message}`);
         socket.emit('preview:error', { port: 0, error: `Failed to fetch config: ${err.message}` });
@@ -794,3 +727,50 @@ export const initSocketIO = (server: HttpServer) => {
 };
 
 export const getSocketIO = () => ioInstance;
+
+const startPreviewConfigWatcher = (io: Server) => {
+  const rootDir = getWorkspaceRoot();
+  const configDir = path.join(rootDir, '.iota');
+  const configPath = path.join(configDir, 'preview.json');
+
+  if (!fs.existsSync(configDir)) {
+    try {
+      fs.mkdirSync(configDir, { recursive: true });
+    } catch (err: any) {
+      logError(`Failed to create config directory ${configDir} for watcher: ${err.message}`);
+      return;
+    }
+  }
+
+  let debounceTimeout: NodeJS.Timeout | null = null;
+  
+  logInfo(`[Watcher] Starting file watcher for ${configPath}`);
+
+  try {
+    const watcher = fs.watch(configDir, (eventType, filename) => {
+      if (filename === 'preview.json') {
+        logInfo(`[Watcher] Detected ${eventType} change in ${filename}`);
+        
+        if (debounceTimeout) {
+          clearTimeout(debounceTimeout);
+        }
+        
+        debounceTimeout = setTimeout(() => {
+          try {
+            logInfo(`[Watcher] Reading updated preview config payload`);
+            const payload = PreviewService.getInstance().getPreviewConfigPayload();
+            logInfo(`[Watcher] Broadcasting updated preview config to all connected clients`);
+            io.emit('preview:config_response', payload);
+          } catch (err: any) {
+            logError(`[Watcher] Error broadcasting updated config: ${err.message}`);
+          }
+        }, 300);
+      }
+    });
+
+    process.on('SIGINT', () => watcher.close());
+    process.on('SIGTERM', () => watcher.close());
+  } catch (err: any) {
+    logError(`Failed to initialize fs.watch on ${configDir}: ${err.message}`);
+  }
+};

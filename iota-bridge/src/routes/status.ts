@@ -326,78 +326,8 @@ router.delete('/codespaces/:name', requireAuth, async (req: AuthenticatedRequest
 // GET /api/preview/config - Retrieve the preview config from the workspace filesystem
 router.get('/preview/config', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const rootDir = getWorkspaceRoot();
-    const configPath = path.join(rootDir, '.iota', 'preview.json');
-    let servers: any[] = [];
-    let isPlaceholder = false;
-    if (!fs.existsSync(configPath)) {
-      // Auto-detect preview configurations for the current project
-      servers = PreviewService.getInstance().detectServers();
-      isPlaceholder = servers.length === 0;
-      try {
-        const configDir = path.dirname(configPath);
-        if (!fs.existsSync(configDir)) {
-          fs.mkdirSync(configDir, { recursive: true });
-        }
-        if (isPlaceholder) {
-          const placeholderConfig = {
-            isPlaceholder: true,
-            servers: [
-              {
-                name: "Configure Server Name (e.g. My Web App)",
-                cwd: ".",
-                command: "npm run start",
-                port: 3000,
-                type: "web"
-              }
-            ]
-          };
-          fs.writeFileSync(configPath, JSON.stringify(placeholderConfig, null, 2), 'utf8');
-          servers = placeholderConfig.servers;
-        } else {
-          fs.writeFileSync(configPath, JSON.stringify({ servers }, null, 2), 'utf8');
-        }
-      } catch (err) {
-        console.error('Failed to auto-persist preview config:', err);
-      }
-    } else {
-      const content = fs.readFileSync(configPath, 'utf8');
-      const parsed = JSON.parse(content);
-      servers = parsed.servers || [];
-      isPlaceholder = parsed.isPlaceholder === true;
-    }
-
-    // Shift any server configured on reserved ports (3000, 8081) dynamically
-    const bridgePort = Number(process.env.PORT) || 3000;
-    const reservedPorts = [bridgePort, 8081];
-    const mappedServers = servers.map(s => {
-      if (reservedPorts.includes(s.port)) {
-        const shiftedPort = s.port + 1;
-        let shiftedCommand = s.command;
-        if (shiftedCommand.includes('--port') || shiftedCommand.includes('-p') || shiftedCommand.includes('--web-port')) {
-          shiftedCommand = shiftedCommand
-            .replace(/--port\s+\d+/, `--port ${shiftedPort}`)
-            .replace(/-p\s+\d+/, `-p ${shiftedPort}`)
-            .replace(/--web-port\s+\d+/, `--web-port ${shiftedPort}`);
-        } else {
-          if (shiftedCommand.startsWith('npx expo start') || shiftedCommand.startsWith('expo start')) {
-            shiftedCommand = `${shiftedCommand} --port ${shiftedPort}`;
-          } else if (shiftedCommand.startsWith('npx next dev') || shiftedCommand.startsWith('next dev')) {
-            shiftedCommand = `${shiftedCommand} -p ${shiftedPort}`;
-          } else if (shiftedCommand.startsWith('npx vite') || shiftedCommand.startsWith('vite')) {
-            shiftedCommand = `${shiftedCommand} --port ${shiftedPort}`;
-          }
-        }
-        return {
-          ...s,
-          port: shiftedPort,
-          command: shiftedCommand
-        };
-      }
-      return s;
-    });
-
-    res.json({ servers: mappedServers, isPlaceholder });
+    const config = PreviewService.getInstance().getPreviewConfigPayload();
+    res.json(config);
   } catch (error: any) {
     console.error('Failed to read preview config:', error);
     res.status(500).json({ error: 'Failed to read preview config' });

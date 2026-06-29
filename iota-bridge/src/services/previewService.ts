@@ -19,7 +19,7 @@ function getLocalIpAddress(): string {
   }
   return 'localhost';
 }
-import { PreviewProcessState, PreviewServerConfig, PreviewStatus } from '../types/preview';
+import { PreviewProcessState, PreviewServerConfig, PreviewStatus, PreviewWorkspaceConfig } from '../types/preview';
 import { getWorkspaceRoot, logInfo, logError } from './logger';
 
 const execAsync = promisify(exec);
@@ -328,6 +328,87 @@ export class PreviewService {
   public detectServers(): PreviewServerConfig[] {
     const rootDir = getWorkspaceRoot();
     return this.detectPreviewServersRecursive(rootDir, rootDir);
+  }
+
+  public getPreviewConfigPayload(): PreviewWorkspaceConfig {
+    const rootDir = getWorkspaceRoot();
+    const configPath = path.join(rootDir, '.iota', 'preview.json');
+    let servers: PreviewServerConfig[] = [];
+    let isPlaceholder = false;
+
+    if (fs.existsSync(configPath)) {
+      try {
+        const content = fs.readFileSync(configPath, 'utf8');
+        const parsed = JSON.parse(content);
+        servers = parsed.servers || [];
+        isPlaceholder = parsed.isPlaceholder === true;
+      } catch (err: any) {
+        logError(`Failed to parse preview config file: ${err.message}`);
+        servers = this.detectServers();
+        isPlaceholder = true;
+      }
+    } else {
+      servers = this.detectServers();
+      isPlaceholder = servers.length === 0;
+      try {
+        const configDir = path.dirname(configPath);
+        if (!fs.existsSync(configDir)) {
+          fs.mkdirSync(configDir, { recursive: true });
+        }
+        if (isPlaceholder) {
+          const placeholderConfig: PreviewWorkspaceConfig = {
+            isPlaceholder: true,
+            servers: [
+              {
+                name: "Configure Server Name (e.g. My Web App)",
+                cwd: ".",
+                command: "npm run start",
+                port: 3000,
+                type: "web"
+              }
+            ]
+          };
+          fs.writeFileSync(configPath, JSON.stringify(placeholderConfig, null, 2), 'utf8');
+          servers = placeholderConfig.servers;
+        } else {
+          fs.writeFileSync(configPath, JSON.stringify({ servers }, null, 2), 'utf8');
+        }
+      } catch (err: any) {
+        logError(`Failed to auto-persist preview config: ${err.message}`);
+      }
+    }
+
+    // Shift any server configured on reserved ports (3000, 8081) dynamically
+    const bridgePort = Number(process.env.PORT) || 3000;
+    const reservedPorts = [bridgePort, 8081];
+    const mappedServers = servers.map(s => {
+      if (reservedPorts.includes(s.port)) {
+        const shiftedPort = s.port + 1;
+        let shiftedCommand = s.command;
+        if (shiftedCommand.includes('--port') || shiftedCommand.includes('-p') || shiftedCommand.includes('--web-port')) {
+          shiftedCommand = shiftedCommand
+            .replace(/--port\s+\d+/, `--port ${shiftedPort}`)
+            .replace(/-p\s+\d+/, `-p ${shiftedPort}`)
+            .replace(/--web-port\s+\d+/, `--web-port ${shiftedPort}`);
+        } else {
+          if (shiftedCommand.startsWith('npx expo start') || shiftedCommand.startsWith('expo start')) {
+            shiftedCommand = `${shiftedCommand} --port ${shiftedPort}`;
+          } else if (shiftedCommand.startsWith('npx next dev') || shiftedCommand.startsWith('next dev')) {
+            shiftedCommand = `${shiftedCommand} -p ${shiftedPort}`;
+          } else if (shiftedCommand.startsWith('npx vite') || shiftedCommand.startsWith('vite')) {
+            shiftedCommand = `${shiftedCommand} --port ${shiftedPort}`;
+          }
+        }
+        return {
+          ...s,
+          port: shiftedPort,
+          command: shiftedCommand
+        };
+      }
+      return s;
+    });
+
+    return { servers: mappedServers, isPlaceholder };
   }
 
   private detectPreviewServersRecursive(dir: string, workspaceRoot: string, depth = 0): PreviewServerConfig[] {

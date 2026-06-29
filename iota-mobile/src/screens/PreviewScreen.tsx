@@ -223,6 +223,32 @@ export const PreviewScreen: React.FC<PreviewScreenProps> = ({
     };
   }, [socket]);
 
+  // Refetch config when screen becomes visible to avoid stale state
+  useEffect(() => {
+    if (isVisible) {
+      if (socket && socketConnected) {
+        console.log('[PreviewScreen] Screen became visible, requesting config via socket');
+        emitPreviewConfigRequest(socket);
+      } else {
+        // Fallback: load config via HTTP REST if socket is not connected
+        console.log('[PreviewScreen] Screen became visible, requesting config via HTTP');
+        fetchPreviewConfig(bridgeUrl, token)
+          .then((config) => {
+            setServers(config.servers || []);
+            setIsPlaceholder(config.isPlaceholder || false);
+            setSelectedServer((prev) => {
+              if (!prev) return config.servers?.length > 0 ? config.servers[0] : null;
+              const match = config.servers?.find((s) => s.port === prev.port);
+              return match || (config.servers?.length > 0 ? config.servers[0] : null);
+            });
+          })
+          .catch((err) => {
+            console.error('[PreviewScreen] Failed to reload config on visibility change:', err);
+          });
+      }
+    }
+  }, [isVisible, socket, socketConnected, bridgeUrl, token]);
+
   // ─── Request status when selected server changes ────────────────────
 
   useEffect(() => {
