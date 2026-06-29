@@ -29,3 +29,6 @@ yarn-error.log*
 .gradle_home/
 gradle-8.5-all.zip
 
+opencode.json
+.gitignore
+

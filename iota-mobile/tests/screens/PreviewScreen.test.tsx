@@ -89,7 +89,7 @@ describe('PreviewScreen Client-side Component Tests', () => {
   });
 
   test('should render start button in stopped state and emit start event', async () => {
-    const { getByText } = render(
+    const { getByText, getAllByText } = render(
       <PreviewScreen
         socket={mockSocket as any}
         bridgeUrl="http://localhost:3000"
@@ -100,9 +100,9 @@ describe('PreviewScreen Client-side Component Tests', () => {
       />
     );
 
-    await waitFor(() => expect(getByText('Start Server')).toBeTruthy());
+    await waitFor(() => expect(getAllByText('Start Server')[0]).toBeTruthy());
 
-    fireEvent.press(getByText('Start Server'));
+    fireEvent.press(getAllByText('Start Server')[0]);
 
     // Verify it sent start preview socket event
     expect(mockSocket.emit).toHaveBeenCalledWith('preview:start', expect.objectContaining({
@@ -113,7 +113,7 @@ describe('PreviewScreen Client-side Component Tests', () => {
   });
 
   test('should render WebView and navigation controls for web preview when running', async () => {
-    const { getByText, getByTestId } = render(
+    const { getByText, getAllByText, getByTestId } = render(
       <PreviewScreen
         socket={mockSocket as any}
         bridgeUrl="http://localhost:3000"
@@ -124,7 +124,7 @@ describe('PreviewScreen Client-side Component Tests', () => {
       />
     );
 
-    await waitFor(() => expect(getByText('Start Server')).toBeTruthy());
+    await waitFor(() => expect(getAllByText('Start Server')[0]).toBeTruthy());
 
     // Open the menu and switch to Admin Web
     fireEvent.press(getByText('more-vert')); // three-dot menu icon
@@ -133,7 +133,7 @@ describe('PreviewScreen Client-side Component Tests', () => {
     fireEvent.press(getByText('Admin Web'));
 
     // Start the server from the menu
-    const startButtons = await waitFor(() => getByText('Start Server'));
+    const startButtons = await waitFor(() => getAllByText('Start Server')[0]);
     fireEvent.press(startButtons);
 
     // Retrieve status handler and trigger running event

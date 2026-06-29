@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import {
   StyleSheet,
@@ -44,6 +44,24 @@ const getLocalBridgeUrlFromBundle = (): string | null => {
   return null;
 };
 
+const checkLocalBridgeActive = async (url: string): Promise<{ active: boolean; activeLocalFolder?: string }> => {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2000);
+    const response = await fetch(`${url}/api/ping`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    if (response.ok) {
+      const data = await response.json();
+      return { active: true, activeLocalFolder: data?.activeLocalFolder };
+    }
+  } catch (e) {
+    // ignore
+  }
+  return { active: false };
+};
+
 export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [user, setUser] = useState<{ token: string; username?: string; avatarUrl?: string } | null>(null);
@@ -57,6 +75,74 @@ export default function App() {
   const [allCodespaces, setAllCodespaces] = useState<CodespaceVM[]>([]);
   const [workspaceSockets, setWorkspaceSockets] = useState<Record<string, Socket | null>>({});
 
+  // Developer Mode States
+  const [developerModeEnabled, setDeveloperModeEnabled] = useState<boolean>(false);
+  const [isBridgeActive, setIsBridgeActive] = useState<boolean>(false);
+  const [activeLocalFolder, setActiveLocalFolder] = useState<string>('Local Dev Workspace');
+
+  const verifyBridge = useCallback(async (url: string, devEnabled: boolean) => {
+    if (!devEnabled) {
+      setIsBridgeActive(false);
+      return { active: false };
+    }
+    const res = await checkLocalBridgeActive(url);
+    setIsBridgeActive(res.active);
+    if (res.active && res.activeLocalFolder) {
+      setActiveLocalFolder(res.activeLocalFolder);
+    }
+    return res;
+  }, []);
+
+  const handleRefreshBridge = useCallback(() => {
+    return verifyBridge(bridgeUrl, developerModeEnabled);
+  }, [bridgeUrl, developerModeEnabled, verifyBridge]);
+
+  const handleChangeDeveloperMode = useCallback(async (enabled: boolean) => {
+    setDeveloperModeEnabled(enabled);
+    await secureStoreService.saveDeveloperModeEnabled(enabled);
+  }, []);
+
+  const handleChangeKeepAliveDuration = useCallback(async (duration: number) => {
+    setKeepAliveDuration(duration);
+    await secureStoreService.saveKeepAliveDuration(duration);
+  }, []);
+
+  const handleChangeBridgeUrl = useCallback(async (url: string) => {
+    setBridgeUrl(url);
+    await secureStoreService.saveBridgeUrl(url);
+  }, []);
+
+  const handleOpenSettings = useCallback(() => {
+    setActiveTab('settings');
+  }, []);
+
+  const handleGoToDashboard = useCallback(() => {
+    setActiveTab('dashboard');
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function check() {
+      if (!developerModeEnabled) {
+        if (isMounted) setIsBridgeActive(false);
+        return;
+      }
+      const res = await checkLocalBridgeActive(bridgeUrl);
+      if (isMounted) {
+        setIsBridgeActive(res.active);
+        if (res.active && res.activeLocalFolder) {
+          setActiveLocalFolder(res.activeLocalFolder);
+        }
+      }
+    }
+    if (!isLoading) {
+      check();
+    }
+    return () => {
+      isMounted = false;
+    };
+  }, [bridgeUrl, developerModeEnabled, isLoading]);
+
   useEffect(() => {
     async function init() {
       try {
@@ -68,12 +154,31 @@ export default function App() {
         // Otherwise, fallback to saved URL or DEFAULT_BRIDGE_URL.
         const isRemoteUrl = savedUrl && !savedUrl.includes('localhost') && !savedUrl.includes('127.0.0.1') && !savedUrl.includes('10.0.2.2') && !/http:\/\/\d+\.\d+\.\d+\.\d+/.test(savedUrl);
         
+        let resolvedUrl = DEFAULT_BRIDGE_URL;
         if (savedUrl && isRemoteUrl) {
+          resolvedUrl = savedUrl;
           setBridgeUrl(savedUrl);
         } else if (detectedUrl) {
+          resolvedUrl = detectedUrl;
           setBridgeUrl(detectedUrl);
         } else if (savedUrl) {
+          resolvedUrl = savedUrl;
           setBridgeUrl(savedUrl);
+        }
+
+        // Initialize Developer Mode settings
+        const savedDevMode = await secureStoreService.getDeveloperModeEnabled();
+        const defaultDevMode = !!(typeof __DEV__ !== 'undefined' ? __DEV__ : false || detectedUrl);
+        const devMode = savedDevMode !== null ? savedDevMode : defaultDevMode;
+        setDeveloperModeEnabled(devMode);
+
+        // Verify bridge status initially
+        if (devMode) {
+          const res = await checkLocalBridgeActive(resolvedUrl);
+          setIsBridgeActive(res.active);
+          if (res.active && res.activeLocalFolder) {
+            setActiveLocalFolder(res.activeLocalFolder);
+          }
         }
 
         const savedKeepAlive = await secureStoreService.getKeepAliveDuration();
@@ -224,11 +329,15 @@ export default function App() {
         <DashboardScreen
           user={user}
           bridgeUrl={bridgeUrl}
+          isBridgeActive={isBridgeActive}
+          activeLocalFolder={activeLocalFolder}
+          developerModeEnabled={developerModeEnabled}
           onSelectCodespace={handleSelectCodespace}
           onDeleteCodespace={handleDeleteCodespaceFromOpened}
-          onOpenSettings={() => setActiveTab('settings')}
+          onOpenSettings={handleOpenSettings}
           isVisible={activeTab === 'dashboard'}
           onCodespacesUpdated={setAllCodespaces}
+          onRefreshBridge={handleRefreshBridge}
         />
       </View>
 
@@ -236,18 +345,14 @@ export default function App() {
         <SettingsScreen
           user={user}
           bridgeUrl={bridgeUrl}
+          developerModeEnabled={developerModeEnabled}
+          onChangeDeveloperMode={handleChangeDeveloperMode}
           keepAliveDuration={keepAliveDuration}
-          onChangeKeepAliveDuration={async (duration) => {
-            setKeepAliveDuration(duration);
-            await secureStoreService.saveKeepAliveDuration(duration);
-          }}
-          onChangeBridgeUrl={async (url) => {
-            setBridgeUrl(url);
-            await secureStoreService.saveBridgeUrl(url);
-          }}
+          onChangeKeepAliveDuration={handleChangeKeepAliveDuration}
+          onChangeBridgeUrl={handleChangeBridgeUrl}
           isVisible={activeTab === 'settings'}
           onLogout={handleLogout}
-          onBack={() => setActiveTab('dashboard')}
+          onBack={handleGoToDashboard}
         />
       </View>
 

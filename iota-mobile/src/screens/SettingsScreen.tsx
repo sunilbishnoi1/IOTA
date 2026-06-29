@@ -13,6 +13,7 @@ import {
   Keyboard,
   Alert,
   BackHandler,
+  Switch,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { ShaderGradient } from '../components/ShaderGradient';
@@ -23,6 +24,8 @@ interface SettingsScreenProps {
   user: { token: string; username?: string; avatarUrl?: string };
   bridgeUrl: string;
   onChangeBridgeUrl: (url: string) => void;
+  developerModeEnabled: boolean;
+  onChangeDeveloperMode: (enabled: boolean) => void;
   keepAliveDuration: number;
   onChangeKeepAliveDuration: (duration: number) => void;
   isVisible: boolean;
@@ -34,6 +37,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   user,
   bridgeUrl,
   onChangeBridgeUrl,
+  developerModeEnabled,
+  onChangeDeveloperMode,
   keepAliveDuration,
   onChangeKeepAliveDuration,
   isVisible,
@@ -209,45 +214,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             </View>
           </View>
 
-          {/* Connection Section */}
-          <View style={styles.sectionCard}>
-            <View style={styles.sectionHeader}>
-              <MaterialIcons name="lan" size={20} color={Theme.colors.primary.glow} />
-              <Text style={styles.sectionTitle}>BRIDGE SERVER</Text>
-            </View>
-            
-            <Text style={styles.description}>
-              Set your local bridge server endpoint to connect and fetch container environments.
-            </Text>
-
-            <View style={styles.configInputRow}>
-              <TextInput
-                style={styles.configInput}
-                value={urlInput}
-                onChangeText={(text) => {
-                  setUrlInput(text);
-                  setIsSaved(false);
-                }}
-                autoCapitalize="none"
-                autoCorrect={false}
-                placeholder="http://localhost:3000"
-                placeholderTextColor={Theme.colors.text.muted}
-              />
-              <TouchableOpacity
-                style={[
-                  styles.saveButton,
-                  isSaved && styles.saveButtonSuccess
-                ]}
-                onPress={handleSaveUrl}
-              >
-                {isSaved ? (
-                  <MaterialIcons name="check" size={20} color="#fff" />
-                ) : (
-                  <Text style={styles.saveButtonText}>Connect</Text>
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
+          
 
           {/* Keep-Alive Section */}
           <View style={styles.sectionCard}>
@@ -387,6 +354,67 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               </TouchableOpacity>
             </View>
           </View>
+
+          {/* Developer Mode Toggle */}
+          <View style={styles.sectionCard}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <MaterialIcons name="developer-mode" size={20} color={Theme.colors.primary.glow} />
+                <Text style={[styles.sectionTitle, { marginLeft: 8 }]}>DEVELOPER MODE</Text>
+              </View>
+              <Switch
+                value={developerModeEnabled}
+                onValueChange={onChangeDeveloperMode}
+                trackColor={{ false: 'rgba(255, 255, 255, 0.1)', true: Theme.colors.primary.default }}
+                thumbColor={developerModeEnabled ? '#fff' : '#f4f3f4'}
+              />
+            </View>
+            <Text style={[styles.description, { marginBottom: 0, marginTop: 8 }]}>
+              Enable developer mode to connect to a local bridge server and configure local workspaces.
+            </Text>
+          </View>
+
+          {/* Connection Section */}
+          {developerModeEnabled && (
+            <View style={styles.sectionCard}>
+              <View style={styles.sectionHeader}>
+                <MaterialIcons name="lan" size={20} color={Theme.colors.primary.glow} />
+                <Text style={styles.sectionTitle}>BRIDGE SERVER</Text>
+              </View>
+              
+              <Text style={styles.description}>
+                Set your local bridge server endpoint to connect and fetch container environments.
+              </Text>
+
+              <View style={styles.configInputRow}>
+                <TextInput
+                  style={styles.configInput}
+                  value={urlInput}
+                  onChangeText={(text) => {
+                    setUrlInput(text);
+                    setIsSaved(false);
+                  }}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  placeholder="http://localhost:3000"
+                  placeholderTextColor={Theme.colors.text.muted}
+                />
+                <TouchableOpacity
+                  style={[
+                    styles.saveButton,
+                    isSaved && styles.saveButtonSuccess
+                  ]}
+                  onPress={handleSaveUrl}
+                >
+                  {isSaved ? (
+                    <MaterialIcons name="check" size={20} color="#fff" />
+                  ) : (
+                    <Text style={styles.saveButtonText}>Connect</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
 
           {/* Actions Section */}
           <View style={styles.sectionCard}>

@@ -22,7 +22,7 @@ export interface PreviewSocketHandlers {
   onStatus?: (payload: PreviewStatusPayload) => void;
   onLog?: (payload: PreviewLogPayload) => void;
   onError?: (payload: PreviewErrorPayload) => void;
-  onConfig?: (payload: { servers: PreviewServerConfig[] }) => void;
+  onConfig?: (payload: { servers: PreviewServerConfig[]; isPlaceholder?: boolean }) => void;
 }
 
 export function registerPreviewSocketHandlers(socket: Socket, handlers: PreviewSocketHandlers) {
@@ -40,7 +40,7 @@ export function registerPreviewSocketHandlers(socket: Socket, handlers: PreviewS
     handlers.onError?.(payload);
   };
 
-  const configHandler = (payload: { servers: PreviewServerConfig[] }) => {
+  const configHandler = (payload: { servers: PreviewServerConfig[]; isPlaceholder?: boolean }) => {
     console.log('[PreviewSocket] Received preview:config_response:', JSON.stringify(payload));
     handlers.onConfig?.(payload);
   };

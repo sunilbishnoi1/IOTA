@@ -306,15 +306,34 @@ router.get('/preview/config', requireAuth, async (req: AuthenticatedRequest, res
     const rootDir = getWorkspaceRoot();
     const configPath = path.join(rootDir, '.iota', 'preview.json');
     let servers: any[] = [];
+    let isPlaceholder = false;
     if (!fs.existsSync(configPath)) {
       // Auto-detect preview configurations for the current project
       servers = PreviewService.getInstance().detectServers();
+      isPlaceholder = servers.length === 0;
       try {
         const configDir = path.dirname(configPath);
         if (!fs.existsSync(configDir)) {
           fs.mkdirSync(configDir, { recursive: true });
         }
-        fs.writeFileSync(configPath, JSON.stringify({ servers }, null, 2), 'utf8');
+        if (isPlaceholder) {
+          const placeholderConfig = {
+            isPlaceholder: true,
+            servers: [
+              {
+                name: "Configure Server Name (e.g. My Web App)",
+                cwd: ".",
+                command: "npm run start",
+                port: 3000,
+                type: "web"
+              }
+            ]
+          };
+          fs.writeFileSync(configPath, JSON.stringify(placeholderConfig, null, 2), 'utf8');
+          servers = placeholderConfig.servers;
+        } else {
+          fs.writeFileSync(configPath, JSON.stringify({ servers }, null, 2), 'utf8');
+        }
       } catch (err) {
         console.error('Failed to auto-persist preview config:', err);
       }
@@ -322,6 +341,7 @@ router.get('/preview/config', requireAuth, async (req: AuthenticatedRequest, res
       const content = fs.readFileSync(configPath, 'utf8');
       const parsed = JSON.parse(content);
       servers = parsed.servers || [];
+      isPlaceholder = parsed.isPlaceholder === true;
     }
 
     // Shift any server configured on reserved ports (3000, 8081) dynamically
@@ -354,7 +374,7 @@ router.get('/preview/config', requireAuth, async (req: AuthenticatedRequest, res
       return s;
     });
 
-    res.json({ servers: mappedServers });
+    res.json({ servers: mappedServers, isPlaceholder });
   } catch (error: any) {
     console.error('Failed to read preview config:', error);
     res.status(500).json({ error: 'Failed to read preview config' });

@@ -113,8 +113,11 @@ async function checkBridgeReachableDirect(url: string, token: string): Promise<b
 }
 
 // 1. listUserRepos
-export async function listUserRepos(bridgeUrl: string, token: string): Promise<GitHubRepository[]> {
+export async function listUserRepos(bridgeUrl: string, token: string, isBridgeActive = true): Promise<GitHubRepository[]> {
   try {
+    if (!isBridgeActive) {
+      throw new Error('bridge unreachable');
+    }
     const response = await fetchWithTimeout(`${bridgeUrl}/api/repos`, {
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -155,9 +158,13 @@ export async function checkDevcontainer(
   bridgeUrl: string,
   token: string,
   owner: string,
-  repo: string
+  repo: string,
+  isBridgeActive = true
 ): Promise<{ exists: boolean }> {
   try {
+    if (!isBridgeActive) {
+      throw new Error('bridge unreachable');
+    }
     const response = await fetchWithTimeout(`${bridgeUrl}/api/repos/${owner}/${repo}/check-devcontainer`, {
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -196,9 +203,13 @@ export async function setupDevcontainer(
   bridgeUrl: string,
   token: string,
   repository: string,
-  branch: string
+  branch: string,
+  isBridgeActive = true
 ): Promise<{ success: boolean; message: string }> {
   try {
+    if (!isBridgeActive) {
+      throw new Error('bridge unreachable');
+    }
     const response = await fetchWithTimeout(`${bridgeUrl}/api/repos/setup-devcontainer`, {
       method: 'POST',
       headers: {
@@ -264,8 +275,11 @@ export async function setupDevcontainer(
 }
 
 // 4. listUserCodespaces
-export async function listUserCodespaces(bridgeUrl: string, token: string): Promise<CodespaceVM[]> {
+export async function listUserCodespaces(bridgeUrl: string, token: string, isBridgeActive = true): Promise<CodespaceVM[]> {
   try {
+    if (!isBridgeActive) {
+      throw new Error('bridge unreachable');
+    }
     const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces`, {
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -321,9 +335,13 @@ export async function listUserCodespaces(bridgeUrl: string, token: string): Prom
 export async function getUserCodespace(
   bridgeUrl: string,
   token: string,
-  id: string
+  id: string,
+  isBridgeActive = true
 ): Promise<CodespaceVM> {
   try {
+    if (!isBridgeActive) {
+      throw new Error('bridge unreachable');
+    }
     const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces/${id}`, {
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -373,9 +391,13 @@ export async function getUserCodespace(
 export async function startUserCodespace(
   bridgeUrl: string,
   token: string,
-  id: string
+  id: string,
+  isBridgeActive = true
 ): Promise<CodespaceVM> {
   try {
+    if (!isBridgeActive) {
+      throw new Error('bridge unreachable');
+    }
     const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces/${id}/start`, {
       method: 'POST',
       headers: {
@@ -432,9 +454,13 @@ export async function startUserCodespace(
 export async function stopUserCodespace(
   bridgeUrl: string,
   token: string,
-  id: string
+  id: string,
+  isBridgeActive = true
 ): Promise<void> {
   try {
+    if (!isBridgeActive) {
+      throw new Error('bridge unreachable');
+    }
     const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces/${id}/stop`, {
       method: 'POST',
       headers: {
@@ -469,9 +495,13 @@ export async function stopUserCodespace(
 export async function deleteUserCodespace(
   bridgeUrl: string,
   token: string,
-  id: string
+  id: string,
+  isBridgeActive = true
 ): Promise<void> {
   try {
+    if (!isBridgeActive) {
+      throw new Error('bridge unreachable');
+    }
     const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces/${id}`, {
       method: 'DELETE',
       headers: {
@@ -507,9 +537,13 @@ export async function createUserCodespace(
   bridgeUrl: string,
   token: string,
   repository: string,
-  branch?: string
+  branch?: string,
+  isBridgeActive = true
 ): Promise<CodespaceVM> {
   try {
+    if (!isBridgeActive) {
+      throw new Error('bridge unreachable');
+    }
     const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces`, {
       method: 'POST',
       headers: {
@@ -586,6 +620,7 @@ export interface PreviewServerConfig {
 
 export interface PreviewWorkspaceConfig {
   servers: PreviewServerConfig[];
+  isPlaceholder?: boolean;
 }
 
 export async function fetchPreviewConfig(bridgeUrl: string, token: string): Promise<PreviewWorkspaceConfig> {

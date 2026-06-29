@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Socket } from 'socket.io-client';
+import * as Clipboard from 'expo-clipboard';
 import { Theme } from '../styles/theme';
 import { fetchPreviewConfig, PreviewServerConfig } from '../services/apiService';
 import {
@@ -58,6 +59,8 @@ export const PreviewScreen: React.FC<PreviewScreenProps> = ({
   const [logs, setLogs] = useState<string[]>([]);
   const [loadingConfig, setLoadingConfig] = useState(true);
   const [socketConnected, setSocketConnected] = useState(socket?.connected || false);
+  const [isPlaceholder, setIsPlaceholder] = useState(false);
+  const [promptCopied, setPromptCopied] = useState(false);
 
   // ─── UI state ────────────────────────────────────────────────────────
   const [showTerminal, setShowTerminal] = useState(false);
@@ -70,6 +73,7 @@ export const PreviewScreen: React.FC<PreviewScreenProps> = ({
   logsRef.current = logs;
   const selectedServerRef = useRef<PreviewServerConfig | null>(null);
   selectedServerRef.current = selectedServer;
+  const configLoadedRef = useRef(false);
   const menuAnim = useRef(new Animated.Value(0)).current;
 
   // ─── Menu animation ──────────────────────────────────────────────────
@@ -122,20 +126,23 @@ export const PreviewScreen: React.FC<PreviewScreenProps> = ({
     return () => sub.remove();
   }, [isVisible, showMenu, isFullScreen, closeMenu, onBackToChat]);
 
-  // ─── Load preview config from bridge ────────────────────────────────
-
   useEffect(() => {
     let active = true;
     async function loadConfig(retryCount = 0) {
+      if (configLoadedRef.current) return;
       try {
         const config = await fetchPreviewConfig(bridgeUrl, token);
         if (!active) return;
+        if (configLoadedRef.current) return;
         setServers(config.servers || []);
+        setIsPlaceholder(config.isPlaceholder || false);
         if (config.servers && config.servers.length > 0) {
           setSelectedServer(config.servers[0]);
         }
+        configLoadedRef.current = true;
         setLoadingConfig(false);
       } catch (err) {
+        if (configLoadedRef.current) return;
         console.error(`[PreviewScreen] Failed to load config (attempt ${retryCount + 1}):`, err);
         if (active && retryCount < 3) {
           setTimeout(() => loadConfig(retryCount + 1), 2000);
@@ -187,11 +194,13 @@ export const PreviewScreen: React.FC<PreviewScreenProps> = ({
       },
       onConfig: (payload) => {
         setServers(payload.servers || []);
+        setIsPlaceholder(payload.isPlaceholder || false);
         setSelectedServer((prev) => {
           if (!prev) return payload.servers?.length > 0 ? payload.servers[0] : null;
           const match = payload.servers?.find((s: PreviewServerConfig) => s.port === prev.port);
           return match || (payload.servers?.length > 0 ? payload.servers[0] : null);
         });
+        configLoadedRef.current = true;
         setLoadingConfig(false);
       },
     });
@@ -243,6 +252,29 @@ export const PreviewScreen: React.FC<PreviewScreenProps> = ({
     } else if (selectedServer) {
       emitPreviewStatusRequest(socket, selectedServer.port);
     }
+  };
+
+  const handleCopyPrompt = async () => {
+    const prompt = `Analyze the repository, identify the development servers and application types (e.g. React Native/Expo, Vite, Next.js, Flutter Web, or static HTML), and configure the workspace preview configuration file at \`.iota/preview.json\`.
+
+The \`.iota/preview.json\` file expects this format:
+{
+  "servers": [
+    {
+      "name": "User-friendly Server Name",
+      "cwd": "subdirectory relative to workspace root (e.g. '.' or 'frontend')",
+      "command": "command to start dev server (e.g. 'npm run dev')",
+      "port": 3000,
+      "type": "web" // 'web' or 'expo-go'
+    }
+  ]
+}
+
+Once you have auto-detected and configured the correct servers, write the configuration to \`.iota/preview.json\` and make sure to remove the "isPlaceholder": true field from the JSON root.`;
+
+    await Clipboard.setStringAsync(prompt);
+    setPromptCopied(true);
+    setTimeout(() => setPromptCopied(false), 2000);
   };
 
   const handleLaunchCustomScheme = () => {
@@ -347,36 +379,75 @@ export const PreviewScreen: React.FC<PreviewScreenProps> = ({
       {/* ─── Main content area ───────────────────────────────────────── */}
       <View style={styles.contentArea}>
         {status === 'stopped' || status === 'crashed' ? (
-          /* ─── Stopped / Crashed empty state ─────────────────────────── */
-          <View style={styles.emptyState}>
-            <MaterialIcons
-              name={status === 'crashed' ? 'error-outline' : 'layers'}
-              size={48}
-              color={status === 'crashed' ? Theme.colors.accent.default : Theme.colors.text.muted}
-            />
-            <Text style={styles.emptyTitle}>
-              {status === 'crashed' ? 'Server Crashed' : 'Preview Ready'}
-            </Text>
-            <Text style={styles.emptySubtitle}>
-              {status === 'crashed'
-                ? 'The dev server crashed. Check logs or restart.'
-                : selectedServer
-                  ? `Tap Start to run "${selectedServer.name}".`
-                  : 'No preview servers configured.'}
-            </Text>
-            {selectedServer && (
-              <TouchableOpacity style={styles.startCTA} onPress={handleStart}>
-                <MaterialIcons name="play-arrow" size={18} color="#fff" />
-                <Text style={styles.startCTAText}>Start Server</Text>
+          isPlaceholder ? (
+            /* ─── Placeholder Setup Prompt Card ─────────────────────────── */
+            <View style={styles.setupCard}>
+              <MaterialIcons name="settings-suggest" size={48} color={Theme.colors.primary.glow} style={{ marginBottom: 12 }} />
+              <Text style={styles.setupTitle}>Preview Setup Required</Text>
+              <Text style={styles.setupSubtitle}>
+                This workspace has placeholder settings. Copy the prompt below and send it to an AI coding agent to auto-configure preview settings.
+              </Text>
+              
+              <View style={styles.promptBox}>
+                <Text style={styles.promptText} selectable={true}>
+                  {`Analyze the repository, identify the development servers and application types (e.g. React Native/Expo, Vite, Next.js, Flutter Web, or static HTML), and configure the workspace preview configuration file at \`.iota/preview.json\`.
+
+The \`.iota/preview.json\` file expects this format:
+{
+  "servers": [
+    {
+      "name": "User-friendly Server Name",
+      "cwd": "subdirectory relative to workspace root (e.g. '.' or 'frontend')",
+      "command": "command to start dev server (e.g. 'npm run dev')",
+      "port": 3000,
+      "type": "web" // 'web' or 'expo-go'
+    }
+  ]
+}
+
+Once you have auto-detected and configured the correct servers, write the configuration to \`.iota/preview.json\` and make sure to remove the "isPlaceholder": true field from the JSON root.`}
+                </Text>
+              </View>
+
+              <TouchableOpacity style={styles.copyCTA} onPress={handleCopyPrompt}>
+                <MaterialIcons name={promptCopied ? "check" : "content-copy"} size={16} color="#fff" />
+                <Text style={styles.copyCTAText}>
+                  {promptCopied ? "Prompt Copied!" : "Copy Agent Prompt"}
+                </Text>
               </TouchableOpacity>
-            )}
-            {status === 'crashed' && logs.length > 0 && !showTerminal && (
-              <TouchableOpacity style={styles.showLogsCTA} onPress={() => setShowTerminal(true)}>
-                <MaterialIcons name="terminal" size={16} color={Theme.colors.primary.glow} />
-                <Text style={styles.showLogsCTAText}>View Logs</Text>
-              </TouchableOpacity>
-            )}
-          </View>
+            </View>
+          ) : (
+            /* ─── Stopped / Crashed empty state ─────────────────────────── */
+            <View style={styles.emptyState}>
+              <MaterialIcons
+                name={status === 'crashed' ? 'error-outline' : 'layers'}
+                size={48}
+                color={status === 'crashed' ? Theme.colors.accent.default : Theme.colors.text.muted}
+              />
+              <Text style={styles.emptyTitle}>
+                {status === 'crashed' ? 'Server Crashed' : 'Preview Ready'}
+              </Text>
+              <Text style={styles.emptySubtitle}>
+                {status === 'crashed'
+                  ? 'The dev server crashed. Check logs or restart.'
+                  : selectedServer
+                    ? `Tap Start to run "${selectedServer.name}".`
+                    : 'No preview servers configured.'}
+              </Text>
+              {selectedServer && (
+                <TouchableOpacity style={styles.startCTA} onPress={handleStart}>
+                  <MaterialIcons name="play-arrow" size={18} color="#fff" />
+                  <Text style={styles.startCTAText}>Start Server</Text>
+                </TouchableOpacity>
+              )}
+              {status === 'crashed' && logs.length > 0 && !showTerminal && (
+                <TouchableOpacity style={styles.showLogsCTA} onPress={() => setShowTerminal(true)}>
+                  <MaterialIcons name="terminal" size={16} color={Theme.colors.primary.glow} />
+                  <Text style={styles.showLogsCTAText}>View Logs</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )
         ) : status === 'starting' ? (
           /* ─── Starting state ────────────────────────────────────────── */
           <View style={styles.emptyState}>
@@ -884,6 +955,64 @@ const styles = StyleSheet.create({
   menuBtnText: {
     color: '#fff',
     fontSize: 13,
+    fontWeight: 'bold',
+  },
+  setupCard: {
+    ...Theme.glassmorphism,
+    backgroundColor: 'rgba(12, 10, 28, 0.45)',
+    padding: 24,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    margin: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(99, 102, 241, 0.15)',
+  },
+  setupTitle: {
+    color: Theme.colors.text.primary,
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  setupSubtitle: {
+    color: Theme.colors.text.secondary,
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 18,
+    marginBottom: 20,
+    paddingHorizontal: 8,
+  },
+  promptBox: {
+    width: '100%',
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    padding: 12,
+    maxHeight: 200,
+    marginBottom: 20,
+  },
+  promptText: {
+    color: Theme.colors.text.muted,
+    fontSize: 11,
+    lineHeight: 18,
+    fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
+  },
+  copyCTA: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: Theme.colors.primary.default,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 8,
+    width: '100%',
+  },
+  copyCTAText: {
+    color: '#fff',
+    fontSize: 14,
     fontWeight: 'bold',
   },
 });

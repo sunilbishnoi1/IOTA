@@ -66,6 +66,15 @@ export const secureStoreService = {
     return val !== null ? parseInt(val, 10) : null;
   },
 
+  async saveDeveloperModeEnabled(enabled: boolean): Promise<void> {
+    await SecureStore.setItemAsync('iota_developer_mode_enabled', enabled ? 'true' : 'false');
+  },
+
+  async getDeveloperModeEnabled(): Promise<boolean | null> {
+    const val = await SecureStore.getItemAsync('iota_developer_mode_enabled');
+    return val !== null ? val === 'true' : null;
+  },
+
   async getAllApiKeys(): Promise<Record<string, string>> {
     const keys: Record<string, string> = {};
     const providers = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GROQ_API_KEY', 'OPENROUTER_API_KEY'];

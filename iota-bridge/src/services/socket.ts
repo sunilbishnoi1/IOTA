@@ -709,18 +709,38 @@ export const initSocketIO = (server: HttpServer) => {
         const rootDir = getWorkspaceRoot();
         const configPath = path.join(rootDir, '.iota', 'preview.json');
         let servers: PreviewServerConfig[] = [];
+        let isPlaceholder = false;
         if (fs.existsSync(configPath)) {
           const content = fs.readFileSync(configPath, 'utf8');
           const parsed = JSON.parse(content);
           servers = parsed.servers || [];
+          isPlaceholder = parsed.isPlaceholder === true;
         } else {
           servers = PreviewService.getInstance().detectServers();
+          isPlaceholder = servers.length === 0;
           try {
             const configDir = path.dirname(configPath);
             if (!fs.existsSync(configDir)) {
               fs.mkdirSync(configDir, { recursive: true });
             }
-            fs.writeFileSync(configPath, JSON.stringify({ servers }, null, 2), 'utf8');
+            if (isPlaceholder) {
+              const placeholderConfig = {
+                isPlaceholder: true,
+                servers: [
+                  {
+                    name: "Configure Server Name (e.g. My Web App)",
+                    cwd: ".",
+                    command: "npm run start",
+                    port: 3000,
+                    type: "web" as const
+                  }
+                ]
+              };
+              fs.writeFileSync(configPath, JSON.stringify(placeholderConfig, null, 2), 'utf8');
+              servers = placeholderConfig.servers;
+            } else {
+              fs.writeFileSync(configPath, JSON.stringify({ servers }, null, 2), 'utf8');
+            }
           } catch (err: any) {
             logError(`Failed to auto-persist preview config over socket: ${err.message}`);
           }
@@ -755,7 +775,7 @@ export const initSocketIO = (server: HttpServer) => {
           return s;
         });
 
-        socket.emit('preview:config_response', { servers: mappedServers });
+        socket.emit('preview:config_response', { servers: mappedServers, isPlaceholder });
       } catch (err: any) {
         logError(`Failed to fetch preview config over socket: ${err.message}`);
         socket.emit('preview:error', { port: 0, error: `Failed to fetch config: ${err.message}` });

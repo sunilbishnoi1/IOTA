@@ -8,6 +8,7 @@ export interface PreviewServerConfig {
 
 export interface PreviewWorkspaceConfig {
   servers: PreviewServerConfig[];
+  isPlaceholder?: boolean;
 }
 
 export type PreviewStatus = 'starting' | 'running' | 'stopped' | 'crashed';

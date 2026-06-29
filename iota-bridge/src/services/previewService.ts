@@ -187,12 +187,17 @@ export class PreviewService {
     const baseCommand = parts[0];
     const args = parts.slice(1);
 
-    const env = { 
+    const env: Record<string, string | undefined> = { 
       ...process.env,
       WORKSPACE_ROOT: workspaceRoot,
       IOTA_WORKSPACE_ROOT: workspaceRoot,
       PORT: String(port),
     };
+
+    if (codespaceName) {
+      env.EXPO_PACKAGER_PROXY_URL = `https://${codespaceName}-${port}.${portForwardingDomain}`;
+      env.REACT_NATIVE_PACKAGER_HOSTNAME = `${codespaceName}-${port}.${portForwardingDomain}`;
+    }
     let child: ChildProcess;
 
     try {

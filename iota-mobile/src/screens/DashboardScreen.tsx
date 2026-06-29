@@ -36,11 +36,15 @@ import {
 interface DashboardScreenProps {
   user: { token: string; username?: string; avatarUrl?: string };
   bridgeUrl: string;
+  isBridgeActive: boolean;
+  activeLocalFolder: string;
+  developerModeEnabled: boolean;
   onSelectCodespace: (vm: CodespaceVM) => void;
   onDeleteCodespace?: (id: string) => void;
   onOpenSettings: () => void;
   isVisible: boolean;
   onCodespacesUpdated?: (codespaces: CodespaceVM[]) => void;
+  onRefreshBridge: () => Promise<{ active: boolean; activeLocalFolder?: string }>;
 }
 
 // Configurable API URL for bridge server (resolves emulator vs localhost vs custom network IP)
@@ -55,11 +59,15 @@ const DEFAULT_BRIDGE_URL = Platform.select({
 export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   user,
   bridgeUrl,
+  isBridgeActive,
+  activeLocalFolder,
+  developerModeEnabled,
   onSelectCodespace,
   onDeleteCodespace,
   onOpenSettings,
   isVisible,
   onCodespacesUpdated,
+  onRefreshBridge,
 }) => {
   const [codespaces, setCodespaces] = useState<CodespaceVM[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -82,14 +90,14 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   const fetchRepositories = useCallback(async () => {
     setReposLoading(true);
     try {
-      const data = await listUserRepos(bridgeUrl, user.token);
+      const data = await listUserRepos(bridgeUrl, user.token, isBridgeActive);
       setRepositories(data);
     } catch (err) {
       console.warn('Failed to fetch repositories:', err);
     } finally {
       setReposLoading(false);
     }
-  }, [bridgeUrl, user.token]);
+  }, [bridgeUrl, user.token, isBridgeActive]);
 
   const handleOpenRepoModal = () => {
     setRepoModalVisible(true);
@@ -159,7 +167,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
     setCodespaces((prev) => [optimisticCodespace, ...prev]);
     
     try {
-      const createdCs = await createUserCodespace(bridgeUrl, user.token, repo.fullName, repo.defaultBranch);
+      const createdCs = await createUserCodespace(bridgeUrl, user.token, repo.fullName, repo.defaultBranch, isBridgeActive);
       // Replace optimistic codespace with real created codespace
       setCodespaces((prev) =>
         prev.map((cs) => (cs.id === tempId ? createdCs : cs))
@@ -187,7 +195,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
       }
 
       // Check if devcontainer exists in the repository
-      const checkData = await checkDevcontainer(bridgeUrl, user.token, owner, repoName);
+      const checkData = await checkDevcontainer(bridgeUrl, user.token, owner, repoName, isBridgeActive);
       setLoading(false);
 
       if (!checkData.exists) {
@@ -201,7 +209,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
               onPress: async () => {
                 setLoading(true);
                 try {
-                  await setupDevcontainer(bridgeUrl, user.token, repo.fullName, repo.defaultBranch);
+                  await setupDevcontainer(bridgeUrl, user.token, repo.fullName, repo.defaultBranch, isBridgeActive);
                   // Successfully added devcontainer, now trigger creation
                   await triggerCodespaceCreation(repo);
                 } catch (setupErr: any) {
@@ -231,48 +239,44 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
     
     let fetchedCodespaces: CodespaceVM[] = [];
     let isLocalBridgeActive = false;
-    let activeLocalFolder = 'Local Dev Workspace';
+    let localFolder = 'Local Dev Workspace';
     let fetchError: any = null;
 
-    // 1. Check if the local bridge is active
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2000);
-      const pingResponse = await fetch(`${targetUrl}/api/ping`, {
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-      if (pingResponse.ok) {
-        isLocalBridgeActive = true;
-        const pingData = await pingResponse.json();
-        if (pingData && pingData.activeLocalFolder) {
-          activeLocalFolder = pingData.activeLocalFolder;
+    if (developerModeEnabled) {
+      try {
+        const checkRes = await onRefreshBridge();
+        isLocalBridgeActive = checkRes.active;
+        if (checkRes.active && checkRes.activeLocalFolder) {
+          localFolder = checkRes.activeLocalFolder;
         }
+      } catch (err) {
+        // ignore
       }
-    } catch (e) {
-      // local bridge is unreachable
     }
 
     // 2. Fetch remote codespaces
     try {
-      fetchedCodespaces = await listUserCodespaces(targetUrl, user.token);
+      fetchedCodespaces = await listUserCodespaces(targetUrl, user.token, isLocalBridgeActive);
     } catch (error: any) {
       console.warn('Error fetching codespaces:', error);
       fetchError = error;
     }
 
-    // 3. Prepend local workspace virtual item
-    const localWorkspace: CodespaceVM = {
-      id: 'local-workspace',
-      repositoryName: activeLocalFolder,
-      branchName: 'local',
-      status: isLocalBridgeActive ? 'active' : 'sleeping',
-      freeHoursRemaining: 0,
-      connectionUrl: targetUrl,
-      rawState: isLocalBridgeActive ? 'Available' : 'Unavailable',
-    };
+    // 3. Prepend local workspace virtual item only if active
+    let finalCodespaces = fetchedCodespaces;
+    if (isLocalBridgeActive) {
+      const localWorkspace: CodespaceVM = {
+        id: 'local-workspace',
+        repositoryName: localFolder,
+        branchName: 'local',
+        status: 'active',
+        freeHoursRemaining: 0,
+        connectionUrl: targetUrl,
+        rawState: 'Available',
+      };
+      finalCodespaces = [localWorkspace, ...fetchedCodespaces];
+    }
 
-    const finalCodespaces = [localWorkspace, ...fetchedCodespaces];
     setCodespaces(finalCodespaces);
 
     // Start polling for any starting remote codespaces
@@ -291,7 +295,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
 
     if (!isSilent) setLoading(false);
     setRefreshing(false);
-  }, [bridgeUrl, user.token]);
+  }, [bridgeUrl, user.token, developerModeEnabled, onRefreshBridge]);
 
   useEffect(() => {
     fetchCodespaces(false);
@@ -347,7 +351,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
         return;
       }
       try {
-        const updatedCs = await getUserCodespace(bridgeUrl, user.token, id);
+        const updatedCs = await getUserCodespace(bridgeUrl, user.token, id, isBridgeActive);
         console.log(`[Codespace Poller] Poll response for ${id}: status=${updatedCs.status}, rawState=${updatedCs.rawState}, connectionUrl=${updatedCs.connectionUrl}`);
         
         let finalCs = updatedCs;
@@ -413,7 +417,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
       );
 
       try {
-        const updatedCs = await startUserCodespace(bridgeUrl, user.token, id);
+        const updatedCs = await startUserCodespace(bridgeUrl, user.token, id, isBridgeActive);
         
         // If it's sleeping, override to starting to keep the UI in starting state
         const finalCs = updatedCs.status === 'sleeping' ? {
@@ -443,7 +447,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
       );
 
       try {
-        await stopUserCodespace(bridgeUrl, user.token, id);
+        await stopUserCodespace(bridgeUrl, user.token, id, isBridgeActive);
         // Poll or refresh status to confirm sleep
         fetchCodespaces(true);
       } catch (err) {
@@ -470,7 +474,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
     }
 
     try {
-      await deleteUserCodespace(bridgeUrl, user.token, id);
+      await deleteUserCodespace(bridgeUrl, user.token, id, isBridgeActive);
     } catch (err: any) {
       console.warn(`Failed to delete codespace ${id}:`, err);
       Alert.alert('Delete Failed', err.message || 'Could not delete the codespace. Please try again.');
