@@ -15,6 +15,7 @@ export type PreviewStatus = 'starting' | 'running' | 'stopped' | 'crashed';
 
 export interface PreviewProcessState {
   port: number;
+  originalPort?: number;
   pid: number | null;
   status: PreviewStatus;
   command: string;

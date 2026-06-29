@@ -174,7 +174,14 @@ export const PreviewScreen: React.FC<PreviewScreenProps> = ({
     const unregister = registerPreviewSocketHandlers(socket, {
       onStatus: (payload) => {
         const current = selectedServerRef.current;
-        if (current && payload.port === current.port) {
+        if (current && (payload.port === current.port || payload.originalPort === current.port)) {
+          if (payload.originalPort && payload.port !== current.port) {
+            console.log(`[PreviewScreen] Port shifted from ${payload.originalPort} to ${payload.port}. Updating local state.`);
+            setSelectedServer((prev) => (prev ? { ...prev, port: payload.port } : null));
+            setServers((prev) =>
+              prev.map((s) => (s.port === payload.originalPort ? { ...s, port: payload.port } : s))
+            );
+          }
           setStatus(payload.status);
           if (payload.url) setUrl(payload.url);
         }

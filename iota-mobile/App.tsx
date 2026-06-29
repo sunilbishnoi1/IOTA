@@ -226,9 +226,8 @@ export default function App() {
       const merged = new Map<string, CodespaceVM>();
       allCodespaces.forEach(cs => merged.set(cs.id, cs));
       Object.values(openedWorkspaces).forEach(cs => merged.set(cs.id, cs));
-
       const activeCodespaces = Array.from(merged.values()).filter(
-        (cs) => cs.status === 'active'
+        (cs) => cs.status === 'active' && cs.id !== 'local-workspace'
       );
 
       for (const cs of activeCodespaces) {

@@ -98,7 +98,9 @@ export class PreviewService {
       try {
         await execAsync(`gh codespace ports visibility ${port}:${visibility}`);
       } catch (e) {
-        logError(`Failed to set port visibility for ${port} to ${visibility}: ${String(e)}`);
+        const errorMsg = `Failed to set port visibility for ${port} to ${visibility}: ${String(e)}`;
+        logError(errorMsg);
+        throw new Error(errorMsg);
       }
     }
   }
@@ -106,8 +108,8 @@ export class PreviewService {
   // Start preview server
   public async startPreview(
     config: PreviewServerConfig,
-    onLog: (text: string) => void,
-    onError: (err: string) => void,
+    onLog: (port: number, text: string) => void,
+    onError: (port: number, err: string) => void,
     onStatusChange: (state: PreviewProcessState) => void
   ): Promise<PreviewProcessState> {
     let port = config.port;
@@ -156,9 +158,9 @@ export class PreviewService {
         }
       }
     }
-
     const state: PreviewProcessState = {
       port,
+      originalPort: config.port !== port ? config.port : undefined,
       pid: null,
       status: 'starting',
       command: finalCommand,
@@ -211,7 +213,7 @@ export class PreviewService {
       state.status = 'crashed';
       this.activePreviews.set(port, { state });
       onStatusChange(state);
-      onError(e.message || String(e));
+      onError(port, e.message || String(e));
       throw e;
     }
 
@@ -222,18 +224,18 @@ export class PreviewService {
     onStatusChange(state);
 
     child.stdout?.on('data', (data: any) => {
-      onLog(data.toString());
+      onLog(port, data.toString());
     });
 
     child.stderr?.on('data', (data: any) => {
-      onLog(data.toString());
+      onLog(port, data.toString());
     });
 
     child.on('error', (err: any) => {
       logError(`Process error on port ${port}: ${err.message}`);
       state.status = 'crashed';
       onStatusChange(state);
-      onError(err.message || String(err));
+      onError(port, err.message || String(err));
     });
 
     child.on('exit', (code: number | null, signal: string | null) => {
@@ -251,13 +253,25 @@ export class PreviewService {
 
   // Stop preview server
   public async stopPreview(port: number): Promise<void> {
-    const current = this.activePreviews.get(port);
+    let resolvedPort = port;
+    let current = this.activePreviews.get(port);
+    if (!current) {
+      // Fallback: search by originalPort
+      for (const [p, val] of this.activePreviews.entries()) {
+        if (val.state.originalPort === port) {
+          resolvedPort = p;
+          current = val;
+          break;
+        }
+      }
+    }
+
     if (!current) {
       logInfo(`No active preview process registered on port ${port}`);
       return;
     }
 
-    logInfo(`Stopping preview process on port ${port}`);
+    logInfo(`Stopping preview process on port ${resolvedPort} (requested: ${port})`);
     current.state.status = 'stopped';
     current.state.pid = null;
 
@@ -265,17 +279,26 @@ export class PreviewService {
       try {
         current.process.kill();
       } catch (e) {
-        logError(`Failed to kill process on port ${port}: ${String(e)}`);
+        logError(`Failed to kill process on port ${resolvedPort}: ${String(e)}`);
       }
     }
 
     // Set port back to private
-    await this.setPortVisibility(port, 'private');
-    this.activePreviews.delete(port);
+    await this.setPortVisibility(resolvedPort, 'private');
+    this.activePreviews.delete(resolvedPort);
   }
 
   public getPreviewState(port: number): PreviewProcessState | undefined {
-    return this.activePreviews.get(port)?.state;
+    const direct = this.activePreviews.get(port)?.state;
+    if (direct) return direct;
+
+    // Fallback: search by originalPort
+    for (const preview of this.activePreviews.values()) {
+      if (preview.state.originalPort === port) {
+        return preview.state;
+      }
+    }
+    return undefined;
   }
 
   public getAllPreviewStates(): PreviewProcessState[] {

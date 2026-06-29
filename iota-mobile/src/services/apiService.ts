@@ -135,6 +135,7 @@ export async function listUserRepos(bridgeUrl: string, token: string, isBridgeAc
         headers: {
           'Authorization': `token ${token}`,
           'Accept': 'application/vnd.github.v3+json',
+          'X-GitHub-Api-Version': '2022-11-28',
         },
       });
       if (ghResponse.ok) {
@@ -184,6 +185,7 @@ export async function checkDevcontainer(
           headers: {
             'Authorization': `token ${token}`,
             'Accept': 'application/vnd.github.v3+json',
+            'X-GitHub-Api-Version': '2022-11-28',
           },
         }
       );
@@ -255,6 +257,7 @@ export async function setupDevcontainer(
           headers: {
             'Authorization': `token ${token}`,
             'Accept': 'application/vnd.github.v3+json',
+            'X-GitHub-Api-Version': '2022-11-28',
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -297,6 +300,7 @@ export async function listUserCodespaces(bridgeUrl: string, token: string, isBri
         headers: {
           'Authorization': `token ${token}`,
           'Accept': 'application/vnd.github.v3+json',
+          'X-GitHub-Api-Version': '2022-11-28',
         },
       });
       if (ghResponse.ok) {
@@ -359,6 +363,7 @@ export async function getUserCodespace(
         headers: {
           'Authorization': `token ${token}`,
           'Accept': 'application/vnd.github.v3+json',
+          'X-GitHub-Api-Version': '2022-11-28',
         },
       });
       if (ghResponse.ok) {
@@ -417,6 +422,7 @@ export async function startUserCodespace(
         headers: {
           'Authorization': `token ${token}`,
           'Accept': 'application/vnd.github.v3+json',
+          'X-GitHub-Api-Version': '2022-11-28',
         },
       });
       if (ghResponse.ok) {
@@ -480,6 +486,7 @@ export async function stopUserCodespace(
         headers: {
           'Authorization': `token ${token}`,
           'Accept': 'application/vnd.github.v3+json',
+          'X-GitHub-Api-Version': '2022-11-28',
         },
       });
       if (ghResponse.ok) {
@@ -521,6 +528,7 @@ export async function deleteUserCodespace(
         headers: {
           'Authorization': `token ${token}`,
           'Accept': 'application/vnd.github.v3+json',
+          'X-GitHub-Api-Version': '2022-11-28',
         },
       });
       if (ghResponse.ok) {
@@ -570,6 +578,7 @@ export async function createUserCodespace(
         headers: {
           'Authorization': `token ${token}`,
           'Accept': 'application/vnd.github.v3+json',
+          'X-GitHub-Api-Version': '2022-11-28',
         },
       });
       if (!repoResponse.ok) {
@@ -584,11 +593,12 @@ export async function createUserCodespace(
         headers: {
           'Authorization': `token ${token}`,
           'Accept': 'application/vnd.github.v3+json',
+          'X-GitHub-Api-Version': '2022-11-28',
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           repository_id,
-          ref: branch,
+          ref: branch || 'main',
         }),
       });
 
@@ -604,7 +614,19 @@ export async function createUserCodespace(
           rawState: cs.state,
         };
       }
-      throw new Error(`GitHub Codespaces creation API failed: ${ghResponse.status}`);
+
+      let errorMsg = '';
+      try {
+        const errorData = await ghResponse.json();
+        errorMsg = errorData.message || JSON.stringify(errorData);
+      } catch {
+        try {
+          errorMsg = await ghResponse.text();
+        } catch {
+          errorMsg = ghResponse.statusText;
+        }
+      }
+      throw new Error(`GitHub Codespaces creation API failed (${ghResponse.status}): ${errorMsg}`);
     }
     throw err;
   }

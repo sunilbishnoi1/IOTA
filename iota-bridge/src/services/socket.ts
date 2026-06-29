@@ -642,15 +642,16 @@ export const initSocketIO = (server: HttpServer) => {
             name: `Preview:${payload.port}`,
             ...payload
           },
-          (text: string) => {
-            io.emit('preview:log', { port: payload.port, text });
+          (actualPort: number, text: string) => {
+            io.emit('preview:log', { port: actualPort, text });
           },
-          (error: string) => {
-            io.emit('preview:error', { port: payload.port, error });
+          (actualPort: number, error: string) => {
+            io.emit('preview:error', { port: actualPort, error });
           },
           (state) => {
             io.emit('preview:status', {
               port: state.port,
+              originalPort: state.originalPort,
               status: state.status,
               url: state.url,
               command: state.command
@@ -689,6 +690,7 @@ export const initSocketIO = (server: HttpServer) => {
       if (state) {
         socket.emit('preview:status', {
           port: state.port,
+          originalPort: state.originalPort,
           status: state.status,
           url: state.url,
           command: state.command

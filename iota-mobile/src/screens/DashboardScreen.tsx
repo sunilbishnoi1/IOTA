@@ -175,11 +175,15 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
       if (createdCs.status === 'starting') {
         startPollingCodespace(createdCs.id);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.warn('Failed to create codespace:', err);
       // Remove optimistic item and fetch actual list
       setCodespaces((prev) => prev.filter((cs) => cs.id !== tempId));
       fetchCodespaces(true);
+      Alert.alert(
+        'Codespace Creation Failed',
+        err.message || 'Failed to create codespace.'
+      );
     }
   };
 

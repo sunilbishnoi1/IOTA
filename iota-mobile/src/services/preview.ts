@@ -3,6 +3,7 @@ import { PreviewServerConfig } from './apiService';
 
 export interface PreviewStatusPayload {
   port: number;
+  originalPort?: number;
   status: 'starting' | 'running' | 'stopped' | 'crashed';
   url?: string;
   command: string;
