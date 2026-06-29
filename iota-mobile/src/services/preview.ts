@@ -26,24 +26,37 @@ export interface PreviewSocketHandlers {
 }
 
 export function registerPreviewSocketHandlers(socket: Socket, handlers: PreviewSocketHandlers) {
-  socket.on('preview:status', (payload: PreviewStatusPayload) => {
+  const statusHandler = (payload: PreviewStatusPayload) => {
     console.log('[PreviewSocket] Received preview:status:', JSON.stringify(payload));
     handlers.onStatus?.(payload);
-  });
+  };
   
-  socket.on('preview:log', (payload: PreviewLogPayload) => {
+  const logHandler = (payload: PreviewLogPayload) => {
     handlers.onLog?.(payload);
-  });
+  };
   
-  socket.on('preview:error', (payload: PreviewErrorPayload) => {
+  const errorHandler = (payload: PreviewErrorPayload) => {
     console.error('[PreviewSocket] Received preview:error:', JSON.stringify(payload));
     handlers.onError?.(payload);
-  });
+  };
 
-  socket.on('preview:config_response', (payload: { servers: PreviewServerConfig[] }) => {
+  const configHandler = (payload: { servers: PreviewServerConfig[] }) => {
     console.log('[PreviewSocket] Received preview:config_response:', JSON.stringify(payload));
     handlers.onConfig?.(payload);
-  });
+  };
+
+  socket.on('preview:status', statusHandler);
+  socket.on('preview:log', logHandler);
+  socket.on('preview:error', errorHandler);
+  socket.on('preview:config_response', configHandler);
+
+  // Return custom precise cleanup function
+  return () => {
+    socket.off('preview:status', statusHandler);
+    socket.off('preview:log', logHandler);
+    socket.off('preview:error', errorHandler);
+    socket.off('preview:config_response', configHandler);
+  };
 }
 
 export const emitPreviewStart = (

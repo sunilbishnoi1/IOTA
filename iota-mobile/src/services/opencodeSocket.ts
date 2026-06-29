@@ -14,40 +14,43 @@ export interface OpenCodeSocketHandlers {
 }
 
 export function registerOpenCodeSocketHandlers(socket: Socket, handlers: OpenCodeSocketHandlers) {
-  socket.on('opencode:capability', (payload) => {
-    console.log('[SocketClient] Received opencode:capability:', JSON.stringify(payload));
+  socket.on('opencode:capability', (payload: any) => {
+    console.log('[SocketClient] Received opencode:capability status:', payload?.status);
     handlers.onCapability?.(payload);
   });
-  socket.on('opencode:snapshot', (payload) => {
+  socket.on('opencode:snapshot', (payload: any) => {
     console.log('[SocketClient] Received opencode:snapshot (msg count:', payload?.conversation?.messages?.length || 0, ')');
     handlers.onSnapshot?.(payload);
   });
-  socket.on('opencode:message', (payload) => {
-    console.log('[SocketClient] Received opencode:message:', JSON.stringify(payload));
+  socket.on('opencode:message', (payload: any) => {
+    console.log('[SocketClient] Received opencode:message id:', payload?.message?.id, 'role:', payload?.message?.role);
     handlers.onMessage?.(payload);
   });
-  socket.on('opencode:message_delta', (payload) => {
-    console.log(`[SocketClient] Received opencode:message_delta (msgId=${payload?.messageId}, len=${payload?.content?.length || 0}, done=${payload?.done})`);
+  socket.on('opencode:message_delta', (payload: any) => {
+    // Only log delta details at very end or short summary to avoid console clutter
+    if (payload?.done) {
+      console.log(`[SocketClient] Received opencode:message_delta done (msgId=${payload?.messageId})`);
+    }
     handlers.onMessageDelta?.(payload);
   });
-  socket.on('opencode:run_status', (payload) => {
-    console.log('[SocketClient] Received opencode:run_status:', JSON.stringify(payload));
+  socket.on('opencode:run_status', (payload: any) => {
+    console.log('[SocketClient] Received opencode:run_status phase:', payload?.phase, 'msg:', payload?.message);
     handlers.onRunStatus?.(payload);
   });
-  socket.on('opencode:tool_activity', (payload) => {
-    console.log('[SocketClient] Received opencode:tool_activity:', JSON.stringify(payload));
+  socket.on('opencode:tool_activity', (payload: any) => {
+    console.log('[SocketClient] Received opencode:tool_activity tool:', payload?.activity?.toolName, 'status:', payload?.activity?.status);
     handlers.onToolActivity?.(payload);
   });
-  socket.on('opencode:file_change', (payload) => {
-    console.log('[SocketClient] Received opencode:file_change:', JSON.stringify(payload));
+  socket.on('opencode:file_change', (payload: any) => {
+    console.log('[SocketClient] Received opencode:file_change file:', payload?.change?.filePath, 'type:', payload?.change?.type);
     handlers.onFileChange?.(payload);
   });
-  socket.on('opencode:approval_request', (payload) => {
-    console.log('[SocketClient] Received opencode:approval_request:', JSON.stringify(payload));
+  socket.on('opencode:approval_request', (payload: any) => {
+    console.log('[SocketClient] Received opencode:approval_request id:', payload?.approval?.id, 'cmd:', payload?.approval?.command);
     handlers.onApprovalRequest?.(payload);
   });
-  socket.on('opencode:error', (payload) => {
-    console.error('[SocketClient] Received opencode:error:', JSON.stringify(payload));
+  socket.on('opencode:error', (payload: any) => {
+    console.error('[SocketClient] Received opencode:error code:', payload?.code, 'msg:', payload?.message);
     handlers.onError?.(payload);
   });
 }

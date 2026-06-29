@@ -715,6 +715,15 @@ export const initSocketIO = (server: HttpServer) => {
           servers = parsed.servers || [];
         } else {
           servers = PreviewService.getInstance().detectServers();
+          try {
+            const configDir = path.dirname(configPath);
+            if (!fs.existsSync(configDir)) {
+              fs.mkdirSync(configDir, { recursive: true });
+            }
+            fs.writeFileSync(configPath, JSON.stringify({ servers }, null, 2), 'utf8');
+          } catch (err: any) {
+            logError(`Failed to auto-persist preview config over socket: ${err.message}`);
+          }
         }
         socket.emit('preview:config_response', { servers });
       } catch (err: any) {

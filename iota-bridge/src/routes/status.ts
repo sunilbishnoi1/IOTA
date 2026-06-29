@@ -252,6 +252,15 @@ router.get('/preview/config', requireAuth, async (req: AuthenticatedRequest, res
     if (!fs.existsSync(configPath)) {
       // Auto-detect preview configurations for the current project
       const detected = PreviewService.getInstance().detectServers();
+      try {
+        const configDir = path.dirname(configPath);
+        if (!fs.existsSync(configDir)) {
+          fs.mkdirSync(configDir, { recursive: true });
+        }
+        fs.writeFileSync(configPath, JSON.stringify({ servers: detected }, null, 2), 'utf8');
+      } catch (err) {
+        console.error('Failed to auto-persist preview config:', err);
+      }
       return res.json({ servers: detected });
     }
     const content = fs.readFileSync(configPath, 'utf8');

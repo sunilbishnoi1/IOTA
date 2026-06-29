@@ -29,25 +29,37 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ socket, bridgeUrl, t
   const logsRef = useRef<string[]>([]);
   logsRef.current = logs;
 
-  // Load preview config from bridge on mount
+  const selectedServerRef = useRef<PreviewServerConfig | null>(null);
+  selectedServerRef.current = selectedServer;
+
+  // Load preview config from bridge on mount with retry backoff
   useEffect(() => {
-    async function loadConfig() {
+    let active = true;
+    async function loadConfig(retryCount = 0) {
       try {
         const config = await fetchPreviewConfig(bridgeUrl, token);
+        if (!active) return;
         setServers(config.servers || []);
         if (config.servers && config.servers.length > 0) {
           setSelectedServer(config.servers[0]);
         }
-      } catch (err) {
-        console.error('Failed to load preview config:', err);
-      } finally {
         setLoadingConfig(false);
+      } catch (err) {
+        console.error(`Failed to load preview config via REST (attempt ${retryCount + 1}):`, err);
+        if (active && retryCount < 3) {
+          setTimeout(() => loadConfig(retryCount + 1), 2000);
+        } else {
+          if (active) setLoadingConfig(false);
+        }
       }
     }
     loadConfig();
+    return () => {
+      active = false;
+    };
   }, [bridgeUrl, token]);
 
-  // Handle WebSocket registration and status requests
+  // Handle WebSocket registration and config requests on mount/socket connection
   useEffect(() => {
     if (!socket) return;
 
@@ -62,9 +74,10 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ socket, bridgeUrl, t
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
 
-    registerPreviewSocketHandlers(socket, {
+    const unregisterHandlers = registerPreviewSocketHandlers(socket, {
       onStatus: (payload) => {
-        if (selectedServer && payload.port === selectedServer.port) {
+        const currentSelected = selectedServerRef.current;
+        if (currentSelected && payload.port === currentSelected.port) {
           setStatus(payload.status);
           if (payload.url) {
             setUrl(payload.url);
@@ -72,7 +85,8 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ socket, bridgeUrl, t
         }
       },
       onLog: (payload) => {
-        if (selectedServer && payload.port === selectedServer.port) {
+        const currentSelected = selectedServerRef.current;
+        if (currentSelected && payload.port === currentSelected.port) {
           // Append logs, keeping only last 1000 lines for performance
           const newLines = payload.text.split('\n').filter(Boolean);
           setLogs((prev) => {
@@ -82,24 +96,20 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ socket, bridgeUrl, t
         }
       },
       onError: (payload) => {
-        if (selectedServer && payload.port === selectedServer.port) {
+        const currentSelected = selectedServerRef.current;
+        if (currentSelected && payload.port === currentSelected.port) {
           // Add error message to logs
           setLogs((prev) => [...prev, `[ERROR] ${payload.error}`].slice(-1000));
         }
       },
       onConfig: (payload) => {
         setServers(payload.servers || []);
-        if (payload.servers && payload.servers.length > 0 && !selectedServer) {
-          setSelectedServer(payload.servers[0]);
-        }
+        // Set selected server if not already set
+        setSelectedServer((prev) => prev || (payload.servers && payload.servers.length > 0 ? payload.servers[0] : null));
         setLoadingConfig(false);
       },
     });
 
-    // Request status and config
-    if (selectedServer) {
-      emitPreviewStatusRequest(socket, selectedServer.port);
-    }
     if (socket.connected) {
       emitPreviewConfigRequest(socket);
     }
@@ -107,10 +117,14 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({ socket, bridgeUrl, t
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
-      socket.off('preview:status');
-      socket.off('preview:log');
-      socket.off('preview:error');
+      unregisterHandlers();
     };
+  }, [socket]);
+
+  // Request status separately when selectedServer changes
+  useEffect(() => {
+    if (!socket || !selectedServer) return;
+    emitPreviewStatusRequest(socket, selectedServer.port);
   }, [socket, selectedServer]);
 
   const handleStart = () => {

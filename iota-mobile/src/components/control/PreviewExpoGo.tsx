@@ -13,14 +13,10 @@ export const PreviewExpoGo: React.FC<PreviewExpoGoProps> = ({ url, port }) => {
 
   const openExpoGo = async () => {
     try {
-      const supported = await Linking.canOpenURL(url);
-      if (supported) {
-        await Linking.openURL(url);
-      } else {
-        setShowDownloadModal(true);
-      }
+      // Bypass canOpenURL check as it returns false on iOS when scheme is not in LSApplicationQueriesSchemes
+      await Linking.openURL(url);
     } catch (error) {
-      console.error('Failed to open Expo Go URL:', error);
+      console.error('Failed to open Expo Go URL directly:', error);
       setShowDownloadModal(true);
     }
   };
