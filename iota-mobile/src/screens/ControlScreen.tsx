@@ -89,7 +89,6 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const [approvals, setApprovals] = useState<OpenCodeApprovalRequest[]>([]);
   const [running, setRunning] = useState(false);
   const [runStatusText, setRunStatusText] = useState<string | null>(null);
-  const [showBanner, setShowBanner] = useState(true);
   const [isSyncing, setIsSyncing] = useState(true);
 
   const [inputHeight, setInputHeight] = useState(44);
@@ -225,27 +224,12 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   }, [timelineItemsLength, running, runStatusText, showScrollToBottom]);
 
   const canSubmit = socketStatus === 'connected' && capability.canSubmit && !running && inputPrompt.trim().length > 0;
-  const statusText = socketStatus === 'connected' ? capability.details : socketStatus === 'connecting' ? 'Connecting to bridge...' : 'Disconnected from bridge';
-  const bannerText = (running && runStatusText) ? runStatusText : statusText;
 
   // ─── Refs sync ──────────────────────────────────────────────────────────
 
   useEffect(() => {
     conversationIdRef.current = conversationId;
   }, [conversationId]);
-
-  // ─── Banner auto-hide ───────────────────────────────────────────────────
-
-  useEffect(() => {
-    if (socketStatus === 'connected' && capability.status === 'available' && !running) {
-      const timer = setTimeout(() => {
-        setShowBanner(false);
-      }, 4000);
-      return () => clearTimeout(timer);
-    } else {
-      setShowBanner(true);
-    }
-  }, [socketStatus, capability.status, running]);
 
   // ─── Load conversation ID ──────────────────────────────────────────────
 
@@ -533,7 +517,6 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     setInputPrompt('');
     setRunning(true);
     setRunStatusText('Starting run...');
-    Keyboard.dismiss();
     
     // Force scroll to bottom when sending a message
     shouldScrollToBottomRef.current = true;
@@ -734,25 +717,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           </TouchableOpacity>
         </View>
 
-        {showBanner && (
-          <View style={styles.statusBanner}>
-            {capability.status === 'checking' || capability.status === 'installing' || (running && !runStatusText) ? (
-              <ActivityIndicator size="small" color={Theme.colors.primary.glow} />
-            ) : (
-              <MaterialIcons name={capability.canSubmit ? 'check-circle' : 'info'} size={18} color={capability.canSubmit ? Theme.colors.secondary.glow : Theme.colors.accent.glow} />
-            )}
-            {bannerText.endsWith('...') ? (
-              <AnimatedDotsText text={bannerText} style={styles.statusBannerText} numberOfLines={2} />
-            ) : (
-              <Text style={styles.statusBannerText} numberOfLines={2}>{bannerText}</Text>
-            )}
-            {running && conversationId && (
-              <TouchableOpacity style={styles.stopButton} onPress={handleStopOpenCode}>
-                <MaterialIcons name="stop" size={16} color={Theme.colors.accent.glow} />
-              </TouchableOpacity>
-            )}
-          </View>
-        )}
+
 
         {isOpenCodeReady ? (
           <>
@@ -783,6 +748,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               inputPrompt={inputPrompt}
               onChangePrompt={setInputPrompt}
               onSubmit={handleSubmitPrompt}
+              onStop={handleStopOpenCode}
               canSubmit={canSubmit}
               running={running}
               socketStatus={socketStatus}
@@ -897,29 +863,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  statusBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: Theme.colors.border,
-  },
-  statusBannerText: {
-    flex: 1,
-    color: Theme.colors.text.secondary,
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  stopButton: {
-    width: 32,
-    height: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 8,
-    backgroundColor: 'rgba(244, 63, 94, 0.12)',
-  },
+
   headerRight: {
     flexDirection: 'row',
     alignItems: 'center',

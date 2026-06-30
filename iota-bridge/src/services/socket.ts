@@ -396,17 +396,21 @@ export const initSocketIO = (server: HttpServer) => {
               if (watchdog) clearTimeout(watchdog);
               watchdog = setTimeout(() => {
                 if (firstActivity || finalized) return;
-                const message = `OpenCode ${status.phase === 'attached_run' ? 'attached' : 'direct'} run timed out without producing output.`;
+                const isAttached = status.phase === 'attached_run';
+                const message = `OpenCode ${isAttached ? 'attached' : 'direct'} run timed out without producing output.`;
                 logError(`[Socket] Output timeout triggered for ${status.phase} ${request.requestId}`);
                 handle?.stop();
-                emitRunStatus({ conversationId: conversation.id, requestId: request.requestId, phase: 'failed', message, retryable: true });
-                socket.emit('opencode:error', {
-                  conversationId: conversation.id,
-                  code: 'OPENCODE_FIRST_OUTPUT_TIMEOUT',
-                  message,
-                  retryable: true,
-                });
-                finalize(true, { errorSummary: message });
+                
+                if (!isAttached) {
+                  emitRunStatus({ conversationId: conversation.id, requestId: request.requestId, phase: 'failed', message, retryable: true });
+                  socket.emit('opencode:error', {
+                    conversationId: conversation.id,
+                    code: 'OPENCODE_FIRST_OUTPUT_TIMEOUT',
+                    message,
+                    retryable: true,
+                  });
+                  finalize(true, { errorSummary: message });
+                }
               }, FIRST_OUTPUT_TIMEOUT_MS);
             }
             emitRunStatus(status);

@@ -26,8 +26,10 @@ const checkPortReady = (port: number, host = '127.0.0.1', timeout = 3000): Promi
       }, (res) => {
         if (settled) return;
         settled = true;
-        logInfo(`[OpenCodeRunner] checkPortReady: successfully received HTTP response status=${res.statusCode} from ${host}:${port}`);
-        resolve(true); // Any response means the server is alive
+        const statusCode = res.statusCode ?? 0;
+        const isReady = statusCode >= 200 && statusCode < 300;
+        logInfo(`[OpenCodeRunner] checkPortReady: received HTTP response status=${statusCode} from ${host}:${port} — server ${isReady ? 'ready' : 'not ready (non-2xx)'}`);
+        resolve(isReady);
       });
 
       req.on('error', (err) => {
@@ -288,7 +290,6 @@ class OpenCodeRunner {
         });
 
         child.stderr?.on('data', (data) => {
-          options.onActivity?.();
           const text = String(data);
           stderrBytes += data.length;
           logError(`[OpenCode stderr] (${data.length}B, total=${stderrBytes}B) ${text.trim().slice(0, 500)}`);

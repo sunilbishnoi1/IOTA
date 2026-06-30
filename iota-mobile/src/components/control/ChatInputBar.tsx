@@ -23,6 +23,7 @@ interface ChatInputBarProps {
   inputPrompt: string;
   onChangePrompt: (text: string) => void;
   onSubmit: () => void;
+  onStop: () => void;
   canSubmit: boolean;
   running: boolean;
   socketStatus: SocketStatus;
@@ -40,6 +41,7 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
   inputPrompt,
   onChangePrompt,
   onSubmit,
+  onStop,
   canSubmit,
   running,
   socketStatus,
@@ -223,12 +225,12 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
               onContentSizeChange={(e) => {
                 onInputHeightChange(Math.min(180, Math.max(44, e.nativeEvent.contentSize.height + 12)));
               }}
-              editable={socketStatus === 'connected' && capability.canSubmit && !running && !isTranscribing}
+              editable={socketStatus === 'connected' && capability.canSubmit && !isTranscribing}
             />
           )}
 
           <View style={styles.actionButtonsContainer}>
-            {!!groqApiKey && !running && (
+            {!!groqApiKey && (
               <TouchableOpacity
                 style={[
                   styles.micButton,
@@ -251,13 +253,23 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
             )}
 
             {!isRecording && (
-              <TouchableOpacity 
-                style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]} 
-                onPress={onSubmit} 
-                disabled={!canSubmit || isTranscribing}
-              >
-                <MaterialIcons name="arrow-upward" size={20} color="#ffffff" />
-              </TouchableOpacity>
+              running ? (
+                <TouchableOpacity 
+                  style={[styles.submitButton, { backgroundColor: Theme.colors.accent.default }]} 
+                  onPress={onStop} 
+                  disabled={isTranscribing}
+                >
+                  <MaterialIcons name="stop" size={20} color="#ffffff" />
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity 
+                  style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]} 
+                  onPress={onSubmit} 
+                  disabled={!canSubmit || isTranscribing}
+                >
+                  <MaterialIcons name="arrow-upward" size={20} color="#ffffff" />
+                </TouchableOpacity>
+              )
             )}
           </View>
         </View>
