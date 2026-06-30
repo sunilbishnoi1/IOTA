@@ -1,16 +1,32 @@
 import { Socket } from 'socket.io-client';
 import { fetchWithTimeout } from './apiService';
 
+async function withRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt < retries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt), 4000);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      } else {
+        throw err;
+      }
+    }
+  }
+  throw new Error('Retry exhausted');
+}
+
 /**
  * Fetches the entire environment variable dictionary from the bridge via REST.
  */
 export async function fetchWorkspaceEnv(bridgeUrl: string, token: string): Promise<Record<string, string>> {
-  const response = await fetchWithTimeout(`${bridgeUrl}/api/workspace/env`, {
+  const response = await withRetry(() => fetchWithTimeout(`${bridgeUrl}/api/workspace/env`, {
     headers: {
       'Authorization': `Bearer ${token}`,
       'Accept': 'application/json',
     },
-  });
+  }));
   if (response.ok) {
     const data = await response.json();
     return data.env || {};
@@ -26,7 +42,7 @@ export async function saveWorkspaceEnv(
   token: string,
   env: Record<string, string>
 ): Promise<void> {
-  const response = await fetchWithTimeout(`${bridgeUrl}/api/workspace/env`, {
+  const response = await withRetry(() => fetchWithTimeout(`${bridgeUrl}/api/workspace/env`, {
     method: 'PUT',
     headers: {
       'Authorization': `Bearer ${token}`,
@@ -34,7 +50,7 @@ export async function saveWorkspaceEnv(
       'Accept': 'application/json',
     },
     body: JSON.stringify({ env }),
-  });
+  }));
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.error || `Failed to save environment variables: ${response.statusText}`);
@@ -50,7 +66,7 @@ export async function setWorkspaceEnvVar(
   key: string,
   value: string
 ): Promise<void> {
-  const response = await fetchWithTimeout(`${bridgeUrl}/api/workspace/env`, {
+  const response = await withRetry(() => fetchWithTimeout(`${bridgeUrl}/api/workspace/env`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${token}`,
@@ -58,7 +74,7 @@ export async function setWorkspaceEnvVar(
       'Accept': 'application/json',
     },
     body: JSON.stringify({ key, value }),
-  });
+  }));
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.error || `Failed to set environment variable: ${response.statusText}`);
@@ -73,13 +89,13 @@ export async function deleteWorkspaceEnvVar(
   token: string,
   key: string
 ): Promise<void> {
-  const response = await fetchWithTimeout(`${bridgeUrl}/api/workspace/env/${encodeURIComponent(key)}`, {
+  const response = await withRetry(() => fetchWithTimeout(`${bridgeUrl}/api/workspace/env/${encodeURIComponent(key)}`, {
     method: 'DELETE',
     headers: {
       'Authorization': `Bearer ${token}`,
       'Accept': 'application/json',
     },
-  });
+  }));
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.error || `Failed to delete environment variable: ${response.statusText}`);

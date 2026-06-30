@@ -108,6 +108,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const socketRef = useRef<Socket | null>(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [showEnvModal, setShowEnvModal] = useState(false);
+  const [envVars, setEnvVars] = useState<Record<string, string> | null>(null);
   const handleSlashCommand = useSlashCommands({
     messages,
     setMessages,
@@ -466,6 +467,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
         });
 
         registerEnvVarsSocketHandlers(socket, (updatedEnv) => {
+          setEnvVars(updatedEnv);
           secureStoreService.saveEnvVars(activeCodespace.id, updatedEnv);
         });
       } catch (err: any) {
@@ -801,10 +803,11 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             <EnvVarModal
               visible={showEnvModal}
               onClose={() => setShowEnvModal(false)}
-              bridgeUrl={bridgeUrl}
+              bridgeUrl={activeCodespace.connectionUrl || bridgeUrl}
               userToken={user.token}
               codespaceId={activeCodespace.id}
               socket={socketRef.current}
+              envVars={envVars}
             />
           </>
         ) : (

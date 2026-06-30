@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Modal,
   View,
@@ -28,6 +28,7 @@ interface EnvVarModalProps {
   userToken: string;
   codespaceId: string;
   socket?: Socket | null;
+  envVars?: Record<string, string> | null;
 }
 
 export const EnvVarModal: React.FC<EnvVarModalProps> = ({
@@ -37,9 +38,12 @@ export const EnvVarModal: React.FC<EnvVarModalProps> = ({
   userToken,
   codespaceId,
   socket,
+  envVars,
 }) => {
   const [env, setEnv] = useState<Record<string, string>>({});
-  const [loading, setLoading] = useState(false);
+  const [isFetching, setIsFetching] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const activeRef = useRef(true);
 
   // Form states
   const [keyInput, setKeyInput] = useState('');
@@ -53,33 +57,52 @@ export const EnvVarModal: React.FC<EnvVarModalProps> = ({
 
   // Fetch/load env variables
   const loadEnv = async () => {
-    setLoading(true);
+    if (!activeRef.current) return;
+    setIsFetching(true);
     try {
       // 1. Try loading from cache first for instant UX
       const cached = await secureStoreService.getEnvVars(codespaceId);
-      if (cached) {
+      if (activeRef.current && cached) {
         setEnv(cached);
       }
 
       // 2. Fetch from bridge REST endpoint
       const freshEnv = await fetchWorkspaceEnv(bridgeUrl, userToken);
-      setEnv(freshEnv);
+      if (activeRef.current) {
+        setEnv(freshEnv);
+      }
 
       // 3. Cache the fresh values
       await secureStoreService.saveEnvVars(codespaceId, freshEnv);
     } catch (err: any) {
       console.warn('Failed to load environment variables:', err);
+      if (activeRef.current) {
+        Alert.alert('Error', err.message || 'Failed to load environment variables');
+      }
     } finally {
-      setLoading(false);
+      if (activeRef.current) {
+        setIsFetching(false);
+      }
     }
   };
 
   useEffect(() => {
+    activeRef.current = true;
     if (visible) {
       loadEnv();
       resetForm();
     }
+    return () => {
+      activeRef.current = false;
+    };
   }, [visible, codespaceId]);
+
+  // Sync when parent receives real-time socket updates
+  useEffect(() => {
+    if (envVars && activeRef.current) {
+      setEnv(envVars);
+    }
+  }, [envVars]);
 
   const resetForm = () => {
     setKeyInput('');
@@ -111,11 +134,13 @@ export const EnvVarModal: React.FC<EnvVarModalProps> = ({
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
+            if (!activeRef.current) return;
             try {
-              setLoading(true);
+              setIsSaving(true);
               // Delete from bridge
               await deleteWorkspaceEnvVar(bridgeUrl, userToken, key);
               
+              if (!activeRef.current) return;
               // Update local state
               const nextEnv = { ...env };
               delete nextEnv[key];
@@ -129,9 +154,13 @@ export const EnvVarModal: React.FC<EnvVarModalProps> = ({
                 emitEnvVars(socket, nextEnv);
               }
             } catch (err: any) {
-              Alert.alert('Error', err.message || 'Failed to delete variable');
+              if (activeRef.current) {
+                Alert.alert('Error', err.message || 'Failed to delete variable');
+              }
             } finally {
-              setLoading(false);
+              if (activeRef.current) {
+                setIsSaving(false);
+              }
             }
           },
         },
@@ -154,19 +183,23 @@ export const EnvVarModal: React.FC<EnvVarModalProps> = ({
       return;
     }
 
+    if (!activeRef.current) return;
     try {
-      setLoading(true);
+      setIsSaving(true);
 
       // If we are editing and the key changed, we delete the original first
       if (isEditing && originalEditKey && originalEditKey !== trimmedKey) {
         await deleteWorkspaceEnvVar(bridgeUrl, userToken, originalEditKey);
+        if (!activeRef.current) return;
       }
 
       // Save new key/value
       await setWorkspaceEnvVar(bridgeUrl, userToken, trimmedKey, valueInput);
+      if (!activeRef.current) return;
 
       // Reload fresh env
       const freshEnv = await fetchWorkspaceEnv(bridgeUrl, userToken);
+      if (!activeRef.current) return;
       setEnv(freshEnv);
 
       // Update secureStore
@@ -179,9 +212,13 @@ export const EnvVarModal: React.FC<EnvVarModalProps> = ({
 
       resetForm();
     } catch (err: any) {
-      Alert.alert('Error', err.message || 'Failed to save variable');
+      if (activeRef.current) {
+        Alert.alert('Error', err.message || 'Failed to save variable');
+      }
     } finally {
-      setLoading(false);
+      if (activeRef.current) {
+        setIsSaving(false);
+      }
     }
   };
 
@@ -320,8 +357,8 @@ export const EnvVarModal: React.FC<EnvVarModalProps> = ({
                   <Text style={styles.cancelFormBtnText}>Cancel</Text>
                 </TouchableOpacity>
               )}
-              <TouchableOpacity style={styles.saveFormBtn} onPress={handleSave} disabled={loading}>
-                {loading ? (
+              <TouchableOpacity style={styles.saveFormBtn} onPress={handleSave} disabled={isSaving || isFetching}>
+                {isSaving ? (
                   <ActivityIndicator size="small" color="#ffffff" />
                 ) : (
                   <Text style={styles.saveFormBtnText}>
