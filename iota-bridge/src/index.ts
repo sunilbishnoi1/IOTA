@@ -6,6 +6,7 @@ import { initSocketIO } from './services/socket';
 import { requireAuth } from './middleware/auth';
 import statusRouter from './routes/status';
 import gitRouter from './routes/git';
+import envRouter from './routes/env';
 import { initLogger } from './services/logger';
 import { startKeepAliveBackgroundWorker } from './services/codespaceService';
 import { PreviewService } from './services/previewService';
@@ -30,9 +31,10 @@ app.use((req, res, next) => {
   next();
 });
 
-// Register status, codespace and git routes
+// Register status, codespace, git and env routes
 app.use('/api', statusRouter);
 app.use('/api', gitRouter);
+app.use('/api', envRouter);
 
 
 // Initialize Socket.io

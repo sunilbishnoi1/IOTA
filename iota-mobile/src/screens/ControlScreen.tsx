@@ -24,6 +24,8 @@ import {
   registerOpenCodeSocketHandlers,
 } from '../services/opencodeSocket';
 import { useSlashCommands, SlashCommandsAutocomplete, CredentialsModal } from '../components/control/ControlSlashCommands';
+import { EnvVarModal } from '../components/control/EnvVarModal';
+import { emitEnvVarsRequest, registerEnvVarsSocketHandlers } from '../services/envService';
 import { CodespaceVM } from '../types';
 import {
   OpenCodeApprovalRequest,
@@ -93,11 +95,19 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
 
   const [inputHeight, setInputHeight] = useState(44);
 
+  // Reset input height when input prompt is cleared or empty
+  useEffect(() => {
+    if (!inputPrompt) {
+      setInputHeight(44);
+    }
+  }, [inputPrompt]);
+
   const conversationScope = useMemo(() => sanitizeConversationScope(activeCodespace.id || activeCodespace.repositoryName || activeCodespace.connectionUrl || 'default'), [activeCodespace.id, activeCodespace.repositoryName, activeCodespace.connectionUrl]);
   const defaultConversationId = useMemo(() => `opencode-${conversationScope}`, [conversationScope]);
 
   const socketRef = useRef<Socket | null>(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
+  const [showEnvModal, setShowEnvModal] = useState(false);
   const handleSlashCommand = useSlashCommands({
     messages,
     setMessages,
@@ -366,6 +376,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           if (socket) {
             emitOpenCodeSync(socket, conversationIdRef.current || defaultConversationId);
             socket.emit('opencode:keepalive', { durationMinutes: keepAliveDuration });
+            emitEnvVarsRequest(socket);
           }
         });
  
@@ -388,7 +399,10 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
         registerOpenCodeSocketHandlers(socket, {
           onCapability: (payload) => setCapability(payload as OpenCodeCapabilityState),
           onSnapshot: ({ conversation }) => {
-            if (!conversation) return;
+            if (!conversation) {
+              setIsSyncing(false);
+              return;
+            }
             setConversationId(conversation.id);
             setSessionId(conversation.sessionId || conversation.opencodeSessionId);
 
@@ -449,6 +463,10 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             }]);
           },
 
+        });
+
+        registerEnvVarsSocketHandlers(socket, (updatedEnv) => {
+          secureStoreService.saveEnvVars(activeCodespace.id, updatedEnv);
         });
       } catch (err: any) {
         if (!active) return;
@@ -692,6 +710,13 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           <View style={styles.headerRight}>
             <TouchableOpacity
               style={[styles.iconButton, { marginRight: 8 }]}
+              onPress={() => setShowEnvModal(true)}
+              activeOpacity={0.7}
+            >
+              <MaterialIcons name="settings" size={20} color={Theme.colors.primary.glow} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.iconButton, { marginRight: 8 }]}
               onPress={onGoToPreview}
               activeOpacity={0.7}
             >
@@ -767,9 +792,18 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               }
             />
 
-            <CredentialsModal
+             <CredentialsModal
               visible={showConnectModal}
               onClose={() => setShowConnectModal(false)}
+              socket={socketRef.current}
+            />
+
+            <EnvVarModal
+              visible={showEnvModal}
+              onClose={() => setShowEnvModal(false)}
+              bridgeUrl={bridgeUrl}
+              userToken={user.token}
+              codespaceId={activeCodespace.id}
               socket={socketRef.current}
             />
           </>

@@ -21,6 +21,7 @@ function getLocalIpAddress(): string {
 }
 import { PreviewProcessState, PreviewServerConfig, PreviewStatus, PreviewWorkspaceConfig } from '../types/preview';
 import { getWorkspaceRoot, logInfo, logError } from './logger';
+import { EnvService } from './envService';
 
 const execAsync = promisify(exec);
 
@@ -195,6 +196,7 @@ export class PreviewService {
 
     const env: Record<string, string | undefined> = { 
       ...process.env,
+      ...EnvService.getInstance().getEnvVars(),
       WORKSPACE_ROOT: workspaceRoot,
       IOTA_WORKSPACE_ROOT: workspaceRoot,
       PORT: String(port),

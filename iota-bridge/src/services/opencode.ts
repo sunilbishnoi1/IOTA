@@ -5,6 +5,7 @@ import * as net from 'net';
 import * as http from 'http';
 import { OpenCodeCapabilityState, OpenCodeRunStatusEvent } from '../types/opencode';
 import { opencodeStore } from './opencodeStore';
+import { EnvService } from './envService';
 import { logInfo, logError, getWorkspaceRoot } from './logger';
 
 
@@ -699,6 +700,7 @@ class OpenCodeRunner {
   ): ChildProcess {
     const env = { 
       ...process.env, 
+      ...EnvService.getInstance().getEnvVars(),
       ...options.env, 
       WORKSPACE_ROOT: options.cwd,
       IOTA_WORKSPACE_ROOT: options.cwd,

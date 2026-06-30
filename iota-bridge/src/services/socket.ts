@@ -7,6 +7,7 @@ import { opencodeStore } from './opencodeStore';
 import { logInfo, logError, getWorkspaceRoot } from './logger';
 import { registerSelfKeepAlive, pokeSelfKeepAlive } from './codespaceService';
 import { PreviewService } from './previewService';
+import { EnvService } from './envService';
 import { PreviewServerConfig } from '../types/preview';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -37,6 +38,7 @@ export const initSocketIO = (server: HttpServer) => {
   });
   ioInstance = io;
   startPreviewConfigWatcher(io);
+  startEnvWatcher(io);
 
   io.use(async (socket: Socket, next: (err?: Error) => void) => {
     let token = socket.handshake.query.token as string;
@@ -611,6 +613,24 @@ export const initSocketIO = (server: HttpServer) => {
       opencodeStore.setCredentials(socket.id, newCredentials);
     });
 
+    socket.on('opencode:env_vars', (newEnv: Record<string, string>) => {
+      pokeSelfKeepAlive();
+      logInfo(`[Socket] Received opencode:env_vars updates for socket ${socket.id} (keys: ${JSON.stringify(Object.keys(newEnv))})`);
+      try {
+        EnvService.getInstance().saveEnvVars(newEnv);
+        io.emit('opencode:env_vars:update', { env: EnvService.getInstance().getEnvVars() });
+      } catch (err: any) {
+        logError(`Failed to save env vars via socket: ${err.message}`);
+        socket.emit('opencode:error', { error: err.message || String(err) });
+      }
+    });
+
+    socket.on('opencode:env_vars:request', () => {
+      pokeSelfKeepAlive();
+      logInfo(`[Socket] Received opencode:env_vars:request for socket ${socket.id}`);
+      socket.emit('opencode:env_vars:update', { env: EnvService.getInstance().getEnvVars() });
+    });
+
     // Preview Event Listeners
     socket.on('preview:start', async (payload: { port: number; command: string; cwd?: string; type: 'expo-go' | 'web' }) => {
       pokeSelfKeepAlive();
@@ -752,5 +772,52 @@ const startPreviewConfigWatcher = (io: Server) => {
     process.on('SIGTERM', () => watcher.close());
   } catch (err: any) {
     logError(`Failed to initialize fs.watch on ${configDir}: ${err.message}`);
+  }
+};
+
+const startEnvWatcher = (io: Server) => {
+  const rootDir = getWorkspaceRoot();
+  const configDir = path.join(rootDir, '.iota');
+  const envPath = path.join(configDir, 'env.json');
+
+  if (!fs.existsSync(configDir)) {
+    try {
+      fs.mkdirSync(configDir, { recursive: true });
+    } catch (err: any) {
+      logError(`Failed to create config directory ${configDir} for env watcher: ${err.message}`);
+      return;
+    }
+  }
+
+  let debounceTimeout: NodeJS.Timeout | null = null;
+  
+  logInfo(`[Watcher] Starting file watcher for ${envPath}`);
+
+  try {
+    const watcher = fs.watch(configDir, (eventType, filename) => {
+      if (filename === 'env.json') {
+        logInfo(`[Watcher] Detected ${eventType} change in ${filename}`);
+        
+        if (debounceTimeout) {
+          clearTimeout(debounceTimeout);
+        }
+        
+        debounceTimeout = setTimeout(() => {
+          try {
+            logInfo(`[Watcher] Reading updated environment variables`);
+            const env = EnvService.getInstance().reload();
+            logInfo(`[Watcher] Broadcasting updated environment variables to all connected clients`);
+            io.emit('opencode:env_vars:update', { env });
+          } catch (err: any) {
+            logError(`[Watcher] Error broadcasting updated env vars: ${err.message}`);
+          }
+        }, 300);
+      }
+    });
+
+    process.on('SIGINT', () => watcher.close());
+    process.on('SIGTERM', () => watcher.close());
+  } catch (err: any) {
+    logError(`Failed to initialize fs.watch on ${configDir} for env.json: ${err.message}`);
   }
 };

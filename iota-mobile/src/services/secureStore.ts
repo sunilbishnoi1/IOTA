@@ -5,73 +5,132 @@ const API_KEYS_PREFIX = 'iota_api_key_';
 const BRIDGE_URL_KEY = 'iota_bridge_url';
 const CONVERSATION_ID_PREFIX = 'iota_opencode_conversation_';
 
+const CHUNK_THRESHOLD = 1024;
+const CHUNK_PREFIX = '_chunk_';
+const CHUNK_META_KEY = `${CHUNK_PREFIX}meta`;
+
+async function secureSet(key: string, value: string): Promise<void> {
+  if (value.length <= CHUNK_THRESHOLD) {
+    await SecureStore.setItemAsync(key, value);
+    return;
+  }
+  const chunks: string[] = [];
+  for (let i = 0; i < value.length; i += CHUNK_THRESHOLD) {
+    chunks.push(value.substring(i, i + CHUNK_THRESHOLD));
+  }
+  await SecureStore.setItemAsync(`${key}${CHUNK_META_KEY}`, String(chunks.length));
+  const writes = chunks.map((chunk, i) =>
+    SecureStore.setItemAsync(`${key}${CHUNK_PREFIX}${i}`, chunk)
+  );
+  await Promise.all(writes);
+  await SecureStore.deleteItemAsync(key).catch(() => undefined);
+}
+
+async function secureGet(key: string): Promise<string | null> {
+  const metaKey = `${key}${CHUNK_META_KEY}`;
+  const [meta, direct] = await Promise.all([
+    SecureStore.getItemAsync(metaKey),
+    SecureStore.getItemAsync(key),
+  ]);
+  if (meta !== null) {
+    const chunkCount = parseInt(meta, 10);
+    if (isNaN(chunkCount) || chunkCount <= 0) return direct;
+    const parts: string[] = [];
+    for (let i = 0; i < chunkCount; i++) {
+      const part = await SecureStore.getItemAsync(`${key}${CHUNK_PREFIX}${i}`);
+      if (part === null) return direct;
+      parts.push(part);
+    }
+    return parts.join('');
+  }
+  return direct;
+}
+
+async function secureDelete(key: string): Promise<void> {
+  const metaKey = `${key}${CHUNK_META_KEY}`;
+  const meta = await SecureStore.getItemAsync(metaKey);
+  if (meta !== null) {
+    const chunkCount = parseInt(meta, 10);
+    if (!isNaN(chunkCount) && chunkCount > 0) {
+      const deletions: Promise<void>[] = [];
+      for (let i = 0; i < chunkCount; i++) {
+        deletions.push(SecureStore.deleteItemAsync(`${key}${CHUNK_PREFIX}${i}`).catch(() => undefined));
+      }
+      deletions.push(SecureStore.deleteItemAsync(metaKey).catch(() => undefined));
+      await Promise.all(deletions);
+    }
+  }
+  await SecureStore.deleteItemAsync(key).catch(() => undefined);
+}
+
 export const secureStoreService = {
   async saveGithubToken(token: string): Promise<void> {
-    await SecureStore.setItemAsync(GITHUB_TOKEN_KEY, token);
+    await secureSet(GITHUB_TOKEN_KEY, token);
   },
 
   async getGithubToken(): Promise<string | null> {
-    return await SecureStore.getItemAsync(GITHUB_TOKEN_KEY);
+    return await secureGet(GITHUB_TOKEN_KEY);
   },
 
   async deleteGithubToken(): Promise<void> {
-    await SecureStore.deleteItemAsync(GITHUB_TOKEN_KEY);
+    await secureDelete(GITHUB_TOKEN_KEY);
   },
 
   async saveApiKey(provider: string, key: string): Promise<void> {
-    await SecureStore.setItemAsync(`${API_KEYS_PREFIX}${provider}`, key);
+    await secureSet(`${API_KEYS_PREFIX}${provider}`, key);
   },
 
   async getApiKey(provider: string): Promise<string | null> {
-    return await SecureStore.getItemAsync(`${API_KEYS_PREFIX}${provider}`);
+    return await secureGet(`${API_KEYS_PREFIX}${provider}`);
   },
 
   async deleteApiKey(provider: string): Promise<void> {
-    await SecureStore.deleteItemAsync(`${API_KEYS_PREFIX}${provider}`);
+    await secureDelete(`${API_KEYS_PREFIX}${provider}`);
   },
 
   async saveBridgeUrl(url: string): Promise<void> {
-    await SecureStore.setItemAsync(BRIDGE_URL_KEY, url);
+    await secureSet(BRIDGE_URL_KEY, url);
   },
 
   async getBridgeUrl(): Promise<string | null> {
-    return await SecureStore.getItemAsync(BRIDGE_URL_KEY);
+    return await secureGet(BRIDGE_URL_KEY);
   },
 
   async deleteBridgeUrl(): Promise<void> {
-    await SecureStore.deleteItemAsync(BRIDGE_URL_KEY);
+    await secureDelete(BRIDGE_URL_KEY);
   },
 
   async saveOpenCodeConversationId(scope: string, conversationId: string): Promise<void> {
-    await SecureStore.setItemAsync(`${CONVERSATION_ID_PREFIX}${scope}`, conversationId);
+    await secureSet(`${CONVERSATION_ID_PREFIX}${scope}`, conversationId);
   },
 
   async getOpenCodeConversationId(scope: string): Promise<string | null> {
-    return await SecureStore.getItemAsync(`${CONVERSATION_ID_PREFIX}${scope}`);
+    return await secureGet(`${CONVERSATION_ID_PREFIX}${scope}`);
   },
+
   async saveOriginalBridgeUrl(url: string): Promise<void> {
-    await SecureStore.setItemAsync('iota_original_bridge_url', url);
+    await secureSet('iota_original_bridge_url', url);
   },
 
   async getOriginalBridgeUrl(): Promise<string | null> {
-    return await SecureStore.getItemAsync('iota_original_bridge_url');
+    return await secureGet('iota_original_bridge_url');
   },
 
   async saveKeepAliveDuration(duration: number): Promise<void> {
-    await SecureStore.setItemAsync('iota_keep_alive_duration', duration.toString());
+    await secureSet('iota_keep_alive_duration', duration.toString());
   },
 
   async getKeepAliveDuration(): Promise<number | null> {
-    const val = await SecureStore.getItemAsync('iota_keep_alive_duration');
+    const val = await secureGet('iota_keep_alive_duration');
     return val !== null ? parseInt(val, 10) : null;
   },
 
   async saveDeveloperModeEnabled(enabled: boolean): Promise<void> {
-    await SecureStore.setItemAsync('iota_developer_mode_enabled', enabled ? 'true' : 'false');
+    await secureSet('iota_developer_mode_enabled', enabled ? 'true' : 'false');
   },
 
   async getDeveloperModeEnabled(): Promise<boolean | null> {
-    const val = await SecureStore.getItemAsync('iota_developer_mode_enabled');
+    const val = await secureGet('iota_developer_mode_enabled');
     return val !== null ? val === 'true' : null;
   },
 
@@ -97,7 +156,7 @@ export const secureStoreService = {
         u: cs.connectionUrl,
         rs: cs.rawState,
       }));
-      await SecureStore.setItemAsync('iota_codespaces_cache', JSON.stringify(minimal));
+      await secureSet('iota_codespaces_cache', JSON.stringify(minimal));
     } catch (e) {
       console.warn('Failed to save codespaces cache:', e);
     }
@@ -105,7 +164,7 @@ export const secureStoreService = {
 
   async getCodespacesCache(): Promise<any[] | null> {
     try {
-      const val = await SecureStore.getItemAsync('iota_codespaces_cache');
+      const val = await secureGet('iota_codespaces_cache');
       if (!val) return null;
       const minimal = JSON.parse(val);
       if (!Array.isArray(minimal)) return null;
@@ -133,7 +192,7 @@ export const secureStoreService = {
         created: msg.createdAt,
         status: msg.status,
       }));
-      await SecureStore.setItemAsync(`iota_chat_cache_${scope}`, JSON.stringify(slice));
+      await secureSet(`iota_chat_cache_${scope}`, JSON.stringify(slice));
     } catch (e) {
       console.warn('Failed to save chat cache:', e);
     }
@@ -141,13 +200,12 @@ export const secureStoreService = {
 
   async getChatCache(scope: string): Promise<any[] | null> {
     try {
-      const val = await SecureStore.getItemAsync(`iota_chat_cache_${scope}`);
+      const val = await secureGet(`iota_chat_cache_${scope}`);
       if (!val) return null;
       const parsed = JSON.parse(val);
       if (!Array.isArray(parsed)) return null;
       return parsed.map((msg: any) => ({
         id: msg.id,
-        conversationId: `opencode-${scope}`,
         role: msg.role,
         content: msg.content,
         createdAt: msg.created,
@@ -159,12 +217,39 @@ export const secureStoreService = {
     }
   },
 
+  async saveEnvVars(codespaceId: string, env: Record<string, string>): Promise<void> {
+    try {
+      await secureSet(`iota_env_vars_${codespaceId}`, JSON.stringify(env));
+    } catch (e) {
+      console.warn('Failed to save env vars cache:', e);
+    }
+  },
+
+  async getEnvVars(codespaceId: string): Promise<Record<string, string> | null> {
+    try {
+      const val = await secureGet(`iota_env_vars_${codespaceId}`);
+      if (!val) return null;
+      return JSON.parse(val);
+    } catch (e) {
+      console.warn('Failed to get env vars cache:', e);
+      return null;
+    }
+  },
+
+  async deleteEnvVars(codespaceId: string): Promise<void> {
+    try {
+      await secureDelete(`iota_env_vars_${codespaceId}`);
+    } catch (e) {
+      console.warn('Failed to delete env vars cache:', e);
+    }
+  },
+
   async clearAll(): Promise<void> {
     await this.deleteGithubToken();
     const providers = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GROQ_API_KEY', 'OPENROUTER_API_KEY'];
     for (const provider of providers) {
       await this.deleteApiKey(provider);
     }
-    await SecureStore.deleteItemAsync('iota_codespaces_cache').catch(() => undefined);
+    await secureDelete('iota_codespaces_cache');
   }
 };
