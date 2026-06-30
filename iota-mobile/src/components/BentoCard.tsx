@@ -105,8 +105,8 @@ export const BentoCard: React.FC<BentoCardProps> = ({ item, onPowerToggle, onDel
         styles.card,
         isActive && styles.activeCard,
       ]}
-      onPress={() => (isActive || item.id === 'local-workspace') && onPress(item)}
-      activeOpacity={(isActive || item.id === 'local-workspace') ? 0.7 : 0.95}
+      onPress={() => (isActive || isStarting || item.id === 'local-workspace') && onPress(item)}
+      activeOpacity={(isActive || isStarting || item.id === 'local-workspace') ? 0.7 : 0.95}
     >
       <View style={styles.cardHeader}>
         <View style={styles.statusIndicator}>
@@ -209,10 +209,10 @@ export const BentoCard: React.FC<BentoCardProps> = ({ item, onPowerToggle, onDel
         <Text style={styles.computeText}>
           {item.id === 'local-workspace' ? 'Unlimited Hours' : `${item.freeHoursRemaining} / 60 hrs free`}
         </Text>
-        {(isActive || item.id === 'local-workspace') && (
+        {(isActive || isStarting || item.id === 'local-workspace') && (
           <View style={styles.connectLink}>
             <Text style={styles.connectLinkText}>
-              {item.id === 'local-workspace' && !isActive ? 'Connect Setup' : 'Enter Workspace'}
+              {item.id === 'local-workspace' && !isActive ? 'Connect Setup' : (isStarting ? 'Connecting...' : 'Enter Workspace')}
             </Text>
             <MaterialIcons name="chevron-right" size={16} color={Theme.colors.primary.glow} />
           </View>

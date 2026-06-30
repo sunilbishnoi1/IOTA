@@ -8,6 +8,7 @@ import statusRouter from './routes/status';
 import gitRouter from './routes/git';
 import { initLogger } from './services/logger';
 import { startKeepAliveBackgroundWorker } from './services/codespaceService';
+import { PreviewService } from './services/previewService';
 
 dotenv.config();
 initLogger();
@@ -57,4 +58,10 @@ server.listen(PORT, () => {
   const localIp = getLocalIpAddress();
   console.log(`IOTA Bridge server listening on port ${PORT}`);
   console.log(`Local Dev Mode: configure your mobile app's Bridge URL to: http://${localIp}:${PORT}`);
+
+  // Set port to public visibility inside GitHub Codespace to bypass proxy auth issues
+  const portNumber = Number(PORT);
+  PreviewService.getInstance().setPortVisibility(portNumber, 'public')
+    .then(() => console.log(`[Bridge] Port ${portNumber} visibility set to public successfully`))
+    .catch((err: any) => console.warn(`[Bridge] Failed to set port ${portNumber} visibility to public:`, err.message || err));
 });

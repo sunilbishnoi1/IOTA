@@ -288,7 +288,17 @@ export const PreviewScreen: React.FC<PreviewScreenProps> = ({
   };
 
   const handleCopyPrompt = async () => {
-    const prompt = `Analyze the repository, identify the development servers and application types (e.g. React Native/Expo, Vite, Next.js, Flutter Web, or static HTML), and configure the workspace preview configuration file at \`.iota/preview.json\`.
+    const prompt = `Analyze the repository, identify the development servers and application types (e.g. React Native/Expo, Vite, Next.js, Flask/Django Python, Flutter Web, or static HTML), and configure the workspace preview configuration file at \`.iota/preview.json\`.
+
+Before finalizing the configuration, perform the following setup steps:
+1. Dependency Verification: Check if dependencies are installed (e.g. node_modules, python packages). If missing, run the appropriate setup/install command (e.g. 'npm install', 'pip install -r requirements.txt').
+2. Environment & App Fixes:
+   - Next.js with Turbopack: Ensure Turbopack does not fail due to workspace root inference. If running next dev, either configure \`turbopack.root\` in \`next.config.js\` or add the \`--no-turbo\` flag to the command.
+   - Python / Flask: Ensure virtual environments are activated or invoke the python interpreter module launcher (\`python -m flask run\` instead of \`flask run\`).
+3. Codespaces Port Constraints: You MUST configure the preview server to use:
+   - Web Apps: Port 3001 or 3002.
+   - Expo Go Apps: Port 8082 or 8083.
+   These ports are pre-forwarded as public in devcontainer.json. Do NOT use other ports.
 
 The \`.iota/preview.json\` file expects this format:
 {
@@ -297,18 +307,13 @@ The \`.iota/preview.json\` file expects this format:
       "name": "User-friendly Server Name",
       "cwd": "subdirectory relative to workspace root (e.g. '.' or 'frontend')",
       "command": "command to start dev server (e.g. 'npm run dev')",
-      "port": 3001, // NOTE: Use 3001 or 3002 for web apps. Use 8082 or 8083 for Expo Go apps.
-      "type": "web" // 'web' or 'expo-go'
+      "port": 3001,
+      "type": "web"
     }
   ]
 }
 
-CRITICAL FOR CODESPACES: GitHub Codespaces blocks arbitrary ports. You MUST configure the preview server to use:
-- Web Apps: Port 3001 or 3002.
-- Expo Go Apps: Port 8082 or 8083.
-These ports are pre-forwarded as public in devcontainer.json. Do NOT use other ports.
-
-Once you have auto-detected and configured the correct servers, write the configuration to \`.iota/preview.json\` and make sure to remove the "isPlaceholder": true field from the JSON root.`;
+Once you have completed all setup and configuration steps, write the final configuration to \`.iota/preview.json\` and make sure to remove the "isPlaceholder": true field from the JSON root.`;
 
     await Clipboard.setStringAsync(prompt);
     setPromptCopied(true);
@@ -428,7 +433,17 @@ Once you have auto-detected and configured the correct servers, write the config
               
               <View style={styles.promptBox}>
                 <Text style={styles.promptText} selectable={true}>
-                  {`Analyze the repository, identify the development servers and application types (e.g. React Native/Expo, Vite, Next.js, Flutter Web, or static HTML), and configure the workspace preview configuration file at \`.iota/preview.json\`.
+                  {`Analyze the repository, identify the development servers and application types (e.g. React Native/Expo, Vite, Next.js, Flask/Django Python, Flutter Web, or static HTML), and configure the workspace preview configuration file at \`.iota/preview.json\`.
+
+Before finalizing the configuration, perform the following setup steps:
+1. Dependency Verification: Check if dependencies are installed (e.g. node_modules, python packages). If missing, run the appropriate setup/install command (e.g. 'npm install', 'pip install -r requirements.txt').
+2. Environment & App Fixes:
+   - Next.js with Turbopack: Ensure Turbopack does not fail due to workspace root inference. If running next dev, either configure \`turbopack.root\` in \`next.config.js\` or add the \`--no-turbo\` flag to the command.
+   - Python / Flask: Ensure virtual environments are activated or invoke the python interpreter module launcher (\`python -m flask run\` instead of \`flask run\`).
+3. Codespaces Port Constraints: You MUST configure the preview server to use:
+   - Web Apps: Port 3001 or 3002.
+   - Expo Go Apps: Port 8082 or 8083.
+   These ports are pre-forwarded as public in devcontainer.json. Do NOT use other ports.
 
 The \`.iota/preview.json\` file expects this format:
 {
@@ -437,18 +452,13 @@ The \`.iota/preview.json\` file expects this format:
       "name": "User-friendly Server Name",
       "cwd": "subdirectory relative to workspace root (e.g. '.' or 'frontend')",
       "command": "command to start dev server (e.g. 'npm run dev')",
-      "port": 3001, // NOTE: Use 3001 or 3002 for web apps. Use 8082 or 8083 for Expo Go apps.
-      "type": "web" // 'web' or 'expo-go'
+      "port": 3001,
+      "type": "web"
     }
   ]
 }
 
-CRITICAL FOR CODESPACES: GitHub Codespaces blocks arbitrary ports. You MUST configure the preview server to use:
-- Web Apps: Port 3001, or 3002.
-- Expo Go Apps: Port 8082 or 8083.
-These ports are pre-forwarded as public in devcontainer.json. Do NOT use other ports.
-
-Once you have auto-detected and configured the correct servers, write the configuration to \`.iota/preview.json\` and make sure to remove the "isPlaceholder": true field from the JSON root.`}
+Once you have completed all setup and configuration steps, write the final configuration to \`.iota/preview.json\` and make sure to remove the "isPlaceholder": true field from the JSON root.`}
                 </Text>
               </View>
 

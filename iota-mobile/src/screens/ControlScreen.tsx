@@ -265,6 +265,27 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     return () => { active = false; };
   }, [conversationScope, defaultConversationId]);
 
+  // Load cached chat messages on mount
+  useEffect(() => {
+    let active = true;
+    async function loadCachedChat() {
+      const cached = await secureStoreService.getChatCache(conversationScope);
+      if (active && cached && cached.length > 0) {
+        setMessages((prev) => (prev.length === 0 ? cached : prev));
+        setIsSyncing(false);
+      }
+    }
+    loadCachedChat();
+    return () => { active = false; };
+  }, [conversationScope]);
+
+  // Save chat messages to cache whenever they change
+  useEffect(() => {
+    if (messages.length > 0) {
+      secureStoreService.saveChatCache(conversationScope, messages).catch(() => undefined);
+    }
+  }, [messages, conversationScope]);
+
   // ─── Check capability ─────────────────────────────────────────────────
 
   const checkCapability = async () => {
@@ -670,7 +691,20 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           </TouchableOpacity>
           <View style={styles.headerTitleContainer}>
             <Text style={styles.headerTitle}>IOTA</Text>
-            <View style={[styles.socketStatusDot, { backgroundColor: socketStatus === 'connected' ? Theme.colors.secondary.default : socketStatus === 'connecting' ? '#f59e0b' : Theme.colors.accent.default }]} />
+            <View style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              backgroundColor: socketStatus === 'connected' ? 'rgba(16, 185, 129, 0.1)' : socketStatus === 'connecting' ? 'rgba(245, 158, 11, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+              paddingHorizontal: 6,
+              paddingVertical: 2,
+              borderRadius: 10,
+              gap: 4
+            }}>
+              <View style={[styles.socketStatusDot, { backgroundColor: socketStatus === 'connected' ? Theme.colors.secondary.default : socketStatus === 'connecting' ? '#f59e0b' : Theme.colors.accent.default }]} />
+              <Text style={{ fontSize: 10, fontWeight: '600', color: socketStatus === 'connected' ? Theme.colors.secondary.default : socketStatus === 'connecting' ? '#f59e0b' : Theme.colors.accent.default }}>
+                {socketStatus === 'connected' ? 'Connected' : socketStatus === 'connecting' ? 'Connecting...' : 'Offline'}
+              </Text>
+            </View>
           </View>
           <View style={styles.headerRight}>
             <TouchableOpacity

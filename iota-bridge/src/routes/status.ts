@@ -215,7 +215,8 @@ router.post('/repos/setup-devcontainer', requireAuth, async (req: AuthenticatedR
           "visibility": "public"
         }
       },
-      postStartCommand: "node -e \"const { spawn } = require('child_process'); const fs = require('fs'); const out = fs.openSync('./bridge.log', 'a'); const child = spawn('bash', ['-c', 'git clone https://github.com/sunilbishnoi1/IOTA.git /tmp/iota && cd /tmp/iota/iota-bridge && npm install && npm run dev'], { detached: true, stdio: ['ignore', out, out] }); child.unref();\""
+      postCreateCommand: "git clone https://github.com/sunilbishnoi1/IOTA.git /tmp/iota && cd /tmp/iota/iota-bridge && npm install",
+      postStartCommand: "node -e \"const { spawn } = require('child_process'); const fs = require('fs'); const out = fs.openSync('./bridge.log', 'a'); const child = spawn('bash', ['-c', 'cd /tmp/iota/iota-bridge && npm run dev'], { detached: true, stdio: ['ignore', out, out] }); child.unref();\""
     };
 
     const contentStr = JSON.stringify(devcontainerContent, null, 2);

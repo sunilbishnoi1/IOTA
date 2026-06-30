@@ -87,11 +87,84 @@ export const secureStoreService = {
     return keys;
   },
 
+  async saveCodespacesCache(codespaces: any[]): Promise<void> {
+    try {
+      const minimal = codespaces.map((cs) => ({
+        id: cs.id,
+        r: cs.repositoryName,
+        b: cs.branchName,
+        s: cs.status,
+        u: cs.connectionUrl,
+        rs: cs.rawState,
+      }));
+      await SecureStore.setItemAsync('iota_codespaces_cache', JSON.stringify(minimal));
+    } catch (e) {
+      console.warn('Failed to save codespaces cache:', e);
+    }
+  },
+
+  async getCodespacesCache(): Promise<any[] | null> {
+    try {
+      const val = await SecureStore.getItemAsync('iota_codespaces_cache');
+      if (!val) return null;
+      const minimal = JSON.parse(val);
+      if (!Array.isArray(minimal)) return null;
+      return minimal.map((cs: any) => ({
+        id: cs.id,
+        repositoryName: cs.r,
+        branchName: cs.b,
+        status: cs.s,
+        connectionUrl: cs.u,
+        rawState: cs.rs || cs.s,
+        freeHoursRemaining: 12.0,
+      }));
+    } catch (e) {
+      console.warn('Failed to get codespaces cache:', e);
+      return null;
+    }
+  },
+
+  async saveChatCache(scope: string, messages: any[]): Promise<void> {
+    try {
+      const slice = messages.slice(-30).map((msg) => ({
+        id: msg.id,
+        role: msg.role,
+        content: msg.content,
+        created: msg.createdAt,
+        status: msg.status,
+      }));
+      await SecureStore.setItemAsync(`iota_chat_cache_${scope}`, JSON.stringify(slice));
+    } catch (e) {
+      console.warn('Failed to save chat cache:', e);
+    }
+  },
+
+  async getChatCache(scope: string): Promise<any[] | null> {
+    try {
+      const val = await SecureStore.getItemAsync(`iota_chat_cache_${scope}`);
+      if (!val) return null;
+      const parsed = JSON.parse(val);
+      if (!Array.isArray(parsed)) return null;
+      return parsed.map((msg: any) => ({
+        id: msg.id,
+        conversationId: `opencode-${scope}`,
+        role: msg.role,
+        content: msg.content,
+        createdAt: msg.created,
+        status: msg.status || 'complete',
+      }));
+    } catch (e) {
+      console.warn('Failed to get chat cache:', e);
+      return null;
+    }
+  },
+
   async clearAll(): Promise<void> {
     await this.deleteGithubToken();
     const providers = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GROQ_API_KEY', 'OPENROUTER_API_KEY'];
     for (const provider of providers) {
       await this.deleteApiKey(provider);
     }
+    await SecureStore.deleteItemAsync('iota_codespaces_cache').catch(() => undefined);
   }
 };

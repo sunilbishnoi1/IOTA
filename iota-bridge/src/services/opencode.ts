@@ -384,6 +384,13 @@ class OpenCodeRunner {
       if (warm) return { ready: true, url: OPENCODE_URL, details: 'OpenCode server is listening' };
       logInfo(`[OpenCodeRunner] ensureServer: existing server is stale, clearing`);
       this.clearStaleServer();
+    } else {
+      // If we don't have an active serveProcess, but the port is listening, it is an orphaned daemon. Clear it!
+      const activeOrphaned = await checkPortReady(OPENCODE_PORT, '127.0.0.1', 500);
+      if (activeOrphaned) {
+        logInfo(`[OpenCodeRunner] ensureServer: detected orphaned opencode daemon on port ${OPENCODE_PORT}, killing it`);
+        await this.killProcessOnPort(OPENCODE_PORT);
+      }
     }
 
     const available = await this.commandExists('opencode');
@@ -431,6 +438,33 @@ class OpenCodeRunner {
       // Process is already gone.
     }
     this.serveProcess = null;
+  }
+
+  private async killProcessOnPort(port: number): Promise<void> {
+    logInfo(`[OpenCodeRunner] Attempting to kill any process occupying port ${port}`);
+    const isWin = process.platform === 'win32';
+    try {
+      const { exec } = require('child_process');
+      const { promisify } = require('util');
+      const execAsync = promisify(exec);
+      if (isWin) {
+        const { stdout } = await execAsync(`netstat -ano | findstr :${port} | findstr LISTENING`);
+        const lines = stdout.split('\n').map((l: string) => l.trim()).filter(Boolean);
+        for (const line of lines) {
+          const parts = line.split(/\s+/);
+          const pid = parts[parts.length - 1];
+          if (pid && !isNaN(Number(pid)) && Number(pid) > 0) {
+            logInfo(`[OpenCodeRunner] Killing process with PID ${pid} on port ${port}`);
+            await execAsync(`taskkill /F /PID ${pid}`).catch(() => undefined);
+          }
+        }
+      } else {
+        await execAsync(`lsof -t -sTCP:LISTEN -i :${port} | xargs kill -9`);
+        logInfo(`[OpenCodeRunner] Killed process on port ${port} via lsof`);
+      }
+    } catch (err: any) {
+      logError(`[OpenCodeRunner] Failed to kill process on port ${port}: ${err.message || err}`);
+    }
   }
 
   public async listSessions(): Promise<unknown[]> {

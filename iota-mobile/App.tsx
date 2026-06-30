@@ -224,8 +224,9 @@ export default function App() {
 
       // Collect all active codespaces from dashboard list and opened workspaces
       const merged = new Map<string, CodespaceVM>();
-      allCodespaces.forEach(cs => merged.set(cs.id, cs));
       Object.values(openedWorkspaces).forEach(cs => merged.set(cs.id, cs));
+      allCodespaces.forEach(cs => merged.set(cs.id, cs)); // Freshest list from dashboard overwrites openedWorkspaces status
+      
       const activeCodespaces = Array.from(merged.values()).filter(
         (cs) => cs.status === 'active' && cs.id !== 'local-workspace'
       );

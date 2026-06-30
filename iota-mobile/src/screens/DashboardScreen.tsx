@@ -72,6 +72,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   const [codespaces, setCodespaces] = useState<CodespaceVM[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [syncing, setSyncing] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [repositories, setRepositories] = useState<GitHubRepository[]>([]);
   const [reposLoading, setReposLoading] = useState<boolean>(false);
@@ -238,6 +239,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   // Fetch codespaces list from bridge
   const fetchCodespaces = useCallback(async (isSilent = false, customUrl?: string) => {
     if (!isSilent) setLoading(true);
+    else setSyncing(true);
     setErrorMsg(null);
     const targetUrl = customUrl || bridgeUrl;
     
@@ -282,10 +284,13 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
     }
 
     setCodespaces(finalCodespaces);
+    // Cache remote codespaces to SecureStore
+    const remoteOnly = finalCodespaces.filter(cs => cs.id !== 'local-workspace');
+    secureStoreService.saveCodespacesCache(remoteOnly).catch(() => undefined);
 
-    // Start polling for any starting remote codespaces
+    // Start polling for any starting or stopping remote codespaces
     fetchedCodespaces.forEach((cs: CodespaceVM) => {
-      if (cs.status === 'starting' && !pollingIntervals.current[cs.id]) {
+      if ((cs.status === 'starting' || cs.status === 'stopping') && !pollingIntervals.current[cs.id]) {
         startPollingCodespace(cs.id);
       }
     });
@@ -298,11 +303,27 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
     }
 
     if (!isSilent) setLoading(false);
+    setSyncing(false);
     setRefreshing(false);
   }, [bridgeUrl, user.token, developerModeEnabled, onRefreshBridge]);
 
+  // Load cached codespaces on mount
   useEffect(() => {
-    fetchCodespaces(false);
+    let active = true;
+    async function loadCached() {
+      const cached = await secureStoreService.getCodespacesCache();
+      if (active && cached && cached.length > 0) {
+        setCodespaces(cached);
+        setLoading(false);
+      }
+    }
+    loadCached();
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const isSilent = codespaces.length > 0;
+    fetchCodespaces(isSilent);
   }, [bridgeUrl]);
 
   // Manage polling and fetch when visibility changes
@@ -452,8 +473,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
 
       try {
         await stopUserCodespace(bridgeUrl, user.token, id, isBridgeActive);
-        // Poll or refresh status to confirm sleep
-        fetchCodespaces(true);
+        startPollingCodespace(id);
       } catch (err) {
         console.warn(`Failed to stop codespace ${id}:`, err);
         fetchCodespaces(true);
@@ -515,7 +535,12 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
         </TouchableOpacity>
       </View>
 
-      <Text style={styles.matrixTitle}>Container Matrix</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        <Text style={styles.matrixTitle}>Container Matrix</Text>
+        {syncing && (
+          <ActivityIndicator size="small" color={Theme.colors.primary.glow} style={{ marginLeft: 8 }} />
+        )}
+      </View>
     </View>
   );
 

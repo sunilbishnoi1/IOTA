@@ -1,4 +1,5 @@
 import * as os from 'os';
+import * as pty from 'node-pty';
 import { getOctokitClient } from './github';
 import { CodespaceVM, CodespaceStatus, GitHubRepository } from '../types';
 
@@ -170,6 +171,47 @@ export function pokeSelfKeepAlive() {
   }
 }
 
+let keepAlivePtyProcess: pty.IPty | null = null;
+
+function ensureKeepAlivePty() {
+  if (keepAlivePtyProcess) return;
+  try {
+    const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
+    console.log(`[Keep-Alive Manager] Spawning keepalive PTY shell: ${shell}`);
+    keepAlivePtyProcess = pty.spawn(shell, [], {
+      name: 'xterm-color',
+      cols: 80,
+      rows: 24,
+      cwd: process.cwd(),
+      env: process.env,
+    });
+    
+    keepAlivePtyProcess.onData(() => {
+      // Consume output to prevent buffer clog
+    });
+
+    keepAlivePtyProcess.onExit(() => {
+      console.log(`[Keep-Alive Manager] Keepalive PTY shell exited`);
+      keepAlivePtyProcess = null;
+    });
+  } catch (err: any) {
+    console.error(`[Keep-Alive Manager] Failed to spawn keepalive PTY:`, err.message || err);
+  }
+}
+
+function writePtyKeepAliveActivity() {
+  ensureKeepAlivePty();
+  if (keepAlivePtyProcess) {
+    try {
+      console.log(`[Keep-Alive Manager] Generating PTY terminal output to prevent idle timeout...`);
+      keepAlivePtyProcess.write(`echo "iota-keepalive-tick: $(date)"\n`);
+    } catch (err: any) {
+      console.error(`[Keep-Alive Manager] Failed to write to PTY:`, err.message || err);
+      keepAlivePtyProcess = null;
+    }
+  }
+}
+
 export function startKeepAliveBackgroundWorker() {
   if (selfKeepAliveInterval) return;
   
@@ -188,13 +230,20 @@ export function startKeepAliveBackgroundWorker() {
       if (selfKeepAliveDuration > 0) {
         console.log('[Keep-Alive Manager] Keep-alive period expired. Letting Codespace sleep naturally.');
         selfKeepAliveDuration = 0;
+        if (keepAlivePtyProcess) {
+          try {
+            keepAlivePtyProcess.kill();
+          } catch (e) {}
+          keepAlivePtyProcess = null;
+        }
       }
       return;
     }
     
     const url = getConnectionUrl(name);
-    console.log(`[Keep-Alive Manager] Performing self-ping for keepalive to: ${url}`);
+    console.log(`[Keep-Alive Manager] Performing self-ping and PTY write for keepalive to: ${url}`);
     
+    // Perform standard HTTP ping
     try {
       const isReachable = await checkBridgeReachable(url, selfKeepAliveToken, 1, true);
       reachabilityCache.set(name, {
@@ -205,6 +254,9 @@ export function startKeepAliveBackgroundWorker() {
     } catch (err: any) {
       console.error('[Keep-Alive Manager] Error during self-ping:', err.message || err);
     }
+
+    // Perform PTY terminal activity write
+    writePtyKeepAliveActivity();
   }, pingIntervalMs);
 }
 
