@@ -222,6 +222,21 @@ export const EnvVarModal: React.FC<EnvVarModalProps> = ({
     }
   };
 
+  const handleClose = () => {
+    if (keyInput.trim() !== '' || valueInput !== '') {
+      Alert.alert(
+        'Discard Changes?',
+        'You have unsaved changes to environment variables. Are you sure you want to discard them?',
+        [
+          { text: 'Keep Editing', style: 'cancel' },
+          { text: 'Discard', style: 'destructive', onPress: onClose },
+        ]
+      );
+    } else {
+      onClose();
+    }
+  };
+
   const renderEnvList = () => {
     const keys = Object.keys(env).sort();
     if (keys.length === 0) {
@@ -244,7 +259,11 @@ export const EnvVarModal: React.FC<EnvVarModalProps> = ({
             <Text style={styles.envKey} numberOfLines={1}>
               {key}
             </Text>
-            <Text style={styles.envValue} numberOfLines={1}>
+            <Text
+              style={styles.envValue}
+              numberOfLines={1}
+              onPress={() => Alert.alert(key, val)}
+            >
               {displayVal}
             </Text>
           </View>
@@ -285,14 +304,14 @@ export const EnvVarModal: React.FC<EnvVarModalProps> = ({
       visible={visible}
       transparent
       animationType="fade"
-      onRequestClose={onClose}
+      onRequestClose={handleClose}
     >
       <View style={styles.modalOverlay}>
         <View style={styles.modalContainer}>
           <View style={styles.modalHeader}>
             <MaterialIcons name="tune" size={20} color={Theme.colors.primary.glow} />
             <Text style={styles.modalTitle}>Environment Variables</Text>
-            <TouchableOpacity onPress={onClose} style={styles.closeButton}>
+            <TouchableOpacity onPress={handleClose} style={styles.closeButton}>
               <MaterialIcons name="close" size={20} color={Theme.colors.text.secondary} />
             </TouchableOpacity>
           </View>
@@ -317,11 +336,11 @@ export const EnvVarModal: React.FC<EnvVarModalProps> = ({
 
             <View style={styles.formRow}>
               <TextInput
-                style={[styles.input, styles.keyInput]}
+                style={[styles.input, styles.keyInput, isEditing && styles.keyInputReadOnly]}
                 value={keyInput}
                 onChangeText={setKeyInput}
                 placeholder="KEY"
-                placeholderTextColor="rgba(255, 255, 255, 0.25)"
+                placeholderTextColor="rgba(255, 255, 255, 0.45)"
                 autoCapitalize="characters"
                 autoCorrect={false}
                 editable={!isEditing} // Key is read-only when editing; rename is handled by deleting/recreating
@@ -332,7 +351,7 @@ export const EnvVarModal: React.FC<EnvVarModalProps> = ({
                   value={valueInput}
                   onChangeText={setValueInput}
                   placeholder="Value"
-                  placeholderTextColor="rgba(255, 255, 255, 0.25)"
+                  placeholderTextColor="rgba(255, 255, 255, 0.45)"
                   secureTextEntry={maskValueInput}
                   autoCapitalize="none"
                   autoCorrect={false}
@@ -351,13 +370,13 @@ export const EnvVarModal: React.FC<EnvVarModalProps> = ({
               </View>
             </View>
 
-            <View style={styles.formActions}>
+            <View style={[styles.formActions, isEditing && styles.formActionsEditing]}>
               {isEditing && (
                 <TouchableOpacity style={styles.cancelFormBtn} onPress={resetForm}>
                   <Text style={styles.cancelFormBtnText}>Cancel</Text>
                 </TouchableOpacity>
               )}
-              <TouchableOpacity style={styles.saveFormBtn} onPress={handleSave} disabled={isSaving || isFetching}>
+              <TouchableOpacity style={styles.saveFormBtn} onPress={handleSave} disabled={isSaving}>
                 {isSaving ? (
                   <ActivityIndicator size="small" color="#ffffff" />
                 ) : (
@@ -367,12 +386,6 @@ export const EnvVarModal: React.FC<EnvVarModalProps> = ({
                 )}
               </TouchableOpacity>
             </View>
-          </View>
-
-          <View style={styles.modalFooter}>
-            <TouchableOpacity style={styles.doneBtn} onPress={onClose}>
-              <Text style={styles.doneBtnText}>Done</Text>
-            </TouchableOpacity>
           </View>
         </View>
       </View>
@@ -389,7 +402,7 @@ const styles = StyleSheet.create({
     padding: 20,
   },
   modalContainer: {
-    width: '100%',
+    alignSelf: 'stretch',
     maxWidth: 420,
     maxHeight: '85%',
     backgroundColor: 'rgba(11, 15, 25, 0.98)',
@@ -416,16 +429,15 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   closeButton: {
-    padding: 4,
+    padding: 8,
   },
   modalDesc: {
-    fontSize: 11,
+    fontSize: 12,
     color: Theme.colors.text.secondary,
-    lineHeight: 16,
+    lineHeight: 17,
     marginBottom: 16,
   },
   listContainer: {
-    flex: 1,
     minHeight: 120,
     maxHeight: 220,
     backgroundColor: 'rgba(255, 255, 255, 0.02)',
@@ -454,7 +466,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   emptyText: {
-    fontSize: 11,
+    fontSize: 12,
     color: Theme.colors.text.muted,
     textAlign: 'center',
   },
@@ -477,7 +489,7 @@ const styles = StyleSheet.create({
     fontFamily: 'monospace',
   },
   envValue: {
-    fontSize: 10,
+    fontSize: 12,
     color: Theme.colors.text.secondary,
     marginTop: 2,
     fontFamily: 'monospace',
@@ -488,7 +500,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   actionBtn: {
-    padding: 4,
+    padding: 8,
   },
   formContainer: {
     backgroundColor: 'rgba(255, 255, 255, 0.02)',
@@ -517,6 +529,10 @@ const styles = StyleSheet.create({
   keyInput: {
     flex: 0.4,
   },
+  keyInputReadOnly: {
+    opacity: 0.55,
+    backgroundColor: 'rgba(255, 255, 255, 0.01)',
+  },
   valueInputWrapper: {
     flex: 0.6,
     position: 'relative',
@@ -528,13 +544,16 @@ const styles = StyleSheet.create({
   },
   eyeBtn: {
     position: 'absolute',
-    right: 8,
-    padding: 4,
+    right: 6,
+    padding: 8,
   },
   formActions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
     gap: 8,
+  },
+  formActionsEditing: {
+    justifyContent: 'space-between',
   },
   cancelFormBtn: {
     height: 32,
@@ -547,7 +566,7 @@ const styles = StyleSheet.create({
   },
   cancelFormBtnText: {
     color: Theme.colors.text.secondary,
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '600',
   },
   saveFormBtn: {
@@ -561,26 +580,8 @@ const styles = StyleSheet.create({
   },
   saveFormBtnText: {
     color: '#ffffff',
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '700',
   },
-  modalFooter: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-  },
-  doneBtn: {
-    height: 40,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderColor: Theme.colors.border,
-    borderWidth: 1,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 24,
-  },
-  doneBtnText: {
-    color: Theme.colors.text.primary,
-    fontSize: 13,
-    fontWeight: '600',
-  },
+
 });
