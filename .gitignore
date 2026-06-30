@@ -6,12 +6,8 @@ Thumbs.db
 .vscode/
 .idea/
 docs/
-.agents/
 .codex/
-.specify/
-specs/
 claude.md
-AGENTS.md
 
 # Node.js/JavaScript/TypeScript (Expo & Bridge)
 node_modules/

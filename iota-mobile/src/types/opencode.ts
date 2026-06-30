@@ -111,6 +111,7 @@ export interface OpenCodeConversation {
   id: string;
   sessionId?: string;
   opencodeSessionId?: string;
+  title?: string;
   status: OpenCodeConversationStatus;
   messages: OpenCodeMessage[];
   tools?: OpenCodeToolActivity[];
@@ -120,6 +121,8 @@ export interface OpenCodeConversation {
   lastRunPhase?: OpenCodeRunPhase;
   lastError?: string;
   activeModel?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface OpenCodeTimelineState {

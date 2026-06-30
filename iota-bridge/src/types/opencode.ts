@@ -126,6 +126,7 @@ export interface OpenCodeApprovalRequest {
 export interface OpenCodeConversation {
   id: string;
   opencodeSessionId?: string;
+  title?: string;
   status: OpenCodeConversationStatus;
   messages: OpenCodeMessage[];
   tools: OpenCodeToolActivity[];

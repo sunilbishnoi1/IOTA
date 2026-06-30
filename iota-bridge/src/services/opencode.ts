@@ -503,27 +503,47 @@ class OpenCodeRunner {
 
   public async runSessionsQuery(): Promise<string> {
     logInfo(`[OpenCodeRunner] runSessionsQuery: executing opencode session list`);
-    const result = await this.runCommand('opencode', ['session', 'list', '--format', 'json'], 15000);
-    if (result.exitCode !== 0) {
-      throw new Error(result.stderr || `Failed to list sessions (code ${result.exitCode})`);
-    }
+    
+    let cliSessionsMd = '';
     try {
-      const parsed = JSON.parse(result.stdout);
-      const list = Array.isArray(parsed) ? parsed : [parsed];
-      if (list.length === 0) {
-        return 'No active sessions found.';
+      const result = await this.runCommand('opencode', ['session', 'list', '--format', 'json'], 15000);
+      if (result.exitCode === 0) {
+        const parsed = JSON.parse(result.stdout);
+        const list = Array.isArray(parsed) ? parsed : [parsed];
+        if (list.length > 0) {
+          cliSessionsMd = `### Active CLI Sessions (OpenCode)\n\n| Session ID | Title | Created | Updated |\n| :--- | :--- | :--- | :--- |\n`;
+          for (const ses of list) {
+            const createdDate = ses.created ? new Date(ses.created).toLocaleString() : 'N/A';
+            const updatedDate = ses.updated ? new Date(ses.updated).toLocaleString() : 'N/A';
+            cliSessionsMd += `| \`${ses.id}\` | ${ses.title || 'Untitled'} | ${createdDate} | ${updatedDate} |\n`;
+          }
+        } else {
+          cliSessionsMd = '### Active CLI Sessions (OpenCode)\n\nNo active CLI sessions found.';
+        }
+      } else {
+        cliSessionsMd = `### Active CLI Sessions (OpenCode)\n\nFailed to load CLI sessions: ${result.stderr}`;
       }
-      let md = `### Active Sessions\n\n| Session ID | Title | Created | Updated |\n| :--- | :--- | :--- | :--- |\n`;
-      for (const ses of list) {
-        const createdDate = ses.created ? new Date(ses.created).toLocaleString() : 'N/A';
-        const updatedDate = ses.updated ? new Date(ses.updated).toLocaleString() : 'N/A';
-        md += `| \`${ses.id}\` | ${ses.title || 'Untitled'} | ${createdDate} | ${updatedDate} |\n`;
-      }
-      return md.trim();
     } catch (err: any) {
-      logError(`[OpenCodeRunner] runSessionsQuery: failed to parse/format session list: ${err.message}`);
-      return `Failed to parse session list JSON. Raw output:\n\n\`\`\`\n${result.stdout}\n\`\`\``;
+      logError(`[OpenCodeRunner] runSessionsQuery: failed to load CLI sessions: ${err.message}`);
+      cliSessionsMd = `### Active CLI Sessions (OpenCode)\n\nFailed to load CLI sessions.`;
     }
+
+    const conversations = opencodeStore.getAllConversations();
+    let convosMd = '';
+    if (conversations.length > 0) {
+      convosMd = `### IOTA Conversations\n\n| Conversation ID | Title | CLI Session ID | Messages | Status | Updated |\n| :--- | :--- | :--- | :--- | :--- | :--- |\n`;
+      for (const convo of conversations) {
+        const updatedDate = convo.updatedAt ? new Date(convo.updatedAt).toLocaleString() : 'N/A';
+        const cliSessionId = convo.opencodeSessionId ? `\`${convo.opencodeSessionId}\`` : 'None';
+        const title = convo.title || 'Untitled';
+        const msgCount = convo.messages ? convo.messages.length : 0;
+        convosMd += `| \`${convo.id}\` | ${title} | ${cliSessionId} | ${msgCount} | ${convo.status} | ${updatedDate} |\n`;
+      }
+    } else {
+      convosMd = '### IOTA Conversations\n\nNo saved conversations found.';
+    }
+
+    return `${convosMd}\n\n${cliSessionsMd}`.trim();
   }
 
   public async runSessionDelete(sessionId: string): Promise<string> {

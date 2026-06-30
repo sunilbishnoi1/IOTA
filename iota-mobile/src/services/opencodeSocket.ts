@@ -11,6 +11,7 @@ export interface OpenCodeSocketHandlers {
   onFileChange?: (payload: { conversationId: string; change: OpenCodeFileChange }) => void;
   onApprovalRequest?: (payload: { conversationId: string; approval: OpenCodeApprovalRequest }) => void;
   onError?: (payload: { conversationId?: string; code: string; message: string; retryable: boolean }) => void;
+  onConversationsList?: (payload: { conversations: any[] }) => void;
 }
 
 export function registerOpenCodeSocketHandlers(socket: Socket, handlers: OpenCodeSocketHandlers) {
@@ -53,6 +54,10 @@ export function registerOpenCodeSocketHandlers(socket: Socket, handlers: OpenCod
     console.error('[SocketClient] Received opencode:error code:', payload?.code, 'msg:', payload?.message);
     handlers.onError?.(payload);
   });
+  socket.on('opencode:conversations_list', (payload: any) => {
+    console.log('[SocketClient] Received opencode:conversations_list count:', payload?.conversations?.length || 0);
+    handlers.onConversationsList?.(payload);
+  });
 }
 
 export const emitOpenCodeInstall = (socket?: Socket | null) => {
@@ -92,5 +97,23 @@ export const emitOpenCodeCredentials = (
 ) => {
   console.log('[SocketClient] Emitting opencode:credentials:', JSON.stringify(Object.keys(credentials)));
   socket?.emit('opencode:credentials', credentials);
+};
+
+export const emitOpenCodeNewSession = (socket: Socket | null | undefined) => {
+  console.log('[SocketClient] Emitting opencode:new_session');
+  socket?.emit('opencode:new_session', {});
+};
+
+export const emitOpenCodeListConversations = (socket: Socket | null | undefined) => {
+  console.log('[SocketClient] Emitting opencode:list_conversations');
+  socket?.emit('opencode:list_conversations', {});
+};
+
+export const emitOpenCodeDeleteConversation = (
+  socket: Socket | null | undefined,
+  payload: { conversationId: string }
+) => {
+  console.log('[SocketClient] Emitting opencode:delete_conversation:', JSON.stringify(payload));
+  socket?.emit('opencode:delete_conversation', payload);
 };
 

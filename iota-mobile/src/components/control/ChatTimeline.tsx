@@ -41,7 +41,7 @@ interface ChatTimelineProps {
   isRecording: boolean;
   flatListRef: React.RefObject<FlatList<GroupedItem>>;
   onScroll: (event: any) => void;
-  onContentSizeChange: () => void;
+  onContentSizeChange: (w: number, h: number) => void;
   onScrollToBottom: () => void;
 }
 

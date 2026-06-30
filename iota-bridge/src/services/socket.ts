@@ -357,7 +357,7 @@ export const initSocketIO = (server: HttpServer) => {
         });
       };
 
-      const finalize = (failed: boolean, options: { stopped?: boolean; errorSummary?: string } = {}) => {
+      const finalize = async (failed: boolean, options: { stopped?: boolean; errorSummary?: string } = {}) => {
         if (finalized) {
           logInfo(`[Socket] finalize called but already finalized for request ${request.requestId}`);
           return;
@@ -379,8 +379,17 @@ export const initSocketIO = (server: HttpServer) => {
         }
 
         opencodeStore.finishRequest(conversation.id, failed, options);
+
+        try {
+          const sessions = await opencodeRunner.listSessions();
+          opencodeStore.syncConversationTitlesWithCli(sessions);
+        } catch (err) {
+          logError(`Failed to sync titles on finalize: ${err}`);
+        }
+
         const snapshot = opencodeStore.getSnapshot(conversation.id);
         if (snapshot) io.emit('opencode:snapshot', { conversation: snapshot });
+        io.emit('opencode:conversations_list', { conversations: opencodeStore.getAllConversations() });
       };
 
       try {
@@ -572,12 +581,39 @@ export const initSocketIO = (server: HttpServer) => {
 
     socket.on('opencode:sync', async (payload: OpenCodeSyncRequest = {}) => {
       pokeSelfKeepAlive();
-      let snapshot = opencodeStore.getSnapshot(payload.conversationId);
-      if (!snapshot) {
-        await opencodeRunner.syncFromCliSessions(payload.conversationId);
-        snapshot = opencodeStore.getSnapshot(payload.conversationId);
-      }
+      const conversation = opencodeStore.getOrCreateConversation(payload.conversationId);
+      const snapshot = opencodeStore.getSnapshot(conversation.id);
       socket.emit('opencode:snapshot', { conversation: snapshot });
+    });
+
+    socket.on('opencode:new_session', () => {
+      pokeSelfKeepAlive();
+      const conversation = opencodeStore.getOrCreateConversation(undefined, undefined, true);
+      socket.emit('opencode:snapshot', { conversation: opencodeStore.getSnapshot(conversation.id) });
+      io.emit('opencode:conversations_list', { conversations: opencodeStore.getAllConversations() });
+    });
+
+    socket.on('opencode:list_conversations', async () => {
+      pokeSelfKeepAlive();
+      try {
+        const sessions = await opencodeRunner.listSessions();
+        opencodeStore.syncConversationTitlesWithCli(sessions);
+      } catch (err) {
+        logError(`Failed to sync titles on list_conversations: ${err}`);
+      }
+      socket.emit('opencode:conversations_list', { conversations: opencodeStore.getAllConversations() });
+    });
+
+    socket.on('opencode:delete_conversation', (payload: { conversationId: string }) => {
+      pokeSelfKeepAlive();
+      if (payload?.conversationId) {
+        opencodeStore.deleteConversation(payload.conversationId);
+        io.emit('opencode:conversations_list', { conversations: opencodeStore.getAllConversations() });
+        const activeConvo = opencodeStore.getSnapshot();
+        if (activeConvo) {
+          io.emit('opencode:snapshot', { conversation: activeConvo });
+        }
+      }
     });
 
     socket.on('opencode:stop', (payload: OpenCodeStopRequest) => {

@@ -183,7 +183,7 @@ export const secureStoreService = {
     }
   },
 
-  async saveChatCache(scope: string, messages: any[]): Promise<void> {
+  async saveChatCache(scope: string, messages: any[], conversationId?: string): Promise<void> {
     try {
       const slice = messages.slice(-30).map((msg) => ({
         id: msg.id,
@@ -192,15 +192,29 @@ export const secureStoreService = {
         created: msg.createdAt,
         status: msg.status,
       }));
-      await secureSet(`iota_chat_cache_${scope}`, JSON.stringify(slice));
+      const suffix = conversationId ? `_${conversationId}` : '';
+      await secureSet(`iota_chat_cache_${scope}${suffix}`, JSON.stringify(slice));
     } catch (e) {
       console.warn('Failed to save chat cache:', e);
     }
   },
 
-  async getChatCache(scope: string): Promise<any[] | null> {
+  async getChatCache(scope: string, conversationId?: string): Promise<any[] | null> {
     try {
-      const val = await secureGet(`iota_chat_cache_${scope}`);
+      const suffix = conversationId ? `_${conversationId}` : '';
+      const scopedKey = `iota_chat_cache_${scope}${suffix}`;
+      let val = await secureGet(scopedKey);
+
+      if (!val && conversationId) {
+        const legacyKey = `iota_chat_cache_${scope}`;
+        const legacyVal = await secureGet(legacyKey);
+        if (legacyVal) {
+          await secureSet(scopedKey, legacyVal);
+          await secureDelete(legacyKey);
+          val = legacyVal;
+        }
+      }
+
       if (!val) return null;
       const parsed = JSON.parse(val);
       if (!Array.isArray(parsed)) return null;

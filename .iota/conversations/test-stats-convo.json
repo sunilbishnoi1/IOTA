@@ -1,0 +1,129 @@
+{
+  "id": "test-stats-convo",
+  "status": "completed",
+  "messages": [
+    {
+      "id": "user-1782841449468-ov3qhc",
+      "conversationId": "test-stats-convo",
+      "role": "user",
+      "content": "/stats",
+      "createdAt": "2026-06-30T17:44:09.468Z",
+      "status": "complete"
+    },
+    {
+      "id": "run-request-1782841449466-2bsuy9",
+      "conversationId": "test-stats-convo",
+      "role": "status",
+      "content": "Completed",
+      "createdAt": "2026-06-30T17:44:09.500Z",
+      "status": "complete",
+      "metadata": {
+        "phase": "completed",
+        "requestId": "request-1782841449466-2bsuy9",
+        "retryable": false
+      }
+    },
+    {
+      "id": "assistant-1782841449481-jmmfyk",
+      "conversationId": "test-stats-convo",
+      "role": "assistant",
+      "content": "### Session Stats\n\n```text\nMock Stats Output\n```",
+      "createdAt": "2026-06-30T17:44:09.481Z",
+      "status": "complete"
+    },
+    {
+      "id": "user-1782841610156-xzs0zb",
+      "conversationId": "test-stats-convo",
+      "role": "user",
+      "content": "/stats",
+      "createdAt": "2026-06-30T17:46:50.156Z",
+      "status": "complete"
+    },
+    {
+      "id": "run-request-1782841610090-w2sn6y",
+      "conversationId": "test-stats-convo",
+      "role": "status",
+      "content": "Completed",
+      "createdAt": "2026-06-30T17:46:50.194Z",
+      "status": "complete",
+      "metadata": {
+        "phase": "completed",
+        "requestId": "request-1782841610090-w2sn6y",
+        "retryable": false
+      }
+    },
+    {
+      "id": "assistant-1782841610171-3budf4",
+      "conversationId": "test-stats-convo",
+      "role": "assistant",
+      "content": "### Session Stats\n\n```text\nMock Stats Output\n```",
+      "createdAt": "2026-06-30T17:46:50.171Z",
+      "status": "complete"
+    },
+    {
+      "id": "user-1782842920387-uwpr1n",
+      "conversationId": "test-stats-convo",
+      "role": "user",
+      "content": "/stats",
+      "createdAt": "2026-06-30T18:08:40.387Z",
+      "status": "complete"
+    },
+    {
+      "id": "run-request-1782842920382-ik0k3g",
+      "conversationId": "test-stats-convo",
+      "role": "status",
+      "content": "Completed",
+      "createdAt": "2026-06-30T18:08:40.409Z",
+      "status": "complete",
+      "metadata": {
+        "phase": "completed",
+        "requestId": "request-1782842920382-ik0k3g",
+        "retryable": false
+      }
+    },
+    {
+      "id": "assistant-1782842920396-loliij",
+      "conversationId": "test-stats-convo",
+      "role": "assistant",
+      "content": "### Session Stats\n\n```text\nMock Stats Output\n```",
+      "createdAt": "2026-06-30T18:08:40.396Z",
+      "status": "complete"
+    },
+    {
+      "id": "user-1782843984696-7iaqce",
+      "conversationId": "test-stats-convo",
+      "role": "user",
+      "content": "/stats",
+      "createdAt": "2026-06-30T18:26:24.696Z",
+      "status": "complete"
+    },
+    {
+      "id": "run-request-1782843984694-l9zdtn",
+      "conversationId": "test-stats-convo",
+      "role": "status",
+      "content": "Completed",
+      "createdAt": "2026-06-30T18:26:24.716Z",
+      "status": "complete",
+      "metadata": {
+        "phase": "completed",
+        "requestId": "request-1782843984694-l9zdtn",
+        "retryable": false
+      }
+    },
+    {
+      "id": "assistant-1782843984704-8golem",
+      "conversationId": "test-stats-convo",
+      "role": "assistant",
+      "content": "### Session Stats\n\n```text\nMock Stats Output\n```",
+      "createdAt": "2026-06-30T18:26:24.704Z",
+      "status": "complete"
+    }
+  ],
+  "tools": [],
+  "fileChanges": [],
+  "approvals": [],
+  "createdAt": "2026-06-30T17:44:09.460Z",
+  "updatedAt": "2026-06-30T18:26:24.716Z",
+  "lastRunPhase": "completed",
+  "title": "/stats"
+}

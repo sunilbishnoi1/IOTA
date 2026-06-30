@@ -1,0 +1,42 @@
+{
+  "id": "test-sessions-convo",
+  "status": "completed",
+  "messages": [
+    {
+      "id": "user-1782843984738-6l2zfs",
+      "conversationId": "test-sessions-convo",
+      "role": "user",
+      "content": "/sessions",
+      "createdAt": "2026-06-30T18:26:24.738Z",
+      "status": "complete"
+    },
+    {
+      "id": "run-request-1782843984736-57oj6p",
+      "conversationId": "test-sessions-convo",
+      "role": "status",
+      "content": "Completed",
+      "createdAt": "2026-06-30T18:26:24.754Z",
+      "status": "complete",
+      "metadata": {
+        "phase": "completed",
+        "requestId": "request-1782843984736-57oj6p",
+        "retryable": false
+      }
+    },
+    {
+      "id": "assistant-1782843984745-b83sp8",
+      "conversationId": "test-sessions-convo",
+      "role": "assistant",
+      "content": "Mock Sessions List Table",
+      "createdAt": "2026-06-30T18:26:24.745Z",
+      "status": "complete"
+    }
+  ],
+  "tools": [],
+  "fileChanges": [],
+  "approvals": [],
+  "createdAt": "2026-06-30T18:26:24.732Z",
+  "updatedAt": "2026-06-30T18:26:24.755Z",
+  "lastRunPhase": "completed",
+  "title": "/sessions"
+}

@@ -21,8 +21,12 @@ import {
   emitOpenCodeMessage,
   emitOpenCodeStop,
   emitOpenCodeSync,
+  emitOpenCodeNewSession,
   registerOpenCodeSocketHandlers,
+  emitOpenCodeListConversations,
+  emitOpenCodeDeleteConversation,
 } from '../services/opencodeSocket';
+import { HistoryDrawer } from '../components/control/HistoryDrawer';
 import { useSlashCommands, SlashCommandsAutocomplete, CredentialsModal } from '../components/control/ControlSlashCommands';
 import { EnvVarModal } from '../components/control/EnvVarModal';
 import { emitEnvVarsRequest, registerEnvVarsSocketHandlers } from '../services/envService';
@@ -33,6 +37,7 @@ import {
   OpenCodeFileChange,
   OpenCodeMessage,
   OpenCodeToolActivity,
+  OpenCodeConversation,
 } from '../types/opencode';
 import { Theme } from '../styles/theme';
 
@@ -108,6 +113,8 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const socketRef = useRef<Socket | null>(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [showEnvModal, setShowEnvModal] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [conversations, setConversations] = useState<OpenCodeConversation[]>([]);
   const [envVars, setEnvVars] = useState<Record<string, string> | null>(null);
   const handleSlashCommand = useSlashCommands({
     messages,
@@ -125,7 +132,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const [expandedThoughts, setExpandedThoughts] = useState<Record<string, boolean>>({});
 
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
-  const shouldScrollToBottomRef = useRef(false);
+  const shouldScrollToBottomRef = useRef(true);
 
   const scrollToBottom = (animated = true) => {
     shouldScrollToBottomRef.current = true;
@@ -140,10 +147,12 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     setShowScrollToBottom(isScrolledUp);
   };
 
-  const handleContentSizeChange = () => {
+  const handleContentSizeChange = (_w: number, contentHeight: number) => {
     if (shouldScrollToBottomRef.current || !showScrollToBottom) {
       flatListRef.current?.scrollToEnd({ animated: true });
-      shouldScrollToBottomRef.current = false;
+      if (contentHeight > 0) {
+        shouldScrollToBottomRef.current = false;
+      }
     }
   };
 
@@ -159,7 +168,11 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
       ...approvals.map((approval) => ({ type: 'approval' as const, approval, timestamp: approval.createdAt })),
     ];
 
-    allEvents.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    allEvents.sort((a, b) => {
+      const tA = a.timestamp || '';
+      const tB = b.timestamp || '';
+      return tA.localeCompare(tB);
+    });
 
     const grouped: GroupedItem[] = [];
     let currentTurn: ChatTurn | null = null;
@@ -260,26 +273,27 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     return () => { active = false; };
   }, [conversationScope, defaultConversationId]);
 
-  // Load cached chat messages on mount
+  // Load cached chat messages on mount/conversationId changes
   useEffect(() => {
     let active = true;
     async function loadCachedChat() {
-      const cached = await secureStoreService.getChatCache(conversationScope);
+      if (!conversationId) return;
+      const cached = await secureStoreService.getChatCache(conversationScope, conversationId);
       if (active && cached && cached.length > 0) {
-        setMessages((prev) => (prev.length === 0 ? cached : prev));
+        setMessages((prev) => (prev.length === 0 || conversationIdRef.current === conversationId ? cached : prev));
         setIsSyncing(false);
       }
     }
     loadCachedChat();
     return () => { active = false; };
-  }, [conversationScope]);
+  }, [conversationScope, conversationId]);
 
   // Save chat messages to cache whenever they change
   useEffect(() => {
-    if (messages.length > 0) {
-      secureStoreService.saveChatCache(conversationScope, messages).catch(() => undefined);
+    if (messages.length > 0 && conversationId) {
+      secureStoreService.saveChatCache(conversationScope, messages, conversationId).catch(() => undefined);
     }
-  }, [messages, conversationScope]);
+  }, [messages, conversationScope, conversationId]);
 
   // ─── Check capability ─────────────────────────────────────────────────
 
@@ -376,6 +390,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           setSocketStatus('connected');
           if (socket) {
             emitOpenCodeSync(socket, conversationIdRef.current || defaultConversationId);
+            emitOpenCodeListConversations(socket);
             socket.emit('opencode:keepalive', { durationMinutes: keepAliveDuration });
             emitEnvVarsRequest(socket);
           }
@@ -404,13 +419,23 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               setIsSyncing(false);
               return;
             }
+            const isNewConvo = conversationIdRef.current !== conversation.id || messages.length === 0;
             setConversationId(conversation.id);
+            conversationIdRef.current = conversation.id;
+            secureStoreService.saveOpenCodeConversationId(conversationScope, conversation.id).catch(() => undefined);
             setSessionId(conversation.sessionId || conversation.opencodeSessionId);
 
-            setMessages((prev) => mergeMessages(prev, conversation.messages || []));
-            setTools((prev) => mergeById(prev, conversation.tools || []));
-            setFileChanges((prev) => mergeById(prev, conversation.fileChanges || []));
-            setApprovals((prev) => mergeById(prev, conversation.approvals || []));
+            if (isNewConvo) {
+              setMessages(conversation.messages || []);
+              setTools(conversation.tools || []);
+              setFileChanges(conversation.fileChanges || []);
+              setApprovals(conversation.approvals || []);
+            } else {
+              setMessages((prev) => mergeMessages(prev, conversation.messages || []));
+              setTools((prev) => mergeById(prev, conversation.tools || []));
+              setFileChanges((prev) => mergeById(prev, conversation.fileChanges || []));
+              setApprovals((prev) => mergeById(prev, conversation.approvals || []));
+            }
             setRunning(Boolean(conversation.activeRequestId) || conversation.status === 'running');
             setIsSyncing(false);
           },
@@ -462,6 +487,11 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               createdAt: new Date().toISOString(),
               status: 'error',
             }]);
+          },
+          onConversationsList: (payload) => {
+            if (payload?.conversations) {
+              setConversations(payload.conversations);
+            }
           },
 
         });
@@ -558,6 +588,33 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     emitOpenCodeInstall(socketRef.current);
   };
 
+  const handleOpenHistory = () => {
+    if (socketStatus === 'connected' && socketRef.current) {
+      emitOpenCodeListConversations(socketRef.current);
+    }
+    setShowHistory(true);
+  };
+
+  const handleSelectConversation = (nextId: string) => {
+    setConversationId(nextId);
+    conversationIdRef.current = nextId;
+    secureStoreService.saveOpenCodeConversationId(conversationScope, nextId).catch(() => undefined);
+    setMessages([]);
+    setTools([]);
+    setFileChanges([]);
+    setApprovals([]);
+    setIsSyncing(true);
+    if (socketStatus === 'connected' && socketRef.current) {
+      emitOpenCodeSync(socketRef.current, nextId);
+    }
+  };
+
+  const handleDeleteConversation = (targetId: string) => {
+    if (socketStatus === 'connected' && socketRef.current) {
+      emitOpenCodeDeleteConversation(socketRef.current, { conversationId: targetId });
+    }
+  };
+
   const handleStopOpenCode = () => {
     if (!conversationId) return;
     emitOpenCodeStop(socketRef.current, conversationId);
@@ -630,14 +687,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   // ─── New chat handler ─────────────────────────────────────────────────
 
   const handleNewChatPress = () => {
-    Alert.alert(
-      'New Chat',
-      'Are you sure you want to clear this conversation and start a new session?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Reset', style: 'destructive', onPress: performResetConversation },
-      ]
-    );
+    performResetConversation();
   };
 
   const performResetConversation = async () => {
@@ -648,15 +698,14 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     setRunning(false);
     setRunStatusText(null);
 
-    const newId = `opencode-${conversationScope}-${Date.now()}`;
-    setConversationId(newId);
-    conversationIdRef.current = newId;
-
-    await secureStoreService.saveOpenCodeConversationId(conversationScope, newId).catch(() => undefined);
-
     if (socketRef.current && socketStatus === 'connected') {
       setIsSyncing(true);
-      emitOpenCodeSync(socketRef.current, newId);
+      emitOpenCodeNewSession(socketRef.current);
+    } else {
+      const newId = `opencode-${conversationScope}-${Date.now()}`;
+      setConversationId(newId);
+      conversationIdRef.current = newId;
+      await secureStoreService.saveOpenCodeConversationId(conversationScope, newId).catch(() => undefined);
     }
   };
 
@@ -724,8 +773,8 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             >
               <MaterialIcons name="layers" size={22} color={Theme.colors.primary.glow} />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.iconButton} onPress={handleNewChatPress} activeOpacity={0.7}>
-              <MaterialIcons name="add-comment" size={20} color={Theme.colors.primary.glow} />
+            <TouchableOpacity style={styles.iconButton} onPress={handleOpenHistory} activeOpacity={0.7}>
+              <MaterialIcons name="menu" size={24} color={Theme.colors.primary.glow} />
             </TouchableOpacity>
           </View>
         </View>
@@ -808,6 +857,16 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               codespaceId={activeCodespace.id}
               socket={socketRef.current}
               envVars={envVars}
+            />
+
+            <HistoryDrawer
+              visible={showHistory}
+              conversations={conversations}
+              activeConversationId={conversationId}
+              onSelectConversation={handleSelectConversation}
+              onDeleteConversation={handleDeleteConversation}
+              onClose={() => setShowHistory(false)}
+              onNewChat={handleNewChatPress}
             />
           </>
         ) : (

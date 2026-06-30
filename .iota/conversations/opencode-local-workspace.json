@@ -1,0 +1,51 @@
+{
+  "id": "opencode-local-workspace",
+  "opencodeSessionId": "ses_0e6456cbbffeJyJhAhAfp3Wz1O",
+  "status": "completed",
+  "messages": [
+    {
+      "id": "user-1782843081807-m56za9",
+      "conversationId": "opencode-local-workspace",
+      "role": "user",
+      "content": "Hello",
+      "createdAt": "2026-06-30T18:11:21.807Z",
+      "status": "complete"
+    },
+    {
+      "id": "run-request-1782843081806-2g6wsg",
+      "conversationId": "opencode-local-workspace",
+      "role": "status",
+      "content": "Working...",
+      "createdAt": "2026-06-30T18:12:33.304Z",
+      "status": "complete",
+      "metadata": {
+        "phase": "completed",
+        "requestId": "request-1782843081806-2g6wsg",
+        "retryable": false
+      }
+    },
+    {
+      "id": "assistant-1782843084317-tk0ex8",
+      "conversationId": "opencode-local-workspace",
+      "role": "assistant",
+      "content": "",
+      "createdAt": "2026-06-30T18:11:24.317Z",
+      "status": "complete"
+    },
+    {
+      "id": "prt_f19bb98960013Pa5YoX6C97FqT",
+      "conversationId": "opencode-local-workspace",
+      "role": "assistant",
+      "content": "Hello. How can I help you today?",
+      "createdAt": "2026-06-30T18:12:32.598Z",
+      "status": "complete"
+    }
+  ],
+  "tools": [],
+  "fileChanges": [],
+  "approvals": [],
+  "createdAt": "2026-06-30T18:11:05.955Z",
+  "updatedAt": "2026-06-30T18:12:33.307Z",
+  "lastRunPhase": "completed",
+  "title": "Hello"
+}
