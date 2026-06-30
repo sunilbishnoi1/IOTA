@@ -1,6 +1,6 @@
 ---
 name: "uiux-review"
-description: "Spawn multiple parallel subagents to analyze a specified UI component from UX, layout, design aesthetics, and edge-case perspectives, then produce a consolidated, prioritized UI/UX issue report."
+description: "Spawn multiple parallel subagents to analyze a specified mobile UI component from UX, layout, design aesthetics, and edge-case perspectives, then produce a consolidated, prioritized mobile UI/UX issue report."
 metadata:
   author: "project"
   source: ".agents/skills/uiux-review/SKILL.md"
@@ -24,6 +24,7 @@ The user provides:
 - **"Looks fine" is not a valid finding** — if nothing is wrong in a category, state "No issues found" explicitly.
 - **If you cannot access the file, state "FILE NOT FOUND"** — do not guess or analyze from name alone.
 - **Read the full component file** — do not analyze based on partial context. Read the entire file (both JSX and styles).
+- **This is a mobile app** — all findings must be evaluated in the context of a mobile touch-screen interface (phone/tablet). Never apply desktop or web standards. Mobile touch targets, viewport constraints, and platform conventions (iOS/Android HIG) take priority.
 
 ## Execution Steps
 
@@ -40,43 +41,58 @@ Read the entire component file from disk — both the render/JSX section and the
 
 ### Step 3: Deploy Parallel Subagents (MANDATORY)
 
-Launch **4 subagents simultaneously**, each analyzing from a distinct perspective:
+Launch **5 subagents simultaneously**, each analyzing from a distinct perspective:
 
-**Subagent A — UX & Interaction Analyst:**
-- Analyze user experience quality: affordances, feedback, flow clarity
+**Subagent A — UX & Interaction Analyst (Mobile):**
+- Analyze user experience quality for mobile touch interfaces: affordances, feedback, flow clarity
 - Check: confirmation dialogs, error messages, empty states, loading states, disabled states
-- Check: keyboard handling, focus management, dismiss patterns
+- Check: keyboard handling (mobile keyboard avoidance), focus management, dismiss patterns
+- Check: one-handed usability, thumb-zone placement, bottom-sheet vs modal appropriateness
 - Check: redundant elements, confusing labels, unexpected behavior
-- Check: accessibility (missing labels, contrast, touch targets)
+- Check: mobile accessibility (missing `accessibilityLabel`, contrast ratio WCAG AA, minimum 44×44pt touch targets per Apple HIG / Material Design)
 - Return findings with file:line references
 
-**Subagent B — Layout & Positioning Analyst:**
-- Analyze the component's layout structure: flex, alignment, spacing, sizing
-- Check: overflow risks, width/height chain, padding nesting
-- Check: responsive behavior across screen sizes
+**Subagent B — Layout & Positioning Analyst (Mobile):**
+- Analyze the component's layout structure for mobile viewports: flex, alignment, spacing, sizing
+- Check: overflow risks on small screens (e.g. iPhone SE 320px width), width/height chain, padding nesting
+- Check: responsive behavior across common mobile screen sizes (320px–428px width)
 - Check: alignment consistency between related elements
+- Check: safe area insets (notch, home indicator) — does the component respect them?
 - Check: element ordering, grouping, visual hierarchy
 - Check: z-index, overlapping, clipping issues
 - Return findings with file:line references
 
-**Subagent C — Design Aesthetics & Visual Quality Analyst:**
-- Analyze visual refinement: typography, color, spacing, harmony
-- Check: font sizes, line heights, letter spacing (is the type system premium?)
+**Subagent C — Design Aesthetics & Visual Quality Analyst (Mobile):**
+- Analyze visual refinement for mobile: typography, color, spacing, harmony
+- Check: font sizes against mobile readability standards (minimum 12px body, 11px caption at absolute smallest)
 - Check: color contrast, color hierarchy, consistency with theme
-- Check: border radius, shadow treatment, elevation cues
-- Check: icon sizing and consistency, visual density
-- Check: premium feel — micro-interactions, spacing rhythm, minimalism
+- Check: border radius, shadow treatment, elevation cues (mobile platform conventions)
+- Check: icon sizing and consistency, visual density appropriate for mobile screens
+- Check: premium feel — micro-interactions, spacing rhythm, minimalism, native-platform feel
+- Check: dark mode / low-light readability if applicable
 - Return findings with file:line references
 
-**Subagent D — Edge Cases & Resilience Analyst:**
-- Analyze what happens in extreme or unexpected states
-- Check: very long text (keys, values, labels), empty/null data
-- Check: very many items (overflow, performance, scroll behavior)
-- Check: rapid interactions (double-tap, fast typing)
-- Check: network failures, timeout states, partial data
+**Subagent D — Edge Cases & Resilience Analyst (Mobile):**
+- Analyze what happens in extreme or unexpected states on mobile devices
+- Check: very long text (keys, values, labels) causing truncation or layout breakage on small screens
+- Check: very many items (overflow, performance, scroll behavior, memory on mobile)
+- Check: rapid interactions (double-tap, fast typing on soft keyboard)
+- Check: network failures, timeout states, partial data (common on mobile connections)
 - Check: concurrent edits, stale state race conditions
-- Check: what happens when the component is mounted/unmounted rapidly
+- Check: keyboard overlay — does the keyboard push the form out of view?
+- Check: what happens when the component is mounted/unmounted rapidly (navigation transitions)
 - Return findings with file:line references
+
+**Subagent E — Market Design Research Analyst:**
+- Use **web search** and **web fetch** tools to find best-in-class, modern design examples for this exact component type (e.g., if the component is a settings modal, search for "best mobile settings modal UI 2026", "premium mobile environment variable editor design")
+- Search across multiple sources: Dribbble, Behance, Material Design guidelines, Apple HIG, UI/UX pattern libraries, and recent design articles (2025–2026)
+- For each reference found: save the URL, describe the design pattern, and note what makes it effective (spacing, typography, interaction pattern, color treatment, etc.)
+- Compile a **Design Inspiration Board** with:
+  - URL / source
+  - Pattern name (e.g., "Bottom sheet with inline editing", "Expandable card reveal")
+  - Key takeaways that could apply to our component
+  - Suggested adaptations for our codebase (concrete, implementable ideas)
+- Return findings with source URLs and actionable inspiration points
 
 Each subagent MUST:
 1. Read the actual file from disk (passed by Step 2, but re-read for fresh context)
@@ -97,6 +113,7 @@ When all subagents return:
    - **🟢 ENHANCEMENT** — nice-to-have improvements, premium feel
 4. Sort by severity (CRITICAL → MAJOR → MINOR → ENHANCEMENT)
 5. Group findings by area (Layout, UX, Visual, Edge Cases)
+6. Include the Design Inspiration Board from Subagent E as a separate section
 
 ### Step 5: Output Report
 
@@ -155,16 +172,29 @@ Output a structured report:
 #### 4. Edge Cases & Resilience (Subagent D)
 {Summary of edge-case findings}
 
+#### 5. Market Design Research (Subagent E)
+{Key patterns discovered and how they compare to current implementation}
+
+---
+
+### Design Inspiration Board
+
+| Source | Pattern | Key Takeaways | Suggested Adaptation |
+|--------|---------|---------------|---------------------|
+| {URL} | {pattern name} | {what makes it great} | {how to apply in our codebase} |
+| {URL} | {pattern name} | {what makes it great} | {how to apply in our codebase} |
+
 ---
 
 ### What Was Checked
 
-- UX flows and interaction patterns
-- Layout structure, flex, padding chain, overflow
-- Visual quality: typography, color, spacing, density
-- Edge cases: empty, overflow, concurrent actions, errors
+- Mobile UX flows and interaction patterns (touch, thumb zones, keyboard)
+- Mobile layout: flex, padding chain, overflow on small viewports, safe areas
+- Mobile visual quality: typography, color, spacing, density, platform conventions
+- Mobile edge cases: keyboard overlay, slow networks, small-screen truncation
+- Market design research: web search for best-in-class mobile patterns (2025–2026)
 
-### Quick Wins (easy fixes with high impact)
+### Quick Wins (easy fixes with high mobile UX impact)
 
 1. {finding} — {one-line fix} (Affects: {area})
 2. {finding} — {one-line fix} (Affects: {area})
@@ -178,6 +208,13 @@ After the report, ask:
 
 ## Operating Principles
 
+### Mobile-First Evaluation
+
+- This is a React Native / Expo mobile application — all findings must be evaluated against mobile UX standards, not desktop web standards.
+- Reference Apple HIG (44×44pt minimum touch target) and Material Design guidelines as the authoritative standards.
+- Always consider the smallest supported viewport (iPhone SE: 320×568) as the baseline for overflow/layout checks.
+- Consider one-handed thumb zones, keyboard avoidance, and safe area insets in all layout analysis.
+
 ### Evidence-Based Analysis
 
 - Every claim must trace back to a specific property value on a specific line
@@ -186,9 +223,10 @@ After the report, ask:
 
 ### Context Efficiency
 
-- Each subagent has a focused scope (UX, Layout, Visual, Edge Cases)
-- Subagents do NOT need to re-read the file from scratch — they receive it from Step 2
-- Use the findings from all 4 agents to cross-validate
+- Each subagent has a focused scope (UX, Layout, Visual, Edge Cases, Design Research)
+- Subagents A–D do NOT need to re-read the file from scratch — they receive it from Step 2
+- Subagent E should use web search and web fetch independently; it does not need the component file content
+- Use the findings from all 5 agents to produce the final report
 
 ### Deterministic Output
 
