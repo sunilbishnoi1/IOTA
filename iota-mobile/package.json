@@ -1,6 +1,6 @@
 {
   "name": "iota-mobile",
-  "version": "1.0.4",
+  "version": "0.5.0",
   "main": "index.ts",
   "dependencies": {
     "@expo/vector-icons": "^14.0.2",
