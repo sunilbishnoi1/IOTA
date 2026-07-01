@@ -410,7 +410,7 @@ export const initSocketIO = (server: HttpServer) => {
                 const isAttached = status.phase === 'attached_run';
                 const message = `OpenCode ${isAttached ? 'attached' : 'direct'} run timed out without producing output.`;
                 logError(`[Socket] Output timeout triggered for ${status.phase} ${request.requestId}`);
-                handle?.stop();
+                handle?.stop('watchdog');
                 
                 if (!isAttached) {
                   emitRunStatus({ conversationId: conversation.id, requestId: request.requestId, phase: 'failed', message, retryable: true });
@@ -618,7 +618,7 @@ export const initSocketIO = (server: HttpServer) => {
 
     socket.on('opencode:stop', (payload: OpenCodeStopRequest) => {
       pokeSelfKeepAlive();
-      opencodeRunner.stopActiveRun();
+      opencodeRunner.stopActiveRun('user');
       opencodeStore.finishRequest(payload.conversationId, true, { stopped: true, errorSummary: 'OpenCode run stopped.' });
 
       const activeRequestId = opencodeStore.getSnapshot(payload.conversationId)?.activeRequestId || id('stop');

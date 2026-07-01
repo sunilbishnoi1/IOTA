@@ -72,7 +72,7 @@ export interface OpenCodeRunOptions {
 }
 
 export interface OpenCodeRunHandle {
-  stop: () => void;
+  stop: (reason?: 'user' | 'watchdog') => void;
   done: Promise<{ exitCode: number | null; stderr: string; spawnError?: string }>;
   mode: 'attached' | 'direct';
 }
@@ -92,6 +92,8 @@ interface ServerReadinessResult {
 class OpenCodeRunner {
   private serveProcess: ChildProcess | null = null;
   private activeRun: ChildProcess | null = null;
+  private activeRequestId: string | null = null;
+  private userStoppedRequests = new Set<string>();
   private serverStartPromise: Promise<ServerReadinessResult> | null = null;
   private installing = false;
   private lastKnownCapability: OpenCodeCapabilityState | null = null;
@@ -211,10 +213,9 @@ class OpenCodeRunner {
     this.lastKnownCapability = failedCapability;
     return failedCapability;
   }
-
   public async run(options: OpenCodeRunOptions): Promise<OpenCodeRunHandle> {
     logInfo(`[OpenCodeRunner] Starting run request ${options.requestId} for conversation ${options.conversationId}, prompt="${options.prompt.slice(0, 80)}"`);
-    
+    this.activeRequestId = options.requestId;
     options.onRunStatus?.({
       conversationId: options.conversationId,
       requestId: options.requestId,
@@ -330,6 +331,14 @@ class OpenCodeRunner {
         const result = await childDone;
         logInfo(`[OpenCodeRunner] Attempt ${attemptCount} finished: exitCode=${result.exitCode}, jsonCount=${jsonCount}, stdoutBytes=${stdoutBytes}, stderrBytes=${stderrBytes}, attach=${attach}, spawnError=${result.spawnError || 'none'}`);
 
+        if (this.userStoppedRequests.has(options.requestId)) {
+          logInfo(`[OpenCodeRunner] Run was explicitly stopped by user. Exiting loop.`);
+          this.userStoppedRequests.delete(options.requestId);
+          if (this.activeRequestId === options.requestId) this.activeRequestId = null;
+          resolve(result);
+          break;
+        }
+
         // Check if fallback is needed
         if (attach && jsonCount === 0) {
           logError(`[OpenCodeRunner] Attached run failed/returned with exitCode=${result.exitCode}, spawnError=${result.spawnError || 'none'} and 0 JSON outputs. Triggering fallback to direct run.`);
@@ -342,7 +351,7 @@ class OpenCodeRunner {
             retryable: false,
           });
 
-          this.clearStaleServer();
+          await this.clearStaleServer();
           attach = false;
           mode = 'direct';
           continue; // rerun loop in direct mode
@@ -350,14 +359,18 @@ class OpenCodeRunner {
 
         // Otherwise we are done
         logInfo(`[OpenCodeRunner] Run loop completed after ${attemptCount} attempt(s). Final exitCode=${result.exitCode}, jsonCount=${jsonCount}`);
+        if (this.activeRequestId === options.requestId) this.activeRequestId = null;
         resolve(result);
         break;
       }
     });
 
     return {
-      stop: () => {
-        logInfo(`[OpenCodeRunner] Stop requested for requestId=${options.requestId}`);
+      stop: (reason: 'user' | 'watchdog' = 'user') => {
+        logInfo(`[OpenCodeRunner] Stop requested for requestId=${options.requestId}, reason=${reason}`);
+        if (reason === 'user') {
+          this.userStoppedRequests.add(options.requestId);
+        }
         if (currentChild) {
           this.killProcess(currentChild);
         }
@@ -369,9 +382,12 @@ class OpenCodeRunner {
     };
   }
 
-  public stopActiveRun() {
+  public stopActiveRun(reason: 'user' | 'watchdog' = 'user') {
+    if (reason === 'user' && this.activeRequestId) {
+      this.userStoppedRequests.add(this.activeRequestId);
+    }
     if (this.activeRun) {
-      logInfo(`[OpenCodeRunner] Stopping active run`);
+      logInfo(`[OpenCodeRunner] Stopping active run (reason=${reason})`);
       this.killProcess(this.activeRun);
     }
     this.activeRun = null;
@@ -390,7 +406,7 @@ class OpenCodeRunner {
         logInfo(`[OpenCodeRunner] ensureServer: existing server warm=${warm}`);
         if (warm) return { ready: true, url: OPENCODE_URL, details: 'OpenCode server is listening' };
         logInfo(`[OpenCodeRunner] ensureServer: existing server is stale, clearing`);
-        this.clearStaleServer();
+        await this.clearStaleServer();
       } else {
         // If we don't have an active serveProcess, but the port is listening, it is an orphaned daemon. Clear it!
         const activeOrphaned = await checkPortReady(OPENCODE_PORT, '127.0.0.1', 500);
@@ -431,13 +447,16 @@ class OpenCodeRunner {
         const ready = await checkPortReady(OPENCODE_PORT, '127.0.0.1', 3000);
         logInfo(`[OpenCodeRunner] ensureServer: port probe result ready=${ready}`);
         if (!ready) {
-          this.clearStaleServer();
+          await this.clearStaleServer();
           return { ready: false, details: 'OpenCode server port did not become ready' };
         }
+        
+        // Warmup delay to allow daemon internal task pipelines to fully initialize
+        await new Promise((resolve) => setTimeout(resolve, 1000));
         return { ready: true, url: OPENCODE_URL, details: 'OpenCode server is listening' };
       } catch (error: any) {
         logError(`[OpenCodeRunner] ensureServer: exception: ${error?.message}`);
-        this.clearStaleServer();
+        await this.clearStaleServer();
         return { ready: false, details: error?.message || 'OpenCode server could not start' };
       }
     })();
@@ -449,14 +468,17 @@ class OpenCodeRunner {
     }
   }
 
-  public clearStaleServer() {
-    if (!this.serveProcess) return;
-    try {
-      this.serveProcess.kill();
-    } catch {
-      // Process is already gone.
+  public async clearStaleServer(): Promise<void> {
+    if (this.serveProcess) {
+      logInfo(`[OpenCodeRunner] clearStaleServer: killing active serveProcess PID=${this.serveProcess.pid}`);
+      try {
+        this.killProcess(this.serveProcess);
+      } catch (err: any) {
+        logError(`[OpenCodeRunner] clearStaleServer: failed to kill: ${err.message}`);
+      }
+      this.serveProcess = null;
     }
-    this.serveProcess = null;
+    await this.killProcessOnPort(OPENCODE_PORT);
   }
 
   private async killProcessOnPort(port: number): Promise<void> {
