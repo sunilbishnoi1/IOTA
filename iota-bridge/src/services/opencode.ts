@@ -92,6 +92,7 @@ interface ServerReadinessResult {
 class OpenCodeRunner {
   private serveProcess: ChildProcess | null = null;
   private activeRun: ChildProcess | null = null;
+  private serverStartPromise: Promise<ServerReadinessResult> | null = null;
   private installing = false;
   private lastKnownCapability: OpenCodeCapabilityState | null = null;
 
@@ -212,8 +213,6 @@ class OpenCodeRunner {
   }
 
   public async run(options: OpenCodeRunOptions): Promise<OpenCodeRunHandle> {
-    this.clearStaleServer();
-    
     logInfo(`[OpenCodeRunner] Starting run request ${options.requestId} for conversation ${options.conversationId}, prompt="${options.prompt.slice(0, 80)}"`);
     
     options.onRunStatus?.({
@@ -379,56 +378,74 @@ class OpenCodeRunner {
   }
 
   public async ensureServer(): Promise<ServerReadinessResult> {
-    logInfo(`[OpenCodeRunner] ensureServer: serveProcess exists=${!!this.serveProcess}`);
-    if (this.serveProcess) {
-      const warm = await checkPortReady(OPENCODE_PORT, '127.0.0.1', 500);
-      logInfo(`[OpenCodeRunner] ensureServer: existing server warm=${warm}`);
-      if (warm) return { ready: true, url: OPENCODE_URL, details: 'OpenCode server is listening' };
-      logInfo(`[OpenCodeRunner] ensureServer: existing server is stale, clearing`);
-      this.clearStaleServer();
-    } else {
-      // If we don't have an active serveProcess, but the port is listening, it is an orphaned daemon. Clear it!
-      const activeOrphaned = await checkPortReady(OPENCODE_PORT, '127.0.0.1', 500);
-      if (activeOrphaned) {
-        logInfo(`[OpenCodeRunner] ensureServer: detected orphaned opencode daemon on port ${OPENCODE_PORT}, killing it`);
-        await this.killProcessOnPort(OPENCODE_PORT);
-      }
+    if (this.serverStartPromise) {
+      logInfo(`[OpenCodeRunner] ensureServer: server start is already in progress, waiting for it`);
+      return this.serverStartPromise;
     }
 
-    const available = await this.commandExists('opencode');
-    logInfo(`[OpenCodeRunner] ensureServer: opencode binary available=${available}`);
-    if (!available) return { ready: false, details: 'OpenCode binary is missing' };
+    this.serverStartPromise = (async () => {
+      logInfo(`[OpenCodeRunner] ensureServer: serveProcess exists=${!!this.serveProcess}`);
+      if (this.serveProcess) {
+        const warm = await checkPortReady(OPENCODE_PORT, '127.0.0.1', 500);
+        logInfo(`[OpenCodeRunner] ensureServer: existing server warm=${warm}`);
+        if (warm) return { ready: true, url: OPENCODE_URL, details: 'OpenCode server is listening' };
+        logInfo(`[OpenCodeRunner] ensureServer: existing server is stale, clearing`);
+        this.clearStaleServer();
+      } else {
+        // If we don't have an active serveProcess, but the port is listening, it is an orphaned daemon. Clear it!
+        const activeOrphaned = await checkPortReady(OPENCODE_PORT, '127.0.0.1', 500);
+        if (activeOrphaned) {
+          logInfo(`[OpenCodeRunner] ensureServer: detected orphaned opencode daemon on port ${OPENCODE_PORT}, killing it`);
+          await this.killProcessOnPort(OPENCODE_PORT);
+        }
+      }
+
+      const available = await this.commandExists('opencode');
+      logInfo(`[OpenCodeRunner] ensureServer: opencode binary available=${available}`);
+      if (!available) return { ready: false, details: 'OpenCode binary is missing' };
+
+      try {
+        logInfo(`[OpenCodeRunner] ensureServer: spawning opencode serve --port ${OPENCODE_PORT}`);
+        const child = this.spawnProcess('opencode', ['serve', '--port', String(OPENCODE_PORT)], {
+          cwd: await this.getWorkspaceRoot(),
+          stdio: 'ignore',
+          detached: true,
+        });
+        this.serveProcess = child;
+        child.unref();
+        logInfo(`[OpenCodeRunner] ensureServer: serve process PID=${child.pid}`);
+
+        child.on('close', (code) => {
+          logInfo(`[OpenCodeRunner] ensureServer: serve process PID=${child.pid} closed with code=${code}`);
+          if (this.serveProcess === child) {
+            this.serveProcess = null;
+          }
+        });
+        child.on('error', (err) => {
+          logError(`[OpenCodeRunner] ensureServer: serve process PID=${child.pid} error: ${err.message}`);
+          if (this.serveProcess === child) {
+            this.serveProcess = null;
+          }
+        });
+
+        const ready = await checkPortReady(OPENCODE_PORT, '127.0.0.1', 3000);
+        logInfo(`[OpenCodeRunner] ensureServer: port probe result ready=${ready}`);
+        if (!ready) {
+          this.clearStaleServer();
+          return { ready: false, details: 'OpenCode server port did not become ready' };
+        }
+        return { ready: true, url: OPENCODE_URL, details: 'OpenCode server is listening' };
+      } catch (error: any) {
+        logError(`[OpenCodeRunner] ensureServer: exception: ${error?.message}`);
+        this.clearStaleServer();
+        return { ready: false, details: error?.message || 'OpenCode server could not start' };
+      }
+    })();
 
     try {
-      logInfo(`[OpenCodeRunner] ensureServer: spawning opencode serve --port ${OPENCODE_PORT}`);
-      this.serveProcess = this.spawnProcess('opencode', ['serve', '--port', String(OPENCODE_PORT)], {
-        cwd: await this.getWorkspaceRoot(),
-        stdio: 'ignore',
-        detached: true,
-      });
-      this.serveProcess.unref();
-      logInfo(`[OpenCodeRunner] ensureServer: serve process PID=${this.serveProcess.pid}`);
-
-      this.serveProcess.on('close', (code) => {
-        logInfo(`[OpenCodeRunner] ensureServer: serve process closed with code=${code}`);
-        this.serveProcess = null;
-      });
-      this.serveProcess.on('error', (err) => {
-        logError(`[OpenCodeRunner] ensureServer: serve process error: ${err.message}`);
-        this.serveProcess = null;
-      });
-
-      const ready = await checkPortReady(OPENCODE_PORT, '127.0.0.1', 3000);
-      logInfo(`[OpenCodeRunner] ensureServer: port probe result ready=${ready}`);
-      if (!ready) {
-        this.clearStaleServer();
-        return { ready: false, details: 'OpenCode server port did not become ready' };
-      }
-      return { ready: true, url: OPENCODE_URL, details: 'OpenCode server is listening' };
-    } catch (error: any) {
-      logError(`[OpenCodeRunner] ensureServer: exception: ${error?.message}`);
-      this.clearStaleServer();
-      return { ready: false, details: error?.message || 'OpenCode server could not start' };
+      return await this.serverStartPromise;
+    } finally {
+      this.serverStartPromise = null;
     }
   }
 
@@ -877,11 +894,26 @@ class OpenCodeRunner {
       logInfo(`[OpenCodeRunner] killProcess: child has no PID, skipping`);
       return;
     }
-    logInfo(`[OpenCodeRunner] killProcess: killing PID=${child.pid}, platform=${process.platform}`);
+    const pid = child.pid;
+    logInfo(`[OpenCodeRunner] killProcess: killing PID=${pid}, platform=${process.platform}`);
     if (process.platform !== 'win32') {
       try {
-        process.kill(-child.pid, 'SIGKILL');
-        logInfo(`[OpenCodeRunner] killProcess: sent SIGKILL to process group -${child.pid}`);
+        // Send SIGTERM to the process group first
+        process.kill(-pid, 'SIGTERM');
+        logInfo(`[OpenCodeRunner] killProcess: sent SIGTERM to process group -${pid}`);
+
+        // Schedule a SIGKILL fallback after 3 seconds
+        const killTimer = setTimeout(() => {
+          try {
+            // Check if the process group is still alive
+            process.kill(-pid, 0);
+            logInfo(`[OpenCodeRunner] killProcess: process group -${pid} still alive after SIGTERM, sending SIGKILL`);
+            process.kill(-pid, 'SIGKILL');
+          } catch (e) {
+            // Process group has already exited cleanly
+          }
+        }, 3000);
+        killTimer.unref();
         return;
       } catch (err: any) {
         logInfo(`[OpenCodeRunner] killProcess: process group kill failed (${err.message}), falling back to child.kill()`);
