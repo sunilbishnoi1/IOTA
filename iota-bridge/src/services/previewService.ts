@@ -41,6 +41,18 @@ export class PreviewService {
     return PreviewService.instance;
   }
 
+  // Helper to check if a port is already in use
+  private isPortInUse(port: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const server = net.createServer();
+      server.once('error', () => resolve(true));
+      server.once('listening', () => {
+        server.close(() => resolve(false));
+      });
+      server.listen(port, '127.0.0.1');
+    });
+  }
+
   // Helper to kill anything on port
   public async killProcessOnPort(port: number): Promise<void> {
     const isTest = process.env.NODE_ENV === 'test';
@@ -122,10 +134,40 @@ export class PreviewService {
       logInfo(`Port ${config.port} is a reserved development port. Shifting preview to port ${port}.`);
     }
     
-    // 1. Kill existing processes on the port
+    // 1. For Expo Go: if port 8081 (default Metro) is already running, reuse it instead of starting a second Metro
+    if (config.type === 'expo-go' && (config.port === 8081 || port === 8082)) {
+      const metroRunning = await this.isPortInUse(8081);
+      if (metroRunning) {
+        logInfo(`Metro bundler is already running on port 8081. Reusing existing instance for Expo Go preview instead of starting a new one.`);
+        port = 8081;
+        const existingPort = port;
+        const codespaceName = process.env.CODESPACE_NAME;
+        const portForwardingDomain = process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN || 'app.github.dev';
+        let resolvedUrl = '';
+        if (codespaceName) {
+          resolvedUrl = `https://${codespaceName}-${existingPort}.${portForwardingDomain}`;
+        } else {
+          resolvedUrl = `http://${getLocalIpAddress()}:${existingPort}`;
+        }
+        resolvedUrl = resolvedUrl.replace(/^https:/, 'exps:').replace(/^http:/, 'exp:');
+        const state: PreviewProcessState = {
+          port: existingPort,
+          originalPort: config.port !== existingPort ? config.port : undefined,
+          pid: null,
+          status: 'running',
+          command: config.command,
+          url: resolvedUrl,
+        };
+        this.activePreviews.set(existingPort, { state });
+        onStatusChange(state);
+        return state;
+      }
+    }
+
+    // 2. Kill existing processes on the port (skip for expo-go at 8081 - handled above)
     await this.killProcessOnPort(port);
 
-    // 2. Initialize state
+    // 3. Initialize state
     const codespaceName = process.env.CODESPACE_NAME;
     const portForwardingDomain = process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN || 'app.github.dev';
     

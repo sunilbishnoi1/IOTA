@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import * as Clipboard from 'expo-clipboard';
 import { Animated, Platform, Text } from 'react-native';
 import {
   OpenCodeApprovalRequest,
@@ -9,6 +10,20 @@ import {
   OpenCodeToolActivity,
 } from '../../types/opencode';
 import { Theme } from '../../styles/theme';
+
+// ─── Shared hooks ───────────────────────────────────────────────────────────
+
+export function useCopyToClipboard(resetMs = 2000) {
+  const [copied, setCopied] = useState(false);
+
+  const copy = useCallback(async (text: string) => {
+    await Clipboard.setStringAsync(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), resetMs);
+  }, [resetMs]);
+
+  return { copied, copy };
+}
 
 // ─── Shared types ───────────────────────────────────────────────────────────
 

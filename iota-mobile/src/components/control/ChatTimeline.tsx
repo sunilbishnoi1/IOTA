@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useCallback } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -19,6 +19,7 @@ import { Theme } from '../../styles/theme';
 import { AnimatedDotsText, ChatTurn, GroupedItem } from './ControlScreenConstants';
 import { ChatMessageBubble } from './ChatMessageBubble';
 import { ToolActivityRow, FileChangeCard, ApprovalRequestCard } from './ToolActivityCard';
+import { CopyChipProvider, useCopyChip } from './CopyChipContext';
 
 // ─── Props ──────────────────────────────────────────────────────────────────
 
@@ -211,58 +212,77 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   };
 
   return (
-    <>
-      <FlatList
-        ref={flatListRef}
-        data={groupedTimelineItems}
-        keyExtractor={(item) => item.key}
-        renderItem={renderItem}
-        contentContainerStyle={groupedTimelineItems.length ? styles.timelineContent : styles.emptyContent}
-        onScroll={onScroll}
-        scrollEventThrottle={16}
-        onContentSizeChange={onContentSizeChange}
-        ListEmptyComponent={
-          isSyncing ? (
-            <View style={styles.emptyState}>
-              <ActivityIndicator size="large" color={Theme.colors.primary.glow} />
-              <Text style={styles.emptyTitle}>Syncing conversation...</Text>
-              <Text style={styles.emptySubtitle}>Loading chat history from Codespace bridge...</Text>
-            </View>
-          ) : (
-            <View style={styles.emptyState}>
-              <MaterialIcons name="chat-bubble-outline" size={44} color="rgba(255,255,255,0.18)" />
-              <Text style={styles.emptyTitle}>Ready for an OpenCode task</Text>
-              <Text style={styles.emptySubtitle}>Send a coding request when the bridge reports OpenCode is ready.</Text>
-              <View style={styles.pillsContainer}>
-                {promptPills.map((pill) => (
-                  <TouchableOpacity
-                    key={pill.label}
-                    style={styles.pillButton}
-                    onPress={() => onPillPress(pill.text)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.pillText}>{pill.label}</Text>
-                  </TouchableOpacity>
-                ))}
+    <CopyChipProvider>
+      <DismissCapture>
+        <FlatList
+          ref={flatListRef}
+          data={groupedTimelineItems}
+          keyExtractor={(item) => item.key}
+          renderItem={renderItem}
+          contentContainerStyle={groupedTimelineItems.length ? styles.timelineContent : styles.emptyContent}
+          onScroll={onScroll}
+          scrollEventThrottle={16}
+          onContentSizeChange={onContentSizeChange}
+          ListEmptyComponent={
+            isSyncing ? (
+              <View style={styles.emptyState}>
+                <ActivityIndicator size="large" color={Theme.colors.primary.glow} />
+                <Text style={styles.emptyTitle}>Syncing conversation...</Text>
+                <Text style={styles.emptySubtitle}>Loading chat history from Codespace bridge...</Text>
               </View>
-            </View>
-          )
-        }
-      />
+            ) : (
+              <View style={styles.emptyState}>
+                <MaterialIcons name="chat-bubble-outline" size={44} color="rgba(255,255,255,0.18)" />
+                <Text style={styles.emptyTitle}>Ready for an OpenCode task</Text>
+                <Text style={styles.emptySubtitle}>Send a coding request when the bridge reports OpenCode is ready.</Text>
+                <View style={styles.pillsContainer}>
+                  {promptPills.map((pill) => (
+                    <TouchableOpacity
+                      key={pill.label}
+                      style={styles.pillButton}
+                      onPress={() => onPillPress(pill.text)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.pillText}>{pill.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            )
+          }
+        />
 
-      {showScrollToBottom && (
-        <TouchableOpacity
-          style={[
-            styles.scrollToBottomButton,
-            { bottom: (isRecording ? 48 : Math.max(48, inputHeight)) + 36 }
-          ]}
-          onPress={onScrollToBottom}
-          activeOpacity={0.8}
-        >
-          <MaterialIcons name="keyboard-arrow-down" size={22} color="#ffffff" />
-        </TouchableOpacity>
-      )}
-    </>
+        {showScrollToBottom && (
+          <TouchableOpacity
+            style={[
+              styles.scrollToBottomButton,
+              { bottom: (isRecording ? 48 : Math.max(48, inputHeight)) + 36 }
+            ]}
+            onPress={onScrollToBottom}
+            activeOpacity={0.8}
+          >
+            <MaterialIcons name="keyboard-arrow-down" size={22} color="#ffffff" />
+          </TouchableOpacity>
+        )}
+      </DismissCapture>
+    </CopyChipProvider>
+  );
+};
+
+// ─── Dismiss Capture ───────────────────────────────────────────────────────
+
+const DismissCapture: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { activeMessageId, dismiss } = useCopyChip();
+
+  const handleCapture = useCallback(() => {
+    if (activeMessageId) dismiss();
+    return false;
+  }, [activeMessageId, dismiss]);
+
+  return (
+    <View onStartShouldSetResponderCapture={handleCapture} style={{ flex: 1 }}>
+      {children}
+    </View>
   );
 };
 

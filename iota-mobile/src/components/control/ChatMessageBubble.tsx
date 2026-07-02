@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -12,7 +13,8 @@ import * as Clipboard from 'expo-clipboard';
 import { MaterialIcons } from '@expo/vector-icons';
 import { OpenCodeMessage } from '../../types/opencode';
 import { Theme } from '../../styles/theme';
-import { AnimatedDotsText, markdownStyles } from './ControlScreenConstants';
+import { AnimatedDotsText, markdownStyles, useCopyToClipboard } from './ControlScreenConstants';
+import { useCopyChip } from './CopyChipContext';
 
 // ─── Props ──────────────────────────────────────────────────────────────────
 
@@ -101,6 +103,49 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system' || message.role === 'status';
 
+  const { activeMessageId, setActiveMessageId, dismiss } = useCopyChip();
+  const { copied, copy } = useCopyToClipboard();
+
+  const showCopy = activeMessageId === message.id;
+
+  const handlePress = useCallback(() => {
+    if (activeMessageId) dismiss();
+  }, [dismiss, activeMessageId]);
+
+  const handleLongPress = useCallback(() => {
+    setActiveMessageId(message.id);
+  }, [message.id, setActiveMessageId]);
+
+  const handleCopyMessage = useCallback(() => {
+    copy(message.content);
+    setTimeout(() => dismiss(), 2000);
+  }, [copy, message.content, dismiss]);
+
+  const renderCopyChip = () => {
+    if (!showCopy) return null;
+    const chipAlign = isUser
+      ? styles.copyChipUser
+      : isSystem
+        ? styles.copyChipSystem
+        : styles.copyChipAssistant;
+    return (
+      <TouchableOpacity
+        style={[styles.copyChip, chipAlign]}
+        onPress={handleCopyMessage}
+        activeOpacity={0.7}
+      >
+        <MaterialIcons
+          name={copied ? 'check' : 'content-copy'}
+          size={13}
+          color={copied ? Theme.colors.secondary.glow : Theme.colors.text.secondary}
+        />
+        <Text style={[styles.copyChipText, copied && { color: Theme.colors.secondary.glow }]}>
+          {copied ? 'Copied!' : 'Copy'}
+        </Text>
+      </TouchableOpacity>
+    );
+  };
+
   if (!message.content.trim()) {
     return null;
   }
@@ -121,30 +166,42 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
   if (message.role === 'assistant') {
     const isShort = isShortSingleLine(content);
     return (
-      <View style={[
-        styles.assistantContainer,
-        isShort ? styles.assistantShort : styles.assistantFullWidth
-      ]}>
-        {!!thoughts && renderThinkingAccordion(thoughts, message.id, expandedThoughts, onToggleThought)}
-        {!!content.trim() && (
-          <Markdown rules={markdownRules} style={markdownStyles}>{content}</Markdown>
-        )}
-      </View>
+      <Pressable onPress={handlePress} onLongPress={handleLongPress} delayLongPress={400}>
+        <View style={[
+          styles.assistantContainer,
+          isShort ? styles.assistantShort : styles.assistantFullWidth
+        ]}>
+          {renderCopyChip()}
+          {!!thoughts && renderThinkingAccordion(thoughts, message.id, expandedThoughts, onToggleThought)}
+          {!!content.trim() && (
+            <Markdown rules={markdownRules} style={markdownStyles}>{content}</Markdown>
+          )}
+        </View>
+      </Pressable>
     );
   }
 
   return (
-    <View style={[styles.messageBubble, isUser && styles.userBubble, isSystem && styles.systemBubble]}>
-      {isUser || isSystem ? (
-        content.endsWith('...') ? (
-          <AnimatedDotsText text={content} style={styles.messageText} />
-        ) : (
-          <Text style={styles.messageText}>{content}</Text>
-        )
-      ) : (
-        <Markdown rules={markdownRules} style={markdownStyles}>{content}</Markdown>
-      )}
-    </View>
+    <Pressable onPress={handlePress} onLongPress={handleLongPress} delayLongPress={400}>
+      <View style={[
+        styles.messageBubbleWrapper,
+        isUser && styles.userBubbleWrapper,
+        isSystem && styles.systemBubbleWrapper,
+      ]}>
+        {renderCopyChip()}
+        <View style={[styles.messageBubble, isUser && styles.userBubble, isSystem && styles.systemBubble]}>
+          {isUser || isSystem ? (
+            content.endsWith('...') ? (
+              <AnimatedDotsText text={content} style={styles.messageText} />
+            ) : (
+              <Text style={styles.messageText}>{content}</Text>
+            )
+          ) : (
+            <Markdown rules={markdownRules} style={markdownStyles}>{content}</Markdown>
+          )}
+        </View>
+      </View>
+    </Pressable>
   );
 };
 
@@ -186,6 +243,42 @@ function renderThinkingAccordion(
 // ─── Styles ─────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
+  messageBubbleWrapper: {
+    position: 'relative',
+  },
+  userBubbleWrapper: {
+    alignItems: 'flex-end',
+  },
+  systemBubbleWrapper: {
+    alignItems: 'center',
+  },
+  copyChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    backgroundColor: 'rgba(30, 30, 50, 0.95)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    marginBottom: 4,
+    zIndex: 10,
+  },
+  copyChipUser: {
+    alignSelf: 'flex-end',
+  },
+  copyChipSystem: {
+    alignSelf: 'center',
+  },
+  copyChipAssistant: {
+    alignSelf: 'flex-start',
+  },
+  copyChipText: {
+    color: Theme.colors.text.secondary,
+    fontSize: 11,
+    fontWeight: '600',
+  },
   messageBubble: {
     maxWidth: '88%',
     paddingHorizontal: 10,

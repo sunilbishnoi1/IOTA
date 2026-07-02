@@ -59,3 +59,7 @@
 ## Python Flask Command Not Found on Preview Startup
 - **Root cause:** Spawned flask commands fail with `flask: not found` if the virtual environment is not activated or `flask` is not in the system `PATH`.
 - **Fix:** Use `python -m flask run` instead of `flask run`, or point to the virtual environment binary (`.venv/bin/flask`).
+
+## Duplicate Metro Instance Corrupts Cache During Self-Preview
+- **Root cause:** Previewing an Expo Go app that is the same project already serving the host app starts a second `npx expo start` on a shifted port (8082). Two Metro instances for the same project share `.expo/` and cache files, corrupting each other's state — the host Metro then serves a corrupted bundle, crashing Expo Go on next launch.
+- **Fix:** In `startPreview()`, check if Metro (port 8081) is already running for expo-go type previews; if so, skip spawning and reuse the existing instance via the same URL.

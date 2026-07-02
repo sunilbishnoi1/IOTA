@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, Image, StyleSheet, Linking, Modal, Platform } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Theme } from '../../styles/theme';
+import { useCopyToClipboard } from './ControlScreenConstants';
 
 interface PreviewExpoGoProps {
   url: string; // exps://...
@@ -10,6 +11,8 @@ interface PreviewExpoGoProps {
 
 export const PreviewExpoGo: React.FC<PreviewExpoGoProps> = ({ url, port }) => {
   const [showDownloadModal, setShowDownloadModal] = useState(false);
+
+  const { copied: urlCopied, copy: copyUrl } = useCopyToClipboard();
 
   const openExpoGo = async () => {
     try {
@@ -35,7 +38,7 @@ export const PreviewExpoGo: React.FC<PreviewExpoGoProps> = ({ url, port }) => {
     <View style={styles.container}>
       <View style={styles.card}>
         <Text style={styles.headline}>Expo Go Preview</Text>
-        <Text style={styles.subheadline}>Scan QR code or click the button below to preview in Expo Go</Text>
+        <Text style={styles.subheadline}>Scan with another device, or close this app then paste the URL into Expo Go</Text>
 
         <View style={styles.qrContainer}>
           <Image
@@ -50,7 +53,16 @@ export const PreviewExpoGo: React.FC<PreviewExpoGoProps> = ({ url, port }) => {
           <Text style={styles.buttonText}>Open in Expo Go</Text>
         </TouchableOpacity>
 
-        <Text style={styles.urlText}>{url}</Text>
+        <View style={styles.urlRow}>
+          <Text style={styles.urlText} numberOfLines={1}>{url}</Text>
+          <TouchableOpacity onPress={() => copyUrl(url)} style={styles.copyUrlBtn}>
+            <MaterialIcons
+              name={urlCopied ? "check" : "content-copy"}
+              size={16}
+              color={urlCopied ? Theme.colors.secondary.default : Theme.colors.text.secondary}
+            />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Download Modal */}
@@ -159,10 +171,22 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginLeft: 8,
   },
+  urlRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+    paddingLeft: 10,
+  },
   urlText: {
+    flex: 1,
     color: Theme.colors.text.muted,
     fontSize: 10,
-    textAlign: 'center',
+  },
+  copyUrlBtn: {
+    padding: 8,
   },
   modalOverlay: {
     flex: 1,
