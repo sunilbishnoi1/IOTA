@@ -9,6 +9,9 @@ import {
   AppState,
   NativeModules,
 } from 'react-native';
+import * as Font from 'expo-font';
+import Constants from 'expo-constants';
+import { requireNativeModule } from 'expo-modules-core';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { DashboardScreen } from './src/screens/DashboardScreen';
 import { ControlScreen } from './src/screens/ControlScreen';
@@ -43,6 +46,86 @@ const getLocalBridgeUrlFromBundle = (): string | null => {
   }
   return null;
 };
+
+const FONT_CDN_URLS = [
+  'https://cdn.jsdelivr.net/npm/@expo/vector-icons@14.1.0/build/vendor/react-native-vector-icons/Fonts/MaterialIcons.ttf',
+  'https://unpkg.com/@expo/vector-icons@14.1.0/build/vendor/react-native-vector-icons/Fonts/MaterialIcons.ttf',
+  'https://raw.githubusercontent.com/oblador/react-native-vector-icons/master/Fonts/MaterialIcons.ttf',
+];
+
+async function ensureMaterialIconsLoaded() {
+  const fontFamily = 'material';
+  if (Font.isLoaded(fontFamily)) return;
+
+  let localUri: string | null = null;
+
+  // Strategy 1: Download from CDN via native asset module
+  try {
+    const AssetModule = requireNativeModule('ExpoAsset');
+    for (const url of FONT_CDN_URLS) {
+      try {
+        const result: string = await AssetModule.downloadAsync(url, null, 'ttf');
+        if (result) {
+          localUri = result;
+          break;
+        }
+      } catch {
+        // try next URL
+      }
+    }
+  } catch {
+    console.warn('Font: ExpoAsset native module unavailable');
+  }
+
+  // Strategy 2: Construct Metro proxy URL from bundle script URL
+  if (!localUri) {
+    try {
+      const scriptURL = NativeModules.SourceCode?.scriptURL;
+      if (scriptURL) {
+        const origin = scriptURL.substring(0, scriptURL.lastIndexOf('/'));
+        const path = '/assets/../node_modules/@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/MaterialIcons.ttf';
+        const AssetModule = requireNativeModule('ExpoAsset');
+        localUri = await AssetModule.downloadAsync(origin + path, null, 'ttf');
+      }
+    } catch {
+      console.warn('Font: Metro proxy download failed');
+    }
+  }
+
+  if (!localUri) {
+    console.warn('Font: All download strategies failed');
+    return;
+  }
+
+  // Register via Font.loadAsync to set loaded[fontFamily] = true
+  try {
+    await Font.loadAsync({ [fontFamily]: { uri: localUri } });
+  } catch {
+    console.warn('Font: Font.loadAsync failed with local URI');
+    // Direct native registration fallback
+    try {
+      const FontLoader = requireNativeModule('ExpoFontLoader');
+      const registerName = Constants.appOwnership === 'expo' && Platform.OS === 'android'
+        ? `${Constants.sessionId}-${fontFamily}`
+        : fontFamily;
+      await FontLoader.loadAsync(registerName, localUri);
+    } catch (e) {
+      console.warn('Font: Direct native registration failed', e);
+      return;
+    }
+  }
+
+  // Register with processFontFamily name to ensure lookup matches style preprocessor
+  try {
+    const processedName = Font.processFontFamily(fontFamily);
+    if (processedName && processedName !== fontFamily) {
+      const FontLoader = requireNativeModule('ExpoFontLoader');
+      await FontLoader.loadAsync(processedName, localUri);
+    }
+  } catch {
+    // Non-critical: the primary registration already covers most cases
+  }
+}
 
 const checkLocalBridgeActive = async (url: string): Promise<{ active: boolean; activeLocalFolder?: string }> => {
   try {
@@ -146,6 +229,9 @@ export default function App() {
   useEffect(() => {
     async function init() {
       try {
+        // Pre-load MaterialIcons font robustly.
+        // We try CDN (reliable over any network), then Metro proxy URL, then bundled asset.
+        await ensureMaterialIconsLoaded();
         const savedUrl = await secureStoreService.getBridgeUrl();
         const detectedUrl = getLocalBridgeUrlFromBundle();
         

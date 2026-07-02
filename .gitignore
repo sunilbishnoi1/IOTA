@@ -5,7 +5,6 @@ Thumbs.db
 *.swp
 .vscode/
 .idea/
-docs/
 .codex/
 .iota/
 claude.md

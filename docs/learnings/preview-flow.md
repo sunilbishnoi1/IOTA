@@ -60,6 +60,12 @@
 - **Root cause:** Spawned flask commands fail with `flask: not found` if the virtual environment is not activated or `flask` is not in the system `PATH`.
 - **Fix:** Use `python -m flask run` instead of `flask run`, or point to the virtual environment binary (`.venv/bin/flask`).
 
+## Icon Fonts Render as CJK Characters in Expo Go Over Port Forwarding
+- **Root cause 1 (Metro URL unreachable):** `Font.loadAsync` with a `require()` asset uses `Asset.fromModule()` which generates a Metro-served URL (`http://127.0.0.1:8081/...`). Over Codespaces port forwarding, the phone cannot reach localhost. `expo-font`'s internal Asset download fails, the font is never registered, and PUA codepoints fallback to system font → CJK.
+- **Root cause 2 (processFontFamily scoping mismatch):** In Expo Go, `processFontFamily('material')` returns `'ExpoFont-{sessionId}-material'` (via `StyleSheet.setStyleAttributePreprocessor`), but `FontLoaderModule.loadAsync` in the npm `expo-font` has `prefix = ""`, registering the Typeface as `'{sessionId}-material'` without the `ExpoFont-` prefix. The native `ReactFontManager` lookup fails to match, falling back to system font. The actual Expo Go APK may override `prefix = "ExpoFont-"` which would resolve this — but the npm version does not.
+- **Fix 1 (download reliability):** Use `ExpoAsset.downloadAsync(url, null, type)` native module directly to download font from CDN URLs (jsdelivr, unpkg, GitHub raw). This bypasses Metro's `Asset.fromModule()` URL resolution entirely.
+- **Fix 2 (name mismatch):** After CDN download, register the font TWICE: (a) via `Font.loadAsync({ material: { uri: localUri } })` which sets `loaded['material'] = true` and registers under the scoped name, and (b) via `ExpoFontLoader.loadAsync(processFontFamily('material'), localUri)` to ensure the font is also registered under the exact name that React Native's style preprocessor will look up.
+
 ## Duplicate Metro Instance Corrupts Cache During Self-Preview
 - **Root cause:** Previewing an Expo Go app that is the same project already serving the host app starts a second `npx expo start` on a shifted port (8082). Two Metro instances for the same project share `.expo/` and cache files, corrupting each other's state — the host Metro then serves a corrupted bundle, crashing Expo Go on next launch.
 - **Fix:** In `startPreview()`, check if Metro (port 8081) is already running for expo-go type previews; if so, skip spawning and reuse the existing instance via the same URL.
