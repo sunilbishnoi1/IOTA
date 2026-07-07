@@ -1,8 +1,16 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-specs/008-preview-support/plan.md
+specs/012-migrate-to-opencode-serve/plan.md
 <!-- SPECKIT END -->
+
+------------------------------------------------
+## Project Rules (Must Follow):
+- never push any changes (or commit changes) to remote github repo without asking the user and gettting confirmation from user.
+- If the fix for any problem/issue is not obvious or clear even after reading all the relevant code files and you are not confident about the fix. then you must first only add logs wherever needed (and not make any code changes) and then ask user to test and provide logs so that you can get better idea about the issue repeat it untill your not confident about the fix.
+
+- Make sure to not add any unnecessary comments which are obvious or not needed as per swe standards
+------------------------------------------------
 
 ## Learning-Based Error Prevention (`docs/learnings/`)
 
@@ -30,26 +38,4 @@ When spawning child processes (`child_process.spawn`) in Node.js that must execu
 ## TypeScript Compilation Check
 Always run TS/TSX error/compilation checks in the codebase after any code changes (especially inside `iota-mobile` or `iota-bridge`) to ensure no compilation or typescript errors are introduced.
 
-## Workspace Preview Configuration (`.iota/preview.json`)
 
-When asked to configure or generate preview settings for the workspace, inspect the project's codebase to detect the framework (e.g. React Native/Expo, Vite, Next.js, Flutter Web, static HTML). Then, create or update `.iota/preview.json` at the root of the workspace.
-
-The file MUST adhere to this format:
-```json
-{
-  "servers": [
-    {
-      "name": "Expo Go App", // User-friendly name
-      "cwd": "iota-mobile", // Working directory path relative to workspace root (defaults to ".")
-      "command": "npx expo start", // Command to start the server
-      "port": 8081, // Target port number
-      "type": "expo-go" // 'expo-go' | 'web'
-    }
-  ]
-}
-```
-
-### Auto-Detection Heuristics:
-1. **Expo / React Native**: Check if `package.json` contains `"expo"` dependency. Command: `"npx expo start"`, Port: `8081`, Type: `"expo-go"`.
-2. **Web (Vite, Next.js, React, Vue, Svelte, etc.)**: Check for package dependencies or config files. Use the package dev command (e.g. `"npm run dev"` or `"next dev"`), detect the default port (e.g. `3000`, `5173`), Type: `"web"`.
-3. **Flutter Web**: Check for `pubspec.yaml`. Command: `"flutter run -d web-server --web-port 8080 --web-hostname 0.0.0.0"`, Port: `8080`, Type: `"web"`.

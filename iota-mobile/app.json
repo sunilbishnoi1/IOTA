@@ -2,13 +2,13 @@
   "expo": {
     "name": "iota",
     "slug": "iota",
-    "version": "0.5.0",
+    "version": "0.5.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true,
-      "buildNumber": "5",
+      "buildNumber": "6",
       "infoPlist": {
         "LSApplicationQueriesSchemes": [
           "exp",
@@ -18,7 +18,7 @@
     },
     "android": {
       "package": "com.iota.app",
-      "versionCode": 5,
+      "versionCode": 6,
       "adaptiveIcon": {
         "backgroundColor": "#333333",
         "foregroundImage": "./assets/android-icon-foreground.png"

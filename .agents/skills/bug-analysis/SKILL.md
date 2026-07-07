@@ -54,20 +54,24 @@ Launch **at least 3 subagents** simultaneously, each analyzing from a different 
 - Identify where data is lost, misrouted, or incorrectly transformed
 - Look for: wrong event names, missing payload fields, early returns, swallowed errors
 
-**Subagent B — State & Lifecycle Analyst:**
-- Examine component state management, React hooks dependencies, effect cleanup
-- Look for: stale closures, missing cleanup functions, wrong dependency arrays, race conditions, improper useRef vs useState
-- Check socket event registration/cleanup patterns
-- Look for: listener leaks, missing off(), double registrations
+**Subagent B — UI, Rendering & Styling Logic Analyst:**
+- Analyze visual components, layout structures, user event handling, and rendering conditions.
+- Look for: styling discrepancies, incorrect component nesting, missing or cut-off elements, styling class/property mismatches, and responsive design issues.
+- Verify component state-to-UI updates, rendering lifecycles, and check if elements are properly updated/drawn in the UI.
 
-**Subagent C — Config & Environment Auditor:**
-- Check configuration files, environment variables, platform-specific settings
-- Look for: missing whitelist entries (URL schemes, permissions), wrong paths, missing API keys, incorrect ports
-- Verify config files against what the code expects
+**Subagent C — Input/Output, Parsing & Data Normalization Auditor:**
+- Audit how raw data streams, API responses, socket events, or system payloads are parsed, transformed, and normalized.
+- Look for: missing properties, formatting/mapping errors, incorrect offset tracking in text streams, and data slicing or truncation issues.
+- Trace the lifecycle of intermediate text (e.g., thoughts, progress states, tool starts/completes) and final model responses, verifying that no content is incorrectly hidden, misordered, or lost.
 
-**Additional subagents if needed:**
-- **Subagent D — Network/API Flow Analyst**: If the issue involves network requests, trace the full HTTP/WebSocket request-response cycle, check error handling, retry logic
-- **Subagent E — Concurrency/Timing Analyst**: If the issue involves async operations, timers, sockets, look for race conditions, ordering bugs
+**Subagent D — Legacy vs. Modern Architecture Auditor:**
+- Scan for legacy code remnants, obsolete helper files, backward compatibility wrappers, or deprecated interfaces that should be cleaned up or deleted.
+- Look for: code attempting to normalize modern protocol structures into deprecated models, duplicate logic paths, and legacy architectural blockages.
+- Ensure clean alignment with current codebase patterns (e.g., opencode serve based functionality).
+
+**Subagent E — Execution Flow, Concurrency & Timing Analyst:**
+- Check async logic, execution sequencing, timing constraints, and state transitions.
+- Look for: race conditions, unhandled promise rejections, logic hanging or deadlocking the app, improper event listener registration/cleanup (leaks), or incorrect React hook dependency arrays.
 
 Each subagent MUST:
 1. Read the actual files from disk (not from memory)
@@ -118,10 +122,11 @@ Output a structured report:
 {for each bug, explain how it produces the observed symptom}
 
 ### What Was Checked
-- Data flow trace: {files checked}
-- State management: {files checked}
-- Config/Platform: {files checked}
-- Network/API: {files checked}
+- Data/event flow: {files checked}
+- UI/Rendering: {files checked}
+- Parsing/Normalization: {files checked}
+- Legacy/Architecture: {files checked}
+- Concurrency/Timing/Lifecycle: {files checked}
 
 ### Confidence Assessment
 - HIGH confidence findings: {count} (cross-verified by ≥2 agents)
@@ -139,12 +144,6 @@ Output a structured report:
    - File paths and line numbers
    - What the fix was
    - Key lesson to prevent recurrence
-
-### Step 8: Offer Next Steps
-
-After the report, ask:
-- "Would you like me to create a plan to fix these issues?"
-- "Would you like me to fix them directly?"
 
 ## Operating Principles
 

@@ -33,6 +33,8 @@ interface ChatInputBarProps {
   textInputRef: React.RefObject<TextInput>;
   isVisible: boolean;
   slashCommandsAutocomplete: React.ReactNode;
+  thinkingMode: 'show' | 'hide';
+  onToggleThinkingMode: () => void;
 }
 
 // ─── Main component ─────────────────────────────────────────────────────────
@@ -51,6 +53,8 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
   textInputRef,
   isVisible,
   slashCommandsAutocomplete,
+  thinkingMode,
+  onToggleThinkingMode,
 }) => {
   // Voice STT states
   const [groqApiKey, setGroqApiKey] = useState<string | null>(null);
@@ -230,6 +234,23 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
           )}
 
           <View style={styles.actionButtonsContainer}>
+            {/* {!isRecording && (
+              <TouchableOpacity
+                style={[
+                  styles.thinkingToggleButton,
+                  thinkingMode === 'show' && styles.thinkingToggleButtonActive
+                ]}
+                onPress={onToggleThinkingMode}
+                activeOpacity={0.7}
+              >
+                <MaterialIcons
+                  name="psychology"
+                  size={18}
+                  color={thinkingMode === 'show' ? Theme.colors.primary.glow : 'rgba(255, 255, 255, 0.4)'}
+                />
+              </TouchableOpacity>
+            )} */}
+
             {!!groqApiKey && (
               <TouchableOpacity
                 style={[
@@ -336,6 +357,20 @@ const styles = StyleSheet.create({
   micButtonRecording: {
     backgroundColor: Theme.colors.accent.default,
     borderColor: Theme.colors.accent.glow,
+  },
+  thinkingToggleButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  thinkingToggleButtonActive: {
+    backgroundColor: 'rgba(99, 102, 241, 0.15)',
+    borderColor: 'rgba(99, 102, 241, 0.4)',
   },
   wavesContainer: {
     flex: 1,

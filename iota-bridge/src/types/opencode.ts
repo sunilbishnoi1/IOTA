@@ -22,7 +22,6 @@ export type OpenCodeConversationStatus =
   | 'idle'
   | 'starting'
   | 'running'
-  | 'awaiting_first_output'
   | 'awaiting_approval'
   | 'completed'
   | 'stopped'
@@ -33,37 +32,36 @@ export type OpenCodeMessageRole = 'user' | 'assistant' | 'system' | 'status';
 export type OpenCodeMessageStatus = 'pending' | 'streaming' | 'complete' | 'error' | 'stopped';
 
 export type OpenCodeRunPhase =
-  | 'preflight'
-  | 'server_start'
-  | 'direct_run'
-  | 'attached_run'
-  | 'spawned'
-  | 'awaiting_first_output'
+  | 'connecting'
+  | 'session_created'
+  | 'prompt_sent'
   | 'streaming'
-  | 'finalizing'
   | 'completed'
   | 'failed'
   | 'stopped';
 
-export interface OpenCodeRunLifecycle {
-  requestId: string;
-  conversationId: string;
-  promptMessageId?: string;
-  assistantMessageId?: string;
-  phase: OpenCodeRunPhase;
-  startedAt: string;
-  firstActivityAt?: string;
-  finishedAt?: string;
-  exitCode?: number | null;
-  errorSummary?: string;
-}
-
-export interface OpenCodeRunStatusEvent {
+export interface OpenCodePromptStatusEvent {
   conversationId: string;
   requestId: string;
   phase: OpenCodeRunPhase;
   message: string;
   retryable?: boolean;
+}
+
+export interface OpenCodePart {
+  id: string;
+  type: 'text' | 'reasoning' | 'tool' | 'step-start' | 'step-finish' | 'file' | 'patch' | 'snapshot' | 'agent' | 'retry' | 'compaction';
+  text?: string;
+  delta?: string;
+  tool?: string;
+  callID?: string;
+  state?: Record<string, unknown>;
+  input?: Record<string, unknown>;
+  result?: unknown;
+  output?: string;
+  error?: string;
+  time?: { start: string; end?: string };
+  metadata?: Record<string, unknown>;
 }
 
 export interface OpenCodeMessage {
@@ -74,6 +72,7 @@ export interface OpenCodeMessage {
   createdAt: string;
   status: OpenCodeMessageStatus;
   metadata?: Record<string, unknown>;
+  parts?: OpenCodePart[];
 }
 
 export type OpenCodeToolKind = 'command' | 'file_read' | 'file_write' | 'search' | 'test' | 'other';
@@ -123,6 +122,11 @@ export interface OpenCodeApprovalRequest {
   resolvedAt?: string;
 }
 
+export interface OpenCodeTokenUsage {
+  cost?: number;
+  tokens?: Record<string, unknown>;
+}
+
 export interface OpenCodeConversation {
   id: string;
   opencodeSessionId?: string;
@@ -138,6 +142,7 @@ export interface OpenCodeConversation {
   lastRunPhase?: OpenCodeRunPhase;
   lastError?: string;
   activeModel?: string;
+  tokenUsage?: OpenCodeTokenUsage;
 }
 
 export interface OpenCodeMessageRequest {
@@ -149,23 +154,35 @@ export interface OpenCodeMessageRequest {
 export interface OpenCodeApprovalDecision {
   conversationId: string;
   approvalId: string;
-  decision: 'approve' | 'deny';
+  decision: 'once' | 'always' | 'reject';
 }
 
 export interface OpenCodeSyncRequest {
   conversationId?: string;
 }
 
+export interface OpenCodeQuestionOption {
+  label: string;
+  description?: string;
+}
+
+export interface OpenCodeQuestionItem {
+  question: string;
+  header?: string;
+  options?: OpenCodeQuestionOption[];
+  multiple?: boolean;
+  custom?: boolean;
+}
+
+export interface OpenCodeQuestionRequest {
+  id: string;
+  conversationId: string;
+  questions: OpenCodeQuestionItem[];
+  tool?: string;
+  createdAt: string;
+}
+
 export interface OpenCodeStopRequest {
   conversationId: string;
 }
 
-export type NormalizedOpenCodeEvent =
-  | { type: 'message_delta'; conversationId: string; messageId: string; content: string; done: boolean }
-  | { type: 'message'; conversationId: string; message: OpenCodeMessage }
-  | { type: 'tool_activity'; conversationId: string; activity: OpenCodeToolActivity }
-  | { type: 'file_change'; conversationId: string; change: OpenCodeFileChange }
-  | { type: 'approval_request'; conversationId: string; approval: OpenCodeApprovalRequest }
-  | { type: 'session'; conversationId: string; sessionId: string }
-  | { type: 'run_status'; status: OpenCodeRunStatusEvent }
-  | { type: 'error'; conversationId?: string; code: string; message: string; retryable: boolean };

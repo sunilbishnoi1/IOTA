@@ -1,13 +1,19 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { opencodeRunner } from '../opencode';
+import { opencodeServerClient } from '../opencode';
 import { opencodeStore } from '../opencodeStore';
+import { getWorkspaceRoot } from '../logger';
 
-describe('OpenCodeRunner Integration & Simulation Tests', () => {
+describe('OpenCodeServerClient Integration & Simulation Tests', () => {
   const mockBinDir = path.join(__dirname, 'mock-bin');
   const originalPath = process.env.PATH;
 
   beforeAll(() => {
+    const logPath = path.join(process.cwd(), 'mock_server.log');
+    if (fs.existsSync(logPath)) {
+      try { fs.unlinkSync(logPath); } catch (e) {}
+    }
+
     // 1. Create a mock bin directory
     if (!fs.existsSync(mockBinDir)) {
       fs.mkdirSync(mockBinDir, { recursive: true });
@@ -17,6 +23,14 @@ describe('OpenCodeRunner Integration & Simulation Tests', () => {
     const mockCode = `
 const fs = require('fs');
 const http = require('http');
+const path = require('path');
+
+const logPath = path.join(process.cwd(), 'mock_server.log');
+function log(msg) {
+  try {
+    fs.appendFileSync(logPath, '[' + new Date().toISOString() + '] ' + msg + '\\n', 'utf8');
+  } catch (e) {}
+}
 
 const args = process.argv.slice(2);
 
@@ -33,12 +47,107 @@ if (args.includes('session') && args.includes('list')) {
 if (args.includes('serve')) {
   const portIndex = args.indexOf('--port');
   const port = portIndex !== -1 ? parseInt(args[portIndex + 1]) || 4096 : 4096;
+  log('Starting serve command on port ' + port);
+  const sseClients = [];
   const server = http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('ok');
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      log('req: ' + req.method + ' ' + req.url);
+      if (req.url.startsWith('/global/health')) {
+        log('received GET /global/health');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ healthy: true, version: '1.17.11' }));
+        return;
+      }
+      if (req.url.startsWith('/event')) {
+        log('received GET /event');
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive'
+        });
+        res.write('data: {"type":"server.connected"}' + String.fromCharCode(10) + String.fromCharCode(10));
+        sseClients.push(res);
+        res.on('close', () => {
+          log('SSE client connection closed');
+          const idx = sseClients.indexOf(res);
+          if (idx !== -1) sseClients.splice(idx, 1);
+        });
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/session') {
+        log('received POST /session');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id: 'mock-session-id' }));
+        return;
+      }
+      if (req.method === 'GET' && req.url === '/session') {
+        log('received GET /session');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify([{ id: 'mock-session-id', title: 'Mock Session' }]));
+        return;
+      }
+      if (req.url.includes('/prompt_async')) {
+        log('received POST /prompt_async: body=' + body);
+        res.writeHead(204);
+        res.end();
+        let parsed = {};
+        try { parsed = JSON.parse(body); } catch(e){}
+        const modelUsed = parsed.model && typeof parsed.model === 'object'
+          ? (parsed.model.providerID + '/' + parsed.model.modelID)
+          : parsed.model || 'default-model';
+        log('active SSE client count=' + sseClients.length);
+        setTimeout(() => {
+          for (const client of sseClients) {
+            log('Writing to SSE client for prompt_async');
+            client.write('data: {"type":"step_start","sessionID":"mock-session-id"}' + String.fromCharCode(10) + String.fromCharCode(10));
+            client.write('data: {"type":"text","sessionID":"mock-session-id","part":{"text":"Hello from mock CLI"}}' + String.fromCharCode(10) + String.fromCharCode(10));
+            client.write('data: {"type":"args","sessionID":"mock-session-id","args":["--model","' + modelUsed + '"]}' + String.fromCharCode(10) + String.fromCharCode(10));
+            client.write('data: {"type":"step_finish","sessionID":"mock-session-id"}' + String.fromCharCode(10) + String.fromCharCode(10));
+            client.write('data: {"type":"session.status","sessionID":"mock-session-id","status":{"type":"idle"}}' + String.fromCharCode(10) + String.fromCharCode(10));
+          }
+        }, 50);
+        return;
+      }
+      if (req.url.includes('/summarize') && req.method === 'POST') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('true');
+        return;
+      }
+      if (req.url.includes('/message') && req.method === 'POST') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          parts: [{ text: 'Summary of conversation and workspace changes.' }]
+        }));
+        return;
+      }
+      if (req.method === 'DELETE' && req.url.includes('/session/')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('true');
+        return;
+      }
+      if (req.method === 'GET' && req.url.startsWith('/session/')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id: 'mock-session-id', messages: [] }));
+        return;
+      }
+      if (req.url.startsWith('/config/providers')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          providers: [{
+            id: 'opencode',
+            models: ['deepseek-v4-flash-free']
+          }]
+        }));
+        return;
+      }
+      res.writeHead(200);
+      res.end('ok');
+    });
   });
   server.listen(port, '127.0.0.1', () => {
-    // Keep running to act as daemon
+    log('Listening on port ' + port);
   });
   return;
 }
@@ -100,10 +209,14 @@ if (args.includes('run')) {
   afterAll(() => {
     // Restore PATH
     process.env.PATH = originalPath;
-    opencodeRunner.clearStaleServer();
+    opencodeServerClient.clearStaleServer();
 
     // Clean up temporary files
     try {
+      const logPath = path.join(process.cwd(), 'mock_server.log');
+      if (fs.existsSync(logPath)) {
+        fs.unlinkSync(logPath);
+      }
       if (fs.existsSync(mockBinDir)) {
         fs.rmSync(mockBinDir, { recursive: true, force: true });
       }
@@ -113,60 +226,61 @@ if (args.includes('run')) {
   });
 
   afterEach(() => {
-    opencodeRunner.clearStaleServer();
+    opencodeServerClient.clearStaleServer();
   });
 
   test('should successfully probe capability and return version from mock binary', async () => {
-    const capability = await opencodeRunner.checkCapability();
+    const capability = await opencodeServerClient.checkCapability();
     expect(capability.status).toBe('available');
     expect(capability.canSubmit).toBe(true);
   });
 
-  test('should execute run and successfully capture ND-JSON streaming outputs without hanging', async () => {
+  test('should execute prompt via serve and successfully capture SSE streaming outputs without hanging', async () => {
     const jsonEvents: any[] = [];
     const textChunks: string[] = [];
 
-    const handle = await opencodeRunner.run({
+    const server = await opencodeServerClient.ensureServer();
+    expect(server.ready).toBe(true);
+
+    const handle = await opencodeServerClient.executePrompt({
       conversationId: 'test-convo',
       requestId: 'test-req',
       prompt: 'hello',
-      onJson: (payload) => jsonEvents.push(payload),
-      onText: (text) => textChunks.push(text),
+      onJson: (payload: any) => jsonEvents.push(payload),
+      onText: (text: string) => textChunks.push(text),
     });
 
     const result = await handle.done;
-    expect(result.exitCode).toBe(0);
-    expect(result.spawnError).toBeUndefined();
+    expect(result.completed).toBe(true);
+    expect(result.error).toBeUndefined();
 
-    // Verify events were parsed
+    // Verify events were received
     expect(jsonEvents.length).toBeGreaterThanOrEqual(2);
-    expect(jsonEvents[0].type).toBe('step_start');
     
     // Check that we captured mock text delta
-    const textOutputs = jsonEvents.filter(e => e.type === 'text');
+    const textOutputs = jsonEvents.filter((e: any) => e.type === 'text');
     expect(textOutputs.length).toBe(1);
     expect(textOutputs[0].part.text).toBe('Hello from mock CLI');
   });
 
-  test('should spin up mock warm server and attached run works', async () => {
-    const server = await opencodeRunner.ensureServer();
+  test('should spin up mock warm server and executePrompt works', async () => {
+    const server = await opencodeServerClient.ensureServer();
     expect(server.ready).toBe(true);
 
     const jsonEvents: any[] = [];
-    const handle = await opencodeRunner.run({
+    const handle = await opencodeServerClient.executePrompt({
       conversationId: 'test-convo-attached',
       requestId: 'test-req-attached',
       prompt: 'hello',
-      onJson: (payload) => jsonEvents.push(payload),
+      onJson: (payload: any) => jsonEvents.push(payload),
     });
 
     const result = await handle.done;
-    expect(result.exitCode).toBe(0);
-    expect(handle.mode).toBe('attached');
+    expect(result.completed).toBe(true);
     expect(jsonEvents.length).toBeGreaterThanOrEqual(2);
   });
 
-  test('should inject activeModel into buildRunArgs when executing run', async () => {
+  test('should inject activeModel into prompt_async body when executing executePrompt', async () => {
     const jsonEvents: any[] = [];
     const convoId = 'test-convo-active-model';
     
@@ -174,36 +288,49 @@ if (args.includes('run')) {
     const conversation = opencodeStore.getOrCreateConversation(convoId);
     conversation.activeModel = 'test-provider/test-model-name';
 
-    const handle = await opencodeRunner.run({
+    const server = await opencodeServerClient.ensureServer();
+    expect(server.ready).toBe(true);
+
+    const handle = await opencodeServerClient.executePrompt({
       conversationId: convoId,
       requestId: 'test-req-model',
       prompt: 'hello',
-      onJson: (payload) => jsonEvents.push(payload),
+      onJson: (payload: any) => jsonEvents.push(payload),
     });
 
     const result = await handle.done;
-    expect(result.exitCode).toBe(0);
+    expect(result.completed).toBe(true);
 
-    const argsEvent = jsonEvents.find(e => e.type === 'args');
-    expect(argsEvent).toBeDefined();
-    expect(argsEvent.args).toContain('--model');
-    const modelIndex = argsEvent.args.indexOf('--model');
-    expect(argsEvent.args[modelIndex + 1]).toBe('test-provider/test-model-name');
+    // The model is injected into the prompt_async body via postPromptAsync
+    // Verify by checking prompt_async body in logs (written to workspace root CWD)
+    const workspaceRoot = getWorkspaceRoot();
+    const logPath = path.join(workspaceRoot, 'mock_server.log');
+    let logContent = '';
+    try {
+      logContent = fs.readFileSync(logPath, 'utf8');
+    } catch {
+      // fallback to process.cwd()
+      const fallbackPath = path.join(process.cwd(), 'mock_server.log');
+      logContent = fs.readFileSync(fallbackPath, 'utf8');
+    }
+    expect(logContent).toContain('test-provider/test-model-name');
   });
 
   test('should run compact query successfully and extract summary text', async () => {
-    const summary = await opencodeRunner.runCompactQuery('test-convo');
-    expect(summary).toBe('Summary of conversation and workspace changes.');
+    const conversation = opencodeStore.getOrCreateConversation('test-convo');
+    conversation.opencodeSessionId = 'mock-session-id';
+    const summary = await opencodeServerClient.runCompactQuery('test-convo');
+    expect(summary).toBe('Conversation summarized successfully.');
   });
 
   test('should run skills query successfully and return list of custom skills', async () => {
-    const skills = await opencodeRunner.runSkillsQuery();
+    const skills = await opencodeServerClient.runSkillsQuery();
     expect(skills).toContain('Custom Agent Skills');
     expect(skills).toContain('speckit-implement');
   });
 
   test('should run init query successfully executing update script', async () => {
-    const initRes = await opencodeRunner.runInitQuery();
+    const initRes = await opencodeServerClient.runInitQuery();
     expect(initRes).toContain('Mock');
   });
 });

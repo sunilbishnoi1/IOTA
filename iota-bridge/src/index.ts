@@ -7,7 +7,7 @@ import { requireAuth } from './middleware/auth';
 import statusRouter from './routes/status';
 import gitRouter from './routes/git';
 import envRouter from './routes/env';
-import { initLogger } from './services/logger';
+import { initLogger, logInfo } from './services/logger';
 import { startKeepAliveBackgroundWorker } from './services/codespaceService';
 import { PreviewService } from './services/previewService';
 
@@ -20,9 +20,12 @@ const server = createServer(app);
 
 app.use(express.json());
 
+const corsOrigin = process.env.CORS_ORIGIN || '*';
+logInfo(`[Bridge] CORS origin configured: ${corsOrigin}`);
+
 // Enable basic CORS
 app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Origin', corsOrigin);
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-GitHub-Token, X-Github-Token');
   if (req.method === 'OPTIONS') {

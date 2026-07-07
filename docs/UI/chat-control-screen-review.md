@@ -1,7 +1,7 @@
 # UI/UX Review: Chat Functionality (Control Screen)
 
 ## Summary
-44 total findings identified across 5 analysis dimensions. **3 CRITICAL** (functional breakage), **12 MAJOR** (significant UX friction), **10 MINOR** (polish), and **19 ENHANCEMENTS** (nice-to-have). The biggest issue is the `<thought>` tag parsing only capturing the first block — discarding intermediate AI reasoning entirely. The second major theme is excessive nested box borders creating visual clutter on mobile.
+44 total findings identified across 5 analysis dimensions. **3 CRITICAL** (functional breakage), **12 MAJOR** (significant UX friction), **10 MINOR** (polish), and **19 ENHANCEMENTS** (nice-to-have). The biggest issue is the handling of `<thought>` blocks and intermediate text, which must be extracted from the assistant's message and rendered inline in the timeline container when tools are present (with collapsible headers), falling back to a message bubble accordion only if no tools are executed. The second major theme is excessive nested box borders creating visual clutter on mobile.
 
 ### Files Reviewed
 - `iota-mobile/src/components/control/ChatMessageBubble.tsx`
@@ -20,7 +20,7 @@
 
 | # | Area | File:Line | Issue | Recommended Fix |
 |---|------|-----------|-------|----------------|
-| 1 | UX | `ChatMessageBubble.tsx:31-38` | **Multiple `<thought>` blocks discarded.** Regex lacks `g` flag — only first `<thought>...</thought>` extracted; subsequent thought tags leak as raw text into the AI response | Use `replace(/<thought>[\s\S]*?<\/thought>/g, '')` and collect all thought blocks into an array joined by `\n` |
+| 1 | UX | `ChatMessageBubble.tsx:31-38`, `ChatTimeline.tsx` | **Thoughts/intermediate text not inline with tools.** Multiple `<thought>` blocks are discarded, and intermediate text leaks into the response instead of rendering inline in the timeline container when tools are run. | Extract all thoughts and intermediate text blocks from the assistant's message. If tools are executed, render thoughts/intermediate text inline in the timeline container (`ChatTimeline.tsx`) interleaved with the tool cards as collapsible items (e.g. "Thought for Ns" headers opening full text on press). When collapsed, tool cards must not show any snippets of code, files (read/write), or detailed stdout, rendering only a clean summary label (e.g., 'Read XYZ.tsx #L1-100', 'Searched abcd', 'Edited XYZ.ts', 'Ran abcde', 'Searched web for "xyz"' etc with a '>' to expand) and a chevron. If no tools are executed, fallback to a psychology accordion inside the message bubble. |
 | 2 | Layout | `ToolActivityCard.tsx:355-375` | **Monospace terminal text overflows on iPhone SE (320px).** After padding chain (50-60px/side consumed), only ~200px remain — long lines overflow without horizontal scrolling | Wrap terminal stdout/stderr in horizontal `ScrollView`; add `overflow: 'hidden'` on `terminalContainer` |
 | 3 | Edge Cases | `ControlScreen.tsx:547-578` | **Double-tap send emits duplicate messages.** State update `setRunning(true)` is async; `canSubmit` uses closure variable — second tap can pass before re-render disables the button | Add a `submittingRef` guard set synchronously before emit |
 
@@ -45,8 +45,8 @@
 
 | # | Area | File:Line | Issue | Recommended Fix |
 |---|------|-----------|-------|----------------|
-| 16 | UX | `ToolActivityCard.tsx:123-132` | `file_read` collapsed shows label only — no file path or line numbers | Show `filePath:startLine-endLine` in `statusSubtitle` when available |
-| 17 | UX | `ToolActivityCard.tsx:109-112` | `command` collapsed shows label, not actual command | Show `$ {meta.commandLine}` as collapsed title or in subtitle |
+| 16 | UX | `ToolActivityCard.tsx:123-132` | **Ensure collapsed cards hide all snippets/file previews.** Having verbose content/code snippets visible when collapsed defeats the purpose of the collapsed status | Keep collapsed cards strictly limited to brief action summaries (e.g. 'Read XYZ.tsx #L1-100', 'Searched abcd', 'Edited XYZ.ts', 'Ran abcde', 'Searched web for "xyz"' etc) and chevrons, showing previews/contents only when expanded |
+| 17 | UX | `ToolActivityCard.tsx:109-112` | **Ensure collapsed command logs hide stdout/stderr.** Only show the command execution header and status, hiding long process outputs | Keep all process outputs/logs inside the expanded view |
 | 18 | Layout | `ChatTimeline.tsx:334-338` | No max-height on turn thinking content — 20+ tools render inline, user must scroll past all to reach response | Add `maxHeight: 300` with inner scroll |
 | 19 | Layout | `ChatMessageBubble.tsx:217-226` | `assistantShort` has border, `assistantFullWidth` doesn't — inconsistent on short responses | Remove border from `assistantShort` to match borderless approach |
 | 20 | Layout | `ToolActivityCard.tsx:57` vs `ChatTimeline.tsx:336` | Double vertical gap: `marginBottom: 6` on tool rows + `gap: 10` on parent | Remove `marginBottom` from tool row wrapper |
@@ -74,7 +74,7 @@
 | 37 | Edge Cases | `ToolActivityCard.tsx:186-200` | Unknown tool kinds render unbounded key-value pairs | Limit to first 5 keys with "Show more" |
 | 38 | Edge Cases | `ControlScreen.tsx:343-518` | Socket stays fully connected when screen not visible | Pause/disconnect when `isVisible === false` |
 | 39 | Market | All | **No grouped tool call pattern** — tools render individually as separate rows | Implement `<ToolGroup>` component with count badge + expand |
-| 40 | Market | `ChatTimeline.tsx:139-198` | **Thinking section auto-hides when tools complete** — user wants it visible as collapsed by default | Keep thinking section collapsed (not hidden) after completion per the visual hierarchy pattern |
+| 40 | Market | `ChatTimeline.tsx:139-198` | **Thinking section auto-hides when tools complete** — user wants it visible as collapsed by default rendered inline in the timeline container where tools are present | Keep thinking section collapsed (not hidden) after completion per the visual hierarchy pattern |
 | 41 | Market | `ChatInputBar.tsx` | No `@file` mention support in input composer | Add `@mention` autocomplete for workspace files |
 | 42 | Market | All | No regenerated response carousel | Add carousel for regenerated responses (preserves comparison ability) |
 | 43 | Edge Cases | `ControlScreenConstants.tsx:64-68` | `mergeMessages` content+role dedup causes false positives for repeated same messages | Use time-window or ID-based dedup |
@@ -85,7 +85,7 @@
 ## Detailed Analysis
 
 ### 1. UX & Interaction
-The most critical UX finding is the `<thought>` tag parsing bug (#1) — intermediate AI reasoning between tool calls is silently discarded. Touch targets are undersized throughout (36×36pt headers, 36×36pt FAB, ~34pt accordion headers) — all below the 44×44pt mobile minimum. The "Thought Process" label never updates dynamically, so the user can't tell what the AI is doing. No `accessibilityLabel` exists on any interactive element.
+The most critical UX finding is the need to parse and inline thoughts and intermediate texts (#1) — extracting them from the assistant message to render inline inside the timeline container interleaved with tools (with collapsible headers that reveal the full thought process on tap). The final response text block remains outside in the main message bubble. If no tools are executed, thoughts fallback to the psychology accordion inside the message bubble. Collapsed tool cards within the timeline must show no snippets of code, files, or stdout, rendering only clean summary labels and expand/collapse chevrons. Touch targets are also undersized throughout (36×36pt headers, 36×36pt FAB, ~34pt accordion headers) — all below the 44×44pt mobile minimum. The "Thought Process" label never updates dynamically, so the user can't tell what the AI is doing. No `accessibilityLabel` exists on any interactive element.
 
 ### 2. Layout & Positioning
 The dominant layout issue is the nested border cascade (#5): a single expanded turn can show 7+ bordered containers stacked. On iPhone SE (320px), padding chains consume 50-60px per side, leaving only ~200px for content — and terminal text lacks horizontal scroll, causing overflow. The turn thinking box has no `maxHeight`, so turns with many tools render everything inline.
@@ -110,7 +110,7 @@ Double-tap send can emit duplicate messages (#3) due to async state. Streaming m
 
 ## Quick Wins (easy fixes with high mobile UX impact)
 
-1. **Fix `<thought>` parsing** (`ChatMessageBubble.tsx:31-38`) — add `g` flag, use `replaceAll` — ~15 min, **CRITICAL**
+1. **Extract and inline thoughts/intermediate text** (`ChatMessageBubble.tsx:31-38`, `ChatTimeline.tsx`) — Parse thoughts and intermediate text blocks, render inline in the timeline container interleaved with tools, and fallback to psychology accordion in bubble if no tools — ~45 min, **CRITICAL**
 2. **Remove borders from thinking containers** (`ChatTimeline.tsx:307-314`, `ChatMessageBubble.tsx:278-285`) — remove `borderWidth`/`borderColor` lines — ~10 min, **MAJOR**
 3. **Increase touch targets to 44×44pt** (`ControlScreen.tsx:896-900`, `ChatTimeline.tsx:361-378`, `ChatMessageBubble.tsx:286-293`) — update dimensions — ~20 min, **MAJOR**
 4. **Add keyboard avoidance for Android** (`ControlScreen.tsx:737`) — change `undefined` to `'height'` — ~2 min, **MAJOR**

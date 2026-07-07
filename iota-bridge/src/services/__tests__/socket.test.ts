@@ -1,12 +1,12 @@
 import { Server, Socket } from 'socket.io';
 import { initSocketIO } from '../socket';
-import { opencodeRunner } from '../opencode';
+import { opencodeServerClient } from '../opencode';
 import { opencodeStore } from '../opencodeStore';
 import * as http from 'http';
 
 jest.mock('../opencode', () => {
   return {
-    opencodeRunner: {
+    opencodeServerClient: {
       checkCapability: jest.fn().mockResolvedValue({ status: 'available' }),
       runStatsQuery: jest.fn(),
       runSessionsQuery: jest.fn(),
@@ -65,7 +65,7 @@ describe('Socket Message Handling Unit Tests', () => {
   });
 
   test('should intercept /stats slash command and runStatsQuery', async () => {
-    (opencodeRunner.runStatsQuery as jest.Mock).mockResolvedValue('Mock Stats Output');
+    (opencodeServerClient.runStatsQuery as jest.Mock).mockResolvedValue('Mock Stats Output');
 
     // Trigger opencode:message with /stats
     const messageCallback = socketListeners['opencode:message'];
@@ -76,7 +76,7 @@ describe('Socket Message Handling Unit Tests', () => {
       content: '/stats',
     });
 
-    expect(opencodeRunner.runStatsQuery).toHaveBeenCalled();
+    expect(opencodeServerClient.runStatsQuery).toHaveBeenCalled();
     // Verify a message was emitted containing stats
     const emitCalls = ioInstance.emit.mock.calls;
     const msgEmit = emitCalls.find((call: any) => call[0] === 'opencode:message' && call[1].message.role === 'assistant');
@@ -85,7 +85,7 @@ describe('Socket Message Handling Unit Tests', () => {
   });
 
   test('should intercept /sessions slash command and runSessionsQuery', async () => {
-    (opencodeRunner.runSessionsQuery as jest.Mock).mockResolvedValue('Mock Sessions List Table');
+    (opencodeServerClient.runSessionsQuery as jest.Mock).mockResolvedValue('Mock Sessions List Table');
 
     const messageCallback = socketListeners['opencode:message'];
     await messageCallback({
@@ -93,7 +93,7 @@ describe('Socket Message Handling Unit Tests', () => {
       content: '/sessions',
     });
 
-    expect(opencodeRunner.runSessionsQuery).toHaveBeenCalled();
+    expect(opencodeServerClient.runSessionsQuery).toHaveBeenCalled();
     const emitCalls = ioInstance.emit.mock.calls;
     const msgEmit = emitCalls.find((call: any) => call[0] === 'opencode:message' && call[1].message.role === 'assistant');
     expect(msgEmit).toBeDefined();
@@ -101,7 +101,7 @@ describe('Socket Message Handling Unit Tests', () => {
   });
 
   test('should intercept /sessions delete <id> and runSessionDelete', async () => {
-    (opencodeRunner.runSessionDelete as jest.Mock).mockResolvedValue('Session deleted successfully.');
+    (opencodeServerClient.runSessionDelete as jest.Mock).mockResolvedValue('Session deleted successfully.');
 
     const messageCallback = socketListeners['opencode:message'];
     await messageCallback({
@@ -109,7 +109,7 @@ describe('Socket Message Handling Unit Tests', () => {
       content: '/sessions delete ses_123',
     });
 
-    expect(opencodeRunner.runSessionDelete).toHaveBeenCalledWith('ses_123');
+    expect(opencodeServerClient.runSessionDelete).toHaveBeenCalledWith('ses_123');
     const emitCalls = ioInstance.emit.mock.calls;
     const msgEmit = emitCalls.find((call: any) => call[0] === 'opencode:message' && call[1].message.role === 'assistant');
     expect(msgEmit).toBeDefined();

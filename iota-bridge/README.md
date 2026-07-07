@@ -35,10 +35,34 @@ When running inside a GitHub Codespace VM, the bridge resolves the parent reposi
 
 Runs on `/` namespace.
 - **Handshake**: Requires a valid GitHub Token.
-- **Events**:
-  - `agent:start`: Triggers a new terminal execution with specified agent (`claude-code`, `opencode`, `cline`).
-  - `agent:stop`: Terminated the active agent process.
-  - `terminal:input`: Sends user stdin/keystrokes to the terminal process.
-  - `terminal:log` (Server-to-Client): Streams terminal output chunks.
-  - `terminal:exit` (Server-to-Client): Emitted when the process terminates.
-  - `agent:status` (Server-to-Client): Emits agent status updates (`idle`, `running`, `error`).
+- **Client Events**:
+  - `opencode:message`: Submit a task prompt to OpenCode.
+  - `opencode:stop`: Stop the active OpenCode run.
+  - `opencode:approval`: Respond to a permission/approval request (`once`, `always`, `reject`).
+  - `opencode:question_reply`: Submit answers to a clarification question.
+  - `opencode:question_reject`: Dismiss/skip a clarification question.
+  - `opencode:sync`: Fetch latest conversation state and session history.
+  - `opencode:new_session`: Create a new conversation.
+  - `opencode:list_conversations`: List all saved conversations.
+  - `opencode:delete_conversation`: Delete a conversation.
+  - `opencode:keepalive`: Extend Codespace keepalive duration.
+  - `opencode:credentials`: Update transient API credentials.
+  - `opencode:env_vars`: Update workspace environment variables.
+  - `preview:start`: Start a preview/dev server.
+  - `preview:stop`: Stop a preview server.
+- **Server Events**:
+  - `opencode:message_delta`: Streaming text delta from the active run.
+  - `opencode:message`: A complete message (user, assistant, or status).
+  - `opencode:tool_activity`: Tool execution event (started/completed/failed).
+  - `opencode:file_change`: File change notification from a session diff.
+  - `opencode:approval_request`: Permission approval request from OpenCode.
+  - `opencode:question_request`: Clarification question from OpenCode.
+  - `opencode:run_status`: Phase and status updates for the active run.
+  - `opencode:capability`: OpenCode installation and availability status.
+  - `opencode:error`: Error event with retry support.
+  - `opencode:snapshot`: Full conversation snapshot after changes.
+  - `opencode:conversations_list`: Updated list of all conversations.
+  - `preview:log`: Preview server log output.
+  - `preview:error`: Preview server error.
+  - `preview:status`: Preview server lifecycle status.
+  - `preview:config_response`: Preview configuration payload.

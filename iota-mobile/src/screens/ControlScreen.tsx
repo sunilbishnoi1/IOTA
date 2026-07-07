@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -38,25 +38,34 @@ import {
   OpenCodeMessage,
   OpenCodeToolActivity,
   OpenCodeConversation,
+  OpenCodeQuestionRequest,
+  Part,
+  ThinkingMode,
+  SubtaskSession,
+  Message,
 } from '../types/opencode';
 import { Theme } from '../styles/theme';
+import { getReasoningSummary } from '../utils/opencodeParser';
+import { handleGlobalEvent } from '../services/opencodeSocket';
 
 // ─── Extracted sub-components ───────────────────────────────────────────────
 import {
   AnimatedDotsText,
   ChatTurn,
   GroupedItem,
+  ParsedBlock,
   SocketStatus,
   createLocalMessage,
-  createRunStatusMessage,
   defaultCapability,
-  getNormalizedStatusText,
   mergeById,
   mergeMessages,
   sanitizeConversationScope,
+  deduplicateUserMessages,
 } from '../components/control/ControlScreenConstants';
 import { ChatTimeline } from '../components/control/ChatTimeline';
 import { ChatInputBar } from '../components/control/ChatInputBar';
+import { SubtaskView } from '../components/control/SubtaskView';
+import { QuestionDialog } from '../components/control/QuestionDialog';
 
 // ─── Props ──────────────────────────────────────────────────────────────────
 
@@ -73,6 +82,166 @@ interface ControlScreenProps {
 }
 
 // ─── Main component ─────────────────────────────────────────────────────────
+
+const getPartTimestamp = (p: Part): number => {
+  if (p.type === 'text' || p.type === 'reasoning') {
+    if (p.time?.start) {
+      return typeof p.time.start === 'number' ? p.time.start : new Date(p.time.start).getTime();
+    }
+  } else if (p.type === 'tool') {
+    const stateTime = (p.state as any)?.time?.start;
+    if (stateTime) {
+      return typeof stateTime === 'number' ? stateTime : new Date(stateTime).getTime();
+    }
+    const partTime = (p as any).time?.start;
+    if (partTime) {
+      return typeof partTime === 'number' ? partTime : new Date(partTime).getTime();
+    }
+  }
+  if (!(p as any)._stableTime) {
+    (p as any)._stableTime = Date.now();
+  }
+  return (p as any)._stableTime;
+};
+
+const updateMessageParts = (
+  prevMessages: OpenCodeMessage[],
+  messageId: string,
+  targetConversationId: string,
+  updateFn: (parts: Part[]) => Part[]
+): OpenCodeMessage[] => {
+  if (!messageId) return prevMessages;
+
+  let targetIndex = prevMessages.findIndex(m => m.id === messageId);
+  
+  if (targetIndex === -1 && !messageId.startsWith('assistant-') && !messageId.startsWith('synthetic-')) {
+    for (let i = prevMessages.length - 1; i >= 0; i--) {
+      const msg = prevMessages[i];
+      if (msg.role === 'assistant' && (msg.id.startsWith('assistant-') || msg.id.startsWith('synthetic-') || msg.status === 'streaming' || msg.status === 'pending')) {
+        targetIndex = i;
+        break;
+      }
+    }
+  }
+
+  if (targetIndex >= 0) {
+    const nextMessages = [...prevMessages];
+    const msg = nextMessages[targetIndex];
+    const updatedParts = updateFn(msg.parts || []);
+    const textParts = updatedParts.filter(p => p.type === 'text') as any[];
+    const fullText = textParts.map(p => p.text).join('\n');
+    nextMessages[targetIndex] = {
+      ...msg,
+      id: messageId,
+      parts: updatedParts,
+      content: fullText || msg.content,
+      status: (fullText && msg.status === 'streaming') ? 'streaming' : msg.status,
+    };
+    return nextMessages;
+  }
+
+  const newMsg: OpenCodeMessage = {
+    id: messageId,
+    conversationId: targetConversationId,
+    role: 'assistant',
+    content: '',
+    createdAt: new Date().toISOString(),
+    status: 'streaming',
+    parts: updateFn([]),
+  };
+  return [...prevMessages, newMsg];
+};
+
+const findMessageIdByPartId = (msgs: OpenCodeMessage[], partId: string): string => {
+  for (const m of msgs) {
+    if (m.parts?.some(p => p.id === partId)) {
+      return m.id;
+    }
+  }
+  return '';
+};
+
+
+const mergeParts = (local: Part[], incoming: Part[]): Part[] => {
+  const merged = new Map<string, Part>();
+  for (const p of local) merged.set(p.id, p);
+  
+  for (const p of incoming) {
+    const existing = merged.get(p.id);
+    if (!existing) {
+      merged.set(p.id, p);
+    } else {
+      if (p.type === 'tool') {
+        merged.set(p.id, p);
+      } else if (p.type === 'text' || p.type === 'reasoning') {
+        const incomingIsComplete = (p as any).time?.end;
+        const existingIsComplete = (existing as any).time?.end;
+        if (incomingIsComplete || ((p as any).text?.length || 0) >= ((existing as any).text?.length || 0)) {
+          merged.set(p.id, p);
+        }
+      } else {
+        merged.set(p.id, p);
+      }
+    }
+  }
+  const result = Array.from(merged.values());
+  result.sort((a, b) => getPartTimestamp(a) - getPartTimestamp(b));
+  return result;
+};
+
+const mergeIncomingMessage = (prev: OpenCodeMessage[], incoming: OpenCodeMessage): OpenCodeMessage[] => {
+  let existingIndex = prev.findIndex(m => m.id === incoming.id);
+  
+  const isAssistantTransition = incoming.role === 'assistant' && !incoming.id.startsWith('assistant-');
+  if (isAssistantTransition && existingIndex === -1) {
+    for (let i = prev.length - 1; i >= 0; i--) {
+      const msg = prev[i];
+      if (msg.role === 'assistant' && (msg.id.startsWith('assistant-') || msg.status === 'streaming' || msg.status === 'pending')) {
+        existingIndex = i;
+        break;
+      }
+    }
+  }
+
+  const existingMsg = existingIndex >= 0 ? prev[existingIndex] : undefined;
+
+  let mergedParts = incoming.parts || [];
+  if (existingMsg && existingMsg.parts && existingMsg.parts.length > 0) {
+    mergedParts = mergeParts(existingMsg.parts, mergedParts);
+  }
+
+  let mergedContent = incoming.content || '';
+  if (!mergedContent && existingMsg && existingMsg.content) {
+    mergedContent = existingMsg.content;
+  }
+
+  let mapped = [...prev];
+
+  if (existingIndex >= 0) {
+    mapped[existingIndex] = {
+      ...existingMsg,
+      ...incoming,
+      id: incoming.id,
+      content: mergedContent,
+      parts: mergedParts,
+    };
+  } else {
+    mapped.push({
+      ...incoming,
+      content: mergedContent,
+      parts: mergedParts,
+    });
+  }
+
+  mapped = mapped.map(msg => {
+    if (msg.role === 'user' && incoming.role === 'user' && msg.id.startsWith('local-') && msg.content === incoming.content) {
+      return { ...incoming, id: incoming.id };
+    }
+    return msg;
+  });
+  
+  return deduplicateUserMessages(mapped);
+};
 
 export const ControlScreen: React.FC<ControlScreenProps> = ({
   user,
@@ -94,10 +263,19 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const [tools, setTools] = useState<OpenCodeToolActivity[]>([]);
   const [fileChanges, setFileChanges] = useState<OpenCodeFileChange[]>([]);
   const [approvals, setApprovals] = useState<OpenCodeApprovalRequest[]>([]);
+  const [pendingQuestion, setPendingQuestion] = useState<OpenCodeQuestionRequest | null>(null);
+  const [questionCollapsed, setQuestionCollapsed] = useState<boolean>(false);
   const [running, setRunning] = useState(false);
+
+  useEffect(() => {
+    if (pendingQuestion) {
+      setQuestionCollapsed(false);
+    }
+  }, [pendingQuestion?.id]);
   const [runStatusText, setRunStatusText] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(true);
 
+  const [thinkingMode, setThinkingMode] = useState<ThinkingMode>('hide');
   const [inputHeight, setInputHeight] = useState(44);
 
   // Reset input height when input prompt is cleared or empty
@@ -125,50 +303,93 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   });
   const conversationIdRef = useRef<string | undefined>(conversationId);
   const isInstallingRef = useRef(false);
+  const submittingRef = useRef(false);
   const flatListRef = useRef<FlatList<GroupedItem>>(null);
   const textInputRef = useRef<TextInput>(null);
   const [expandedTurns, setExpandedTurns] = useState<Record<string, boolean>>({});
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
   const [expandedThoughts, setExpandedThoughts] = useState<Record<string, boolean>>({});
 
+  const [subtaskSessions, setSubtaskSessions] = useState<Record<string, SubtaskSession>>({});
+  const [activeSubtaskId, setActiveSubtaskId] = useState<string | null>(null);
+
+  useEffect(() => {
+    // console.log('\n\n👀👀👀 [ControlScreen] subtaskSessions updated 👀👀👀');
+    // console.log(`Active Subtask ID: ${activeSubtaskId}`);
+    // console.log(`Subtasks count: ${Object.keys(subtaskSessions).length}`);
+    Object.values(subtaskSessions).forEach((st, idx) => {
+      // console.log(`  [${idx}] ${st.callID}: status=${st.status}, msgs=${st.messages?.length}`);
+    });
+    // console.log('👀👀👀👀👀👀👀👀👀👀👀👀👀👀👀👀👀👀👀👀👀👀👀\n\n');
+  }, [subtaskSessions, activeSubtaskId]);
+
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const shouldScrollToBottomRef = useRef(true);
 
-  const scrollToBottom = (animated = true) => {
+  const scrollToBottom = useCallback((animated = true) => {
     shouldScrollToBottomRef.current = true;
     flatListRef.current?.scrollToEnd({ animated });
     setShowScrollToBottom(false);
-  };
+  }, []);
 
-  const handleScroll = (event: any) => {
+  const handleScroll = useCallback((event: any) => {
     const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
     const distanceFromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y;
     const isScrolledUp = contentSize.height > layoutMeasurement.height && distanceFromBottom > 150;
     setShowScrollToBottom(isScrolledUp);
-  };
+  }, []);
 
-  const handleContentSizeChange = (_w: number, contentHeight: number) => {
+  const handleContentSizeChange = useCallback((_w: number, contentHeight: number) => {
     if (shouldScrollToBottomRef.current || !showScrollToBottom) {
-      flatListRef.current?.scrollToEnd({ animated: true });
+      flatListRef.current?.scrollToEnd({ animated: !running });
       if (contentHeight > 0) {
         shouldScrollToBottomRef.current = false;
       }
     }
-  };
+  }, [showScrollToBottom, running]);
 
   // ─── Timeline grouping ──────────────────────────────────────────────────
 
+  // ─── Timeline grouping ──────────────────────────────────────────────────
+
+  const turnCacheRef = useRef<Map<string, { msg: any, partsRev: string, item: GroupedItem }>>(new Map());
+
   const groupedTimelineItems = useMemo<GroupedItem[]>(() => {
-    const allEvents = [
-      ...messages
-        .filter((message) => message.role !== 'status')
-        .map((message) => ({ type: 'message' as const, data: message, timestamp: message.createdAt })),
-      ...tools.map((activity) => ({ type: 'tool' as const, activity, timestamp: activity.startedAt })),
-      ...fileChanges.map((change) => ({ type: 'file' as const, change, timestamp: change.createdAt || change.id })),
-      ...approvals.map((approval) => ({ type: 'approval' as const, approval, timestamp: approval.createdAt })),
-    ];
+    const messagesFiltered = messages.filter((message) => message.role !== 'status');
+
+    const messageEvents = messagesFiltered.map((message, idx) => {
+      const timestamp = message.createdAt || ((message as any).time?.created ? new Date((message as any).time.created).toISOString() : new Date().toISOString());
+      return {
+        type: 'message' as const,
+        data: message,
+        timestamp,
+        sortIndex: idx * 10,
+      };
+    });
+
+    const approvalEvents = approvals.map((approval) => {
+      const timestamp = approval.createdAt || new Date().toISOString();
+      let lastMatchIdx = -1;
+      for (let i = 0; i < messageEvents.length; i++) {
+        if (timestamp >= messageEvents[i].timestamp) {
+          lastMatchIdx = i;
+        }
+      }
+      const sortIndex = lastMatchIdx !== -1 ? (lastMatchIdx * 10 + 5) : -5;
+      return {
+        type: 'approval' as const,
+        approval,
+        timestamp,
+        sortIndex,
+      };
+    });
+
+    const allEvents = [...messageEvents, ...approvalEvents];
 
     allEvents.sort((a, b) => {
+      if (a.sortIndex !== b.sortIndex) {
+        return a.sortIndex - b.sortIndex;
+      }
       const tA = a.timestamp || '';
       const tB = b.timestamp || '';
       return tA.localeCompare(tB);
@@ -184,12 +405,12 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           grouped.push({
             key: `system-${msg.id}`,
             type: 'system_message',
-            message: msg,
+            message: msg as any,
           });
         } else if (msg.role === 'user') {
           currentTurn = {
             id: msg.id,
-            userMessage: msg,
+            userMessage: msg as any,
             activities: [],
           };
           grouped.push({
@@ -199,11 +420,13 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           });
         } else if (msg.role === 'assistant') {
           if (currentTurn) {
-            currentTurn.assistantMessage = msg;
+            if (!currentTurn.assistantMessage || (msg.parts && msg.parts.length > 0) || !currentTurn.assistantMessage.parts || currentTurn.assistantMessage.parts.length === 0) {
+              currentTurn.assistantMessage = msg as any;
+            }
           } else {
             currentTurn = {
               id: msg.id,
-              assistantMessage: msg,
+              assistantMessage: msg as any,
               activities: [],
             };
             grouped.push({
@@ -230,22 +453,120 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
       }
     }
 
-    return grouped;
-  }, [approvals, fileChanges, messages, tools]);
+    const finalGrouped: GroupedItem[] = [];
 
-  const timelineItemsLength = messages.length + tools.length + fileChanges.length + approvals.length;
+    // Second pass: partition parts and build timeline
+    for (const item of grouped) {
+      if (item.type === 'turn' && item.turn.assistantMessage) {
+        const assistantMsg = item.turn.assistantMessage;
+        const rawAssistantParts = assistantMsg.parts || [];
+        
+        const getPartSessionId = (part: Part): string | undefined => {
+          let sid = part.sessionID || (part as any).metadata?.sessionID || (part as any).metadata?.childSessionID;
+          if (!sid && part.messageID?.startsWith('synthetic-')) {
+            sid = part.messageID.replace('synthetic-', '');
+          } else if (!sid && (part as any).metadata?.messageID?.startsWith('synthetic-')) {
+            sid = (part as any).metadata?.messageID.replace('synthetic-', '');
+          }
+          return sid;
+        };
 
-  useEffect(() => {
-    if (timelineItemsLength > 0) {
-      if (shouldScrollToBottomRef.current || !showScrollToBottom) {
-        const timer = setTimeout(() => {
-          flatListRef.current?.scrollToEnd({ animated: true });
-          shouldScrollToBottomRef.current = false;
-        }, 150);
-        return () => clearTimeout(timer);
+        const subtaskPartsMap: Record<string, Part[]> = {};
+        const mainParts: Part[] = [];
+
+        // Deduplicate subtask vs tool: 'task'
+        const seenTaskCallIds = new Set<string>();
+
+        // First pass, identify subtask parts to prefer them
+        for (const p of rawAssistantParts) {
+          if (p.type === 'subtask' && p.callID) {
+            seenTaskCallIds.add(p.callID);
+          }
+        }
+
+        for (const p of rawAssistantParts) {
+          const sid = getPartSessionId(p);
+          const isMain = !sid || sid === sessionId || sid === conversationIdRef.current || sid === defaultConversationId;
+          
+          if (p.type === 'tool' && ((p as any).tool === 'task' || (p as any).toolName === 'task') && p.callID) {
+             if (seenTaskCallIds.has(p.callID)) {
+                continue; // Skip the tool part if we already have a subtask part for this callID
+             }
+             seenTaskCallIds.add(p.callID);
+          }
+          
+          if (isMain || p.type === 'subtask') {
+            mainParts.push(p);
+          } else {
+            if (!subtaskPartsMap[sid]) subtaskPartsMap[sid] = [];
+            subtaskPartsMap[sid].push(p);
+          }
+        }
+
+        const processedParts: Part[] = mainParts;
+        
+        let lastToolIndex = -1;
+        for (let i = processedParts.length - 1; i >= 0; i--) {
+          const p = processedParts[i];
+          const sid = getPartSessionId(p);
+          const isMain = !sid || sid === sessionId || sid === conversationIdRef.current || sid === defaultConversationId;
+          
+          if (p.type !== 'text' || !isMain) {
+            lastToolIndex = i;
+            break;
+          }
+        }
+
+        const workingParts = lastToolIndex !== -1 ? processedParts.slice(0, lastToolIndex + 1) : [];
+        const finalParts = lastToolIndex !== -1 ? processedParts.slice(lastToolIndex + 1) : processedParts;
+
+        const partItems = workingParts.map((p) => ({
+          type: 'part' as const,
+          part: p,
+          timestamp: new Date(getPartTimestamp(p)).toISOString(),
+        }));
+
+        const combinedActivities = [...item.turn.activities, ...partItems];
+        combinedActivities.sort((a, b) => {
+          const getT = (act: any): string => {
+            if (act.type === 'approval') return act.approval.createdAt;
+            if (act.type === 'part') return act.timestamp;
+            if ('timestamp' in act) return (act as any).timestamp;
+            return '';
+          };
+          return getT(a).localeCompare(getT(b));
+        });
+
+        const partsRev = processedParts.map(p => `${p.id}-${(p as any).text?.length || 0}-${(p as any).state?.status || (p as any).status || ''}`).join('|') + `|act:${combinedActivities.length}`;
+        const cacheKey = item.turn.id;
+        const cached = turnCacheRef.current.get(cacheKey);
+
+        if (cached && cached.msg === assistantMsg && cached.partsRev === partsRev) {
+           finalGrouped.push(cached.item);
+        } else {
+           item.turn.activities = combinedActivities;
+           item.turn.parts = finalParts;
+           turnCacheRef.current.set(cacheKey, { msg: assistantMsg, partsRev, item });
+           finalGrouped.push(item);
+        }
+      } else {
+        const cacheKey = item.key;
+        const cached = turnCacheRef.current.get(cacheKey);
+        const msgRef = item.type === 'turn' ? item.turn.userMessage : item.message;
+        
+        if (cached && cached.msg === msgRef) {
+           finalGrouped.push(cached.item);
+        } else {
+           turnCacheRef.current.set(cacheKey, { msg: msgRef, partsRev: '', item });
+           finalGrouped.push(item);
+        }
       }
     }
-  }, [timelineItemsLength, running, runStatusText, showScrollToBottom]);
+
+    return finalGrouped;
+  }, [approvals, messages, running, sessionId, defaultConversationId]);
+
+  const timelineItemsLength = messages.length + approvals.length + messages.reduce((acc, m) => acc + (m.parts?.length || 0), 0);
 
   const canSubmit = socketStatus === 'connected' && capability.canSubmit && !running && inputPrompt.trim().length > 0;
 
@@ -260,40 +581,23 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   useEffect(() => {
     let active = true;
     async function loadConversationId() {
-      const stored = await secureStoreService.getOpenCodeConversationId(conversationScope);
-      if (!active) return;
-      const nextId = stored || defaultConversationId;
-      setConversationId(nextId);
-      conversationIdRef.current = nextId;
-      if (!stored) {
-        await secureStoreService.saveOpenCodeConversationId(conversationScope, nextId);
+      try {
+        const stored = await secureStoreService.getOpenCodeConversationId(conversationScope);
+        if (!active) return;
+        const nextId = stored || defaultConversationId;
+        setConversationId(nextId);
+        conversationIdRef.current = nextId;
+        if (!stored) {
+          await secureStoreService.saveOpenCodeConversationId(conversationScope, nextId);
+        }
+      } catch (err) {
+        console.warn('Failed to load conversation ID', err);
       }
     }
     loadConversationId();
     return () => { active = false; };
   }, [conversationScope, defaultConversationId]);
 
-  // Load cached chat messages on mount/conversationId changes
-  useEffect(() => {
-    let active = true;
-    async function loadCachedChat() {
-      if (!conversationId) return;
-      const cached = await secureStoreService.getChatCache(conversationScope, conversationId);
-      if (active && cached && cached.length > 0) {
-        setMessages((prev) => (prev.length === 0 || conversationIdRef.current === conversationId ? cached : prev));
-        setIsSyncing(false);
-      }
-    }
-    loadCachedChat();
-    return () => { active = false; };
-  }, [conversationScope, conversationId]);
-
-  // Save chat messages to cache whenever they change
-  useEffect(() => {
-    if (messages.length > 0 && conversationId) {
-      secureStoreService.saveChatCache(conversationScope, messages, conversationId).catch(() => undefined);
-    }
-  }, [messages, conversationScope, conversationId]);
 
   // ─── Check capability ─────────────────────────────────────────────────
 
@@ -343,6 +647,8 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   useEffect(() => {
     let active = true;
     let socket: Socket | null = null;
+    let sseQueue: any[] = [];
+    let sseTimer: NodeJS.Timeout | null = null;
 
     async function connectSocket() {
       try {
@@ -376,10 +682,11 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             Authorization: `Bearer ${user.token}`,
             'X-GitHub-Token': user.token,
           },
-          transports: ['polling', 'websocket'],
+          transports: ['websocket', 'polling'],
           reconnection: true,
           reconnectionAttempts: 10,
           reconnectionDelay: 2000,
+          timeout: 30000,
         });
         socketRef.current = socket;
         onSocketChange?.(socket);
@@ -419,53 +726,198 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               setIsSyncing(false);
               return;
             }
-            const isNewConvo = conversationIdRef.current !== conversation.id || messages.length === 0;
+            const isNewConvo = conversationIdRef.current !== conversation.id;
             setConversationId(conversation.id);
             conversationIdRef.current = conversation.id;
             secureStoreService.saveOpenCodeConversationId(conversationScope, conversation.id).catch(() => undefined);
             setSessionId(conversation.sessionId || conversation.opencodeSessionId);
 
-            if (isNewConvo) {
-              setMessages(conversation.messages || []);
-              setTools(conversation.tools || []);
-              setFileChanges(conversation.fileChanges || []);
-              setApprovals(conversation.approvals || []);
-            } else {
-              setMessages((prev) => mergeMessages(prev, conversation.messages || []));
-              setTools((prev) => mergeById(prev, conversation.tools || []));
-              setFileChanges((prev) => mergeById(prev, conversation.fileChanges || []));
-              setApprovals((prev) => mergeById(prev, conversation.approvals || []));
-            }
+            const nextMessages = (conversation.messages || []).map((msg) => {
+              const normalized = {
+                ...msg,
+                createdAt: msg.createdAt || ((msg as any).time?.created ? new Date((msg as any).time.created).toISOString() : new Date().toISOString()),
+              };
+              if (normalized.role === 'assistant' && !normalized.metadata?.parsedBlocks) {
+                const parsedBlocks = normalized.content ? [{ type: 'text' as const, content: normalized.content, isFinished: true }] : [];
+                return { ...normalized, metadata: { ...normalized.metadata, parsedBlocks } };
+              }
+              return normalized;
+            });
+
+setMessages((prev) => {
+              const result = nextMessages.map((nm) => {
+                let existing = prev.find((p) => p.id === nm.id);
+                
+                // Handle ID transition: server sends UUID, local might still have assistant-xxx
+                if (!existing && nm.role === 'assistant' && !nm.id.startsWith('assistant-')) {
+                  existing = prev.find((p) => p.role === 'assistant' && p.id.startsWith('assistant-'));
+                }
+                
+                if (existing) {
+                  return {
+                    ...nm,
+                    content: existing.content || nm.content, // Prefer rich local content during active runs
+                    parts: (nm.parts && nm.parts.length > 0) ? mergeParts(existing.parts || [], nm.parts) : (existing.parts || []),
+                  };
+                }
+                return nm;
+              });
+
+              // CRITICAL FIX: Preserve active streaming/pending messages that might not be in the server snapshot yet
+              for (const p of prev) {
+                if (p.status === 'streaming' || p.status === 'pending') {
+                  const found = result.find(
+                    (r) =>
+                      r.id === p.id ||
+                      (p.id.startsWith('assistant-') && r.role === 'assistant' && !r.id.startsWith('assistant-'))
+                  );
+                  if (!found) {
+                    result.push(p); // Keeps the rich local state alive until the DB catches up
+                  }
+                }
+              }
+
+              return deduplicateUserMessages(result);
+            });
+            setTools(conversation.tools || []);
+            setFileChanges(conversation.fileChanges || []);
+            setApprovals(conversation.approvals || []);
             setRunning(Boolean(conversation.activeRequestId) || conversation.status === 'running');
             setIsSyncing(false);
+
+            // Recreate subtask sessions from snapshot so history subtasks are viewable
+            const sessionsFromSnapshot: Record<string, SubtaskSession> = {};
+            const childSessionParts: Record<string, Part[]> = {};
+            
+            // First pass: identify child parts and group by sessionID
+            for (const msg of conversation.messages || []) {
+              if (msg.role !== 'assistant' || !msg.parts) continue;
+              for (const part of msg.parts) {
+                let sid = part.sessionID || (part as any).metadata?.sessionID || (part as any).metadata?.childSessionID;
+                if (!sid && part.messageID?.startsWith('synthetic-')) {
+                  sid = part.messageID.replace('synthetic-', '');
+                } else if (!sid && (part as any).metadata?.messageID?.startsWith('synthetic-')) {
+                  sid = (part as any).metadata?.messageID.replace('synthetic-', '');
+                }
+                
+                if (sid && sid !== conversation.sessionId && sid !== conversation.opencodeSessionId) {
+                  if (!childSessionParts[sid]) childSessionParts[sid] = [];
+                  childSessionParts[sid].push(part);
+                }
+              }
+            }
+
+            // Second pass: construct SubtaskSessions
+            for (const msg of conversation.messages || []) {
+              if (msg.role !== 'assistant' || !msg.parts) continue;
+              for (const part of msg.parts) {
+                if (part.type === 'subtask' && part.callID) {
+                  const cSid = part.childSessionID || (part as any).metadata?.childSessionID || (part as any).metadata?.sessionID;
+                  const partsForSession = (cSid && childSessionParts[cSid]) || childSessionParts[part.callID] || [];
+                  const syntheticMessages: Message[] = [];
+                  if (partsForSession.length > 0) {
+                    syntheticMessages.push({
+                      id: `synthetic-${part.callID}`,
+                      sessionID: cSid || part.callID,
+                      role: 'assistant',
+                      content: '',
+                      status: 'streaming',
+                      time: { created: (partsForSession[0] as any).time?.start || new Date(msg.createdAt).getTime() },
+                      parts: partsForSession
+                    } as any);
+                  }
+
+                  const existing = sessionsFromSnapshot[part.callID] || {};
+                  sessionsFromSnapshot[part.callID] = {
+                    ...existing,
+                    callID: part.callID,
+                    parentSessionID: part.sessionID,
+                    childSessionID: cSid || existing.childSessionID,
+                    prompt: part.prompt || existing.prompt || '',
+                    description: part.description || part.prompt || existing.description || '',
+                    agent: part.agent || existing.agent || '',
+                    status: part.status,
+                    messages: syntheticMessages.length > 0 ? syntheticMessages : (existing.messages || []),
+                    createdAt: existing.createdAt || Date.now(),
+                  };
+                } else if (part.type === 'tool' && (part.tool === 'task' || (part as any).toolName === 'task') && part.callID) {
+                  const input = (part.state?.input || (part as any).input || {}) as Record<string, any>;
+                  const cSid = (part as any).metadata?.childSessionID || (part as any).metadata?.sessionID;
+                  const partsForSession = (cSid && childSessionParts[cSid]) || childSessionParts[part.callID] || [];
+                  
+                  const syntheticMessages: Message[] = [];
+                  if (partsForSession.length > 0) {
+                    syntheticMessages.push({
+                      id: `synthetic-${part.callID}`,
+                      sessionID: cSid || part.callID,
+                      role: 'assistant',
+                      content: '',
+                      status: 'streaming',
+                      time: { created: (partsForSession[0] as any).time?.start || new Date(msg.createdAt).getTime() },
+                      parts: partsForSession
+                    } as any);
+                  }
+
+                  const existing = sessionsFromSnapshot[part.callID] || {};
+                  sessionsFromSnapshot[part.callID] = {
+                    ...existing,
+                    callID: part.callID,
+                    parentSessionID: part.sessionID,
+                    childSessionID: cSid || existing.childSessionID,
+                    prompt: input.prompt || existing.prompt || '',
+                    description: input.description || input.prompt || existing.description || '',
+                    agent: input.agent || existing.agent || '',
+                    status: part.state?.status === 'error' ? 'failed' : (part.state?.status === 'completed' ? 'completed' : (part.state?.status === 'running' ? 'running' : 'pending')),
+                    messages: syntheticMessages.length > 0 ? syntheticMessages : (existing.messages || []),
+                    createdAt: (part as any).time?.start || existing.createdAt || Date.now(),
+                  };
+                }
+              }
+            }
+            if (Object.keys(sessionsFromSnapshot).length > 0) {
+              setSubtaskSessions((prev) => {
+                const next = { ...prev };
+                for (const key of Object.keys(sessionsFromSnapshot)) {
+                  const snapSession = sessionsFromSnapshot[key];
+                  if (next[key]) {
+                    next[key] = {
+                      ...snapSession,
+                      prompt: next[key].prompt || snapSession.prompt,
+                      description: next[key].description || snapSession.description,
+                      agent: next[key].agent || snapSession.agent,
+                      status: (next[key].status === 'completed' || next[key].status === 'failed') ? next[key].status : snapSession.status,
+                      messages: (next[key].messages && next[key].messages.length > 0) ? next[key].messages : snapSession.messages,
+                    };
+                  } else {
+                    next[key] = snapSession;
+                  }
+                }
+                return next;
+              });
+            }
           },
           onMessage: ({ conversationId: nextConversationId, message }) => {
             setConversationId(nextConversationId);
-            setMessages((prev) => {
-              const withoutDuplicate = prev.filter((item) => item.id !== message.id && !(item.status === 'pending' && item.content === message.content));
-              return [...withoutDuplicate, message];
-            });
-            if (message.role === 'assistant' && message.status !== 'streaming') setRunning(false);
+            const normalizedMsg = {
+              ...message,
+              createdAt: message.createdAt || ((message as any).time?.created ? new Date((message as any).time.created).toISOString() : new Date().toISOString()),
+            };
+            setMessages((prev) => mergeIncomingMessage(prev, normalizedMsg));
           },
-          onMessageDelta: ({ conversationId: nextConversationId, messageId, content, done }) => {
-            setConversationId(nextConversationId);
-            setMessages((prev) => prev.map((message) => (
-              message.id === messageId
-                ? { ...message, content: `${message.content}${content}`, status: done ? 'complete' : 'streaming' }
-                : message
-            )));
-            if (done) setRunning(false);
-          },
+          onMessageDelta: () => {},
           onRunStatus: (status) => {
             setConversationId(status.conversationId);
             conversationIdRef.current = status.conversationId;
             secureStoreService.saveOpenCodeConversationId(conversationScope, status.conversationId).catch(() => undefined);
             const isFinished = ['completed', 'failed', 'stopped'].includes(status.phase);
             setRunning(!isFinished);
-            setRunStatusText(isFinished ? null : getNormalizedStatusText(status.phase, status.message));
-            const statusMessage = createRunStatusMessage(status);
-            setMessages((prev) => [...prev.filter((item) => item.id !== statusMessage.id), statusMessage]);
-          },          onToolActivity: ({ activity }) => {
+            setRunStatusText(isFinished ? null : 'Working...');
+          },
+          onQuestionRequest: ({ conversationId: nextConversationId, question }) => {
+            setConversationId(nextConversationId);
+            setPendingQuestion(question);
+          },
+          onToolActivity: ({ activity }) => {
             setTools((prev) => [...prev.filter((item) => item.id !== activity.id), activity]);
           },
           onFileChange: ({ change }) => {
@@ -475,7 +927,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             setApprovals((prev) => [...prev.filter((item) => item.id !== approval.id), approval]);
           },
           onError: ({ conversationId: nextConversationId, message }) => {
-            const targetConversationId = nextConversationId || conversationId || `conversation-${Date.now()}`;
+            const targetConversationId = nextConversationId || conversationIdRef.current || `conversation-${Date.now()}`;
             setConversationId(targetConversationId);
             setRunning(false);
             setRunStatusText(null);
@@ -491,6 +943,606 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           onConversationsList: (payload) => {
             if (payload?.conversations) {
               setConversations(payload.conversations);
+            }
+          },
+          onSSEEvent: (event) => {
+            sseQueue.push(event);
+            if (!sseTimer) {
+              const processQueue = () => {
+                if (sseQueue.length === 0) {
+                  sseTimer = null;
+                  return;
+                }
+                const batch = sseQueue;
+                sseQueue = [];
+                
+                let nextRunning: boolean | null = null;
+                let nextRunStatusText: string | null | undefined = undefined;
+                const newApprovals: any[] = [];
+                let newPendingQuestion: any = null;
+
+                setMessages((prevMsgs) => {
+                  let nextMsgs = prevMsgs;
+                  batch.forEach((e) => {
+                    const mutation = handleGlobalEvent(e);
+                    if (!mutation) return;
+
+                    switch (mutation.action) {
+                      case 'message_updated': {
+                        const msg = mutation.message as any;
+                        const normalizedMsg = {
+                          ...msg,
+                          createdAt: msg.createdAt || (msg.time?.created ? new Date(msg.time.created).toISOString() : new Date().toISOString()),
+                        };
+                        nextMsgs = mergeIncomingMessage(nextMsgs, normalizedMsg);
+                        break;
+                      }
+                      case 'part_delta': {
+                        nextMsgs = updateMessageParts(nextMsgs, mutation.messageId, conversationIdRef.current || defaultConversationId, (partsList) => {
+                          const idx = partsList.findIndex((p) => p.id === mutation.partId);
+                          if (idx === -1) {
+                            const newPart: Part = mutation.partType === 'text'
+                              ? { type: 'text', id: mutation.partId, sessionID: mutation.sessionID, messageID: mutation.messageId, text: mutation.delta, time: { start: Date.now() } }
+                              : { type: 'reasoning', id: mutation.partId, sessionID: mutation.sessionID, messageID: mutation.messageId, text: mutation.delta, time: { start: Date.now() } };
+                            return [...partsList, newPart];
+                          }
+                          const existing = partsList[idx];
+                          if (existing.type === 'text' || existing.type === 'reasoning') {
+                            const updated = { ...existing, text: existing.text + mutation.delta };
+                            const copy = [...partsList];
+                            copy[idx] = updated;
+                            return copy;
+                          }
+                          return partsList;
+                        });
+                        break;
+                      }
+                      case 'part_ended': {
+                        nextMsgs = updateMessageParts(nextMsgs, mutation.messageId, conversationIdRef.current || defaultConversationId, (partsList) => {
+                          const idx = partsList.findIndex((p) => p.id === mutation.partId);
+                          if (idx === -1) {
+                            const newPart: Part = mutation.partType === 'text'
+                              ? { type: 'text', id: mutation.partId, sessionID: mutation.sessionID, messageID: mutation.messageId, text: mutation.text, time: { start: Date.now(), end: Date.now() } }
+                              : { type: 'reasoning', id: mutation.partId, sessionID: mutation.sessionID, messageID: mutation.messageId, text: mutation.text, time: { start: Date.now(), end: Date.now() } };
+                            return [...partsList, newPart];
+                          }
+                          const existing = partsList[idx];
+                          if (existing.type === 'text' || existing.type === 'reasoning') {
+                            const updated = { ...existing, text: mutation.text, time: { ...existing.time, end: Date.now() } } as Part;
+                            const copy = [...partsList];
+                            copy[idx] = updated;
+                            return copy;
+                          }
+                          return partsList;
+                        });
+                        break;
+                      }
+                      case 'part_updated': {
+                        const updatedPart = mutation.part as any;
+                        const msgId = updatedPart.messageID || updatedPart.messageId;
+                        if (!msgId) break;
+                        nextMsgs = updateMessageParts(nextMsgs, msgId, conversationIdRef.current || defaultConversationId, (partsList) => {
+                          const idx = partsList.findIndex((p) => p.id === updatedPart.id);
+                          if (idx === -1) {
+                            return [...partsList, updatedPart];
+                          }
+                          const copy = [...partsList];
+                          const existing = copy[idx];
+                          
+                          if (existing.type === 'tool' && updatedPart.type === 'tool') {
+                            copy[idx] = {
+                              ...existing,
+                              ...updatedPart,
+                              state: {
+                                ...(existing.state || {}),
+                                ...(updatedPart.state || {}),
+                              }
+                            } as any;
+                          } else {
+                            copy[idx] = updatedPart;
+                          }
+                          return copy;
+                        });
+                        break;
+                      }
+                      case 'tool_updated': {
+                        console.log(`[DEBUG-SUBTASK-EVENT] tool_updated for partId=${mutation.partId}, msgId=${mutation.messageId}, tool=${mutation.tool}`);
+                        nextMsgs = updateMessageParts(nextMsgs, mutation.messageId, conversationIdRef.current || defaultConversationId, (partsList) => {
+                          const idx = partsList.findIndex((p) => p.id === mutation.partId);
+                          if (idx === -1) return partsList;
+                          const copy = [...partsList];
+                          const existing = copy[idx];
+                          
+                          if (existing.type === 'tool') {
+                            copy[idx] = { 
+                              ...existing, 
+                              state: {
+                                ...(existing.state || {}),
+                                ...mutation.state
+                              } 
+                            };
+                          }
+                          return copy;
+                        });
+                        break;
+                      }
+                      case 'step_started': {
+                        nextMsgs = updateMessageParts(nextMsgs, mutation.messageId, conversationIdRef.current || defaultConversationId, (partsList) => {
+                          const stepPart: Part = {
+                            type: 'step-start',
+                            id: `step-${mutation.messageId}`,
+                            sessionID: mutation.sessionID,
+                            messageID: mutation.messageId,
+                            snapshot: mutation.snapshot,
+                          };
+                          return [...partsList.filter((p) => p.id !== stepPart.id), stepPart];
+                        });
+                        break;
+                      }
+                      case 'step_ended': {
+                        nextMsgs = updateMessageParts(nextMsgs, mutation.messageId, conversationIdRef.current || defaultConversationId, (partsList) => {
+                          const finishPart: Part = {
+                            type: 'step-finish',
+                            id: `finish-${mutation.messageId}`,
+                            sessionID: mutation.sessionID,
+                            messageID: mutation.messageId,
+                            reason: mutation.finish || '',
+                            cost: mutation.cost || 0,
+                            tokens: mutation.tokens || {},
+                          };
+                          return [...partsList.filter((p) => p.id !== finishPart.id), finishPart];
+                        });
+                        nextMsgs = nextMsgs.map((m) => m.id === mutation.messageId ? { ...m, status: 'complete' } : m);
+                        nextRunning = false;
+                        nextRunStatusText = null;
+                        break;
+                      }
+                      case 'session_status': {
+                        const isIdle = mutation.status === 'idle';
+                        nextRunning = !isIdle;
+                        if (isIdle) nextRunStatusText = null;
+                        break;
+                      }
+                      case 'text_started':
+                      case 'reasoning_started':
+                      case 'session_prompted': {
+                        nextRunning = true;
+                        nextRunStatusText = 'Working...';
+                        break;
+                      }
+                      case 'permission_asked': {
+                        newApprovals.push(mutation.payload);
+                        break;
+                      }
+                      case 'question_asked': {
+                        newPendingQuestion = mutation.payload;
+                        break;
+                      }
+                      case 'subtask_prompt': {
+                        const sc = mutation;
+                        console.log(`[DEBUG-SUBTASK] subtask_prompt received for callID: ${sc.callID}, messageID: "${sc.messageID}"`);
+                        nextMsgs = updateMessageParts(nextMsgs, sc.messageID, conversationIdRef.current || defaultConversationId, (partsList) => {
+                          const subtaskPart: Part = {
+                            type: 'subtask',
+                            id: sc.callID,
+                            sessionID: sc.sessionID,
+                            messageID: sc.messageID,
+                            callID: sc.callID,
+                            prompt: sc.prompt,
+                            description: sc.description,
+                            agent: sc.agent,
+                            status: 'pending',
+                          };
+                          const idx = partsList.findIndex((p) => p.type === 'subtask' && p.id === sc.callID);
+                          if (idx === -1) {
+                            console.log(`[DEBUG-SUBTASK] Appending new subtask part to partsList. Total parts before: ${partsList.length}`);
+                            return [...partsList, subtaskPart];
+                          }
+                          console.log(`[DEBUG-SUBTASK] Updating existing subtask part in partsList.`);
+                          const copy = [...partsList];
+                          copy[idx] = subtaskPart;
+                          return copy;
+                        });
+                        break;
+                      }
+                      case 'subtask_session_mapped': {
+                        console.log(`[DEBUG-SUBTASK] subtask_session_mapped received for callID: ${mutation.callID}, messageID (using empty string for update): ""`);
+                        // Use findMessageIdByPartId to find the real message ID, as empty string is ignored by updateMessageParts
+                        const msgId = findMessageIdByPartId(nextMsgs, mutation.callID);
+                        console.log(`[DEBUG-SUBTASK] Found msgId for mapped subtask: "${msgId}"`);
+                        
+                        nextMsgs = updateMessageParts(nextMsgs, msgId, conversationIdRef.current || defaultConversationId, (partsList) => {
+                          return partsList.map((p) =>
+                            p.type === 'subtask' && p.id === mutation.callID
+                              ? { ...p, status: 'running' as const, childSessionID: mutation.childSessionID }
+                              : p
+                          );
+                        });
+                        break;
+                      }
+                      case 'subtask_completed': {
+                        const msgId = findMessageIdByPartId(nextMsgs, mutation.callID);
+                        nextMsgs = updateMessageParts(nextMsgs, msgId, conversationIdRef.current || defaultConversationId, (partsList) => {
+                          return partsList.map((p) =>
+                            p.type === 'subtask' && p.id === mutation.callID
+                              ? { ...p, status: 'completed' as const }
+                              : p
+                          );
+                        });
+                        break;
+                      }
+                      case 'subtask_failed': {
+                        const msgId = findMessageIdByPartId(nextMsgs, mutation.callID);
+                        nextMsgs = updateMessageParts(nextMsgs, msgId, conversationIdRef.current || defaultConversationId, (partsList) => {
+                          return partsList.map((p) =>
+                            p.type === 'subtask' && p.id === mutation.callID
+                              ? { ...p, status: 'failed' as const }
+                              : p
+                          );
+                        });
+                        break;
+                      }
+                      default:
+                        break;
+                    }
+                  });
+                  return nextMsgs;
+                });
+
+                setSubtaskSessions((prevSessions) => {
+                  let nextSessions = prevSessions;
+                  batch.forEach((e) => {
+                    const mutation = handleGlobalEvent(e);
+                    if (!mutation) return;
+
+                    switch (mutation.action) {
+                      case 'part_updated': {
+                        const updatedPart = mutation.part as any;
+                        if (updatedPart.type === 'tool' && (updatedPart.tool === 'task' || updatedPart.toolName === 'task')) {
+                          const input = (updatedPart.state?.input || updatedPart.input || {}) as any;
+                          const status = updatedPart.state?.status;
+                          const isTerminal = status === 'completed' || status === 'error';
+                          if (isTerminal || input.prompt) {
+                            const existingSubtask = nextSessions[updatedPart.id];
+                            if (existingSubtask) {
+                              const nextMsgs = isTerminal
+                                ? existingSubtask.messages.map((m) =>
+                                    m.role === 'assistant' ? { ...m, status: 'complete' as const } : m
+                                  )
+                                : existingSubtask.messages;
+                              nextSessions = {
+                                ...nextSessions,
+                                [updatedPart.id]: {
+                                  ...existingSubtask,
+                                  prompt: input.prompt || existingSubtask.prompt || '',
+                                  description: input.description || input.prompt || existingSubtask.description || '',
+                                  agent: input.agent || existingSubtask.agent || '',
+                                  status: isTerminal ? (status === 'completed' ? 'completed' : 'failed') : existingSubtask.status,
+                                  messages: nextMsgs,
+                                  completedAt: isTerminal ? Date.now() : existingSubtask.completedAt,
+                                }
+                              };
+                            }
+                          }
+                        }
+                        break;
+                      }
+                      case 'tool_updated': {
+                        if (mutation.tool === 'task') {
+                          const status = mutation.state?.status;
+                          const input = (mutation.state?.input || {}) as any;
+                          const isTerminal = status === 'completed' || status === 'error';
+                          if (isTerminal) {
+                            const existingSubtask = nextSessions[mutation.partId];
+                            if (existingSubtask) {
+                              const nextMsgs = existingSubtask.messages.map((m) =>
+                                m.role === 'assistant' ? { ...m, status: 'complete' as const } : m
+                              );
+                              nextSessions = {
+                                ...nextSessions,
+                                [mutation.partId]: {
+                                  ...existingSubtask,
+                                  prompt: input.prompt || existingSubtask.prompt || '',
+                                  description: input.description || input.prompt || existingSubtask.description || '',
+                                  agent: input.agent || existingSubtask.agent || '',
+                                  status: status === 'completed' ? 'completed' : 'failed',
+                                  messages: nextMsgs,
+                                  completedAt: Date.now(),
+                                }
+                              };
+                            }
+                          }
+                        }
+                        break;
+                      }
+                      case 'subtask_prompt': {
+                        const sc = mutation;
+                        nextSessions = {
+                          ...nextSessions,
+                          [sc.callID]: {
+                            callID: sc.callID,
+                            parentSessionID: sc.sessionID,
+                            childSessionID: undefined,
+                            prompt: sc.prompt,
+                            description: sc.description,
+                            agent: sc.agent,
+                            status: 'pending',
+                            messages: [{
+                              id: `subtask-user-${sc.callID}`,
+                              sessionID: sc.callID,
+                              role: 'user',
+                              content: sc.prompt,
+                              time: { created: Date.now() },
+                              parts: [],
+                            }, {
+                              id: `synthetic-${sc.callID}`,
+                              sessionID: sc.callID,
+                              role: 'assistant',
+                              content: '',
+                              status: 'streaming',
+                              time: { created: Date.now() },
+                              parts: [],
+                            }] as any,
+                            createdAt: Date.now(),
+                          }
+                        };
+                        break;
+                      }
+                      case 'subtask_session_mapped': {
+                        const existingSubtask = nextSessions[mutation.callID];
+                        if (existingSubtask) {
+                          nextSessions = {
+                            ...nextSessions,
+                            [mutation.callID]: {
+                              ...existingSubtask,
+                              status: 'running',
+                              childSessionID: mutation.childSessionID,
+                            }
+                          };
+                        }
+                        break;
+                      }
+                      case 'subtask_event': {
+                        if (!mutation.callID) break;
+                        const inner = mutation.innerMutation;
+                        if (!inner) break;
+
+                        const session = nextSessions[mutation.callID];
+                        if (!session) break;
+                        let msgs: any = session.messages;
+                        const convId = conversationIdRef.current || defaultConversationId;
+                        const assistantMsg = msgs.find((m: any) => m.role === 'assistant');
+                        const msgId = assistantMsg ? assistantMsg.id : `synthetic-${mutation.callID}`;
+                        let forceCompleted = false;
+                        switch (inner.action) {
+                          case 'message_updated': {
+                            const serverMsg = inner.message;
+                            if (!serverMsg) break;
+                            msgs = msgs.map((m: any) => {
+                              if (m.id === `synthetic-${mutation.callID}` || m.id === serverMsg.id) {
+                                return { ...serverMsg, parts: m.parts || [] };
+                              }
+                              return m;
+                            });
+                            break;
+                          }
+                          case 'part_delta': {
+                            msgs = updateMessageParts(msgs, msgId, convId, (partsList) => {
+                              const idx = partsList.findIndex((p) => p.id === inner.partId);
+                              if (idx === -1) {
+                                const newPart: Part = inner.partType === 'text'
+                                  ? { type: 'text', id: inner.partId, sessionID: inner.sessionID, messageID: msgId, text: inner.delta, time: { start: Date.now() } }
+                                  : { type: 'reasoning', id: inner.partId, sessionID: inner.sessionID, messageID: msgId, text: inner.delta, time: { start: Date.now() } };
+                                return [...partsList, newPart];
+                              }
+                              const existing = partsList[idx];
+                              if (existing.type === 'text' || existing.type === 'reasoning') {
+                                const updated = { ...existing, text: existing.text + inner.delta };
+                                const copy = [...partsList];
+                                copy[idx] = updated;
+                                return copy;
+                              }
+                              return partsList;
+                            });
+                            break;
+                          }
+                          case 'part_ended': {
+                            msgs = updateMessageParts(msgs, msgId, convId, (partsList) => {
+                              const idx = partsList.findIndex((p) => p.id === inner.partId);
+                              if (idx === -1) {
+                                const newPart: Part = inner.partType === 'text'
+                                  ? { type: 'text', id: inner.partId, sessionID: inner.sessionID, messageID: msgId, text: inner.text, time: { start: Date.now(), end: Date.now() } }
+                                  : { type: 'reasoning', id: inner.partId, sessionID: inner.sessionID, messageID: msgId, text: inner.text, time: { start: Date.now(), end: Date.now() } };
+                                return [...partsList, newPart];
+                              }
+                              const existing = partsList[idx];
+                              if (existing.type === 'text' || existing.type === 'reasoning') {
+                                const updated = { ...existing, text: inner.text, time: { ...existing.time, end: Date.now() } } as Part;
+                                const copy = [...partsList];
+                                copy[idx] = updated;
+                                return copy;
+                              }
+                              return partsList;
+                            });
+                            break;
+                          }
+                          case 'tool_called': {
+                            console.log(`[DEBUG-SUBTASK-EVENT] tool_called inner.partId=${inner.partId}, tool=${inner.tool}`);
+                            msgs = updateMessageParts(msgs, msgId, convId, (partsList) => {
+                              const existingIdx = partsList.findIndex((p) => p.type === 'tool' && p.id === inner.partId);
+                              if (existingIdx >= 0) return partsList;
+                              const toolPart: Part = {
+                                type: 'tool',
+                                id: inner.partId,
+                                sessionID: inner.sessionID,
+                                messageID: msgId,
+                                callID: inner.partId,
+                                tool: inner.tool,
+                                state: { status: 'running', input: inner.input, time: { start: Date.now() } },
+                              };
+                              return [...partsList, toolPart];
+                            });
+                            break;
+                          }
+                          case 'tool_updated': {
+                            msgs = updateMessageParts(msgs, msgId, convId, (partsList) => {
+                              const idx = partsList.findIndex((p) => p.id === inner.partId);
+                              if (idx === -1) return partsList;
+                              const copy = [...partsList];
+                              const existing = copy[idx];
+                              if (existing.type === 'tool') {
+                                copy[idx] = { ...existing, state: { ...existing.state, ...inner.state } };
+                              }
+                              return copy;
+                            });
+                            break;
+                          }
+                          case 'part_updated': {
+                            const updatedPart = inner.part as any;
+                            const partMsgId = updatedPart.messageID || updatedPart.messageId || msgId;
+                            if (partMsgId) {
+                              msgs = updateMessageParts(msgs, partMsgId, convId, (partsList) => {
+                                const idx = partsList.findIndex((p) => p.id === updatedPart.id);
+                                if (idx === -1) return [...partsList, updatedPart];
+                                const copy = [...partsList];
+                                copy[idx] = updatedPart;
+                                return copy;
+                              });
+                            }
+                            break;
+                          }
+                          case 'step_started': {
+                            msgs = updateMessageParts(msgs, msgId, convId, (partsList) => {
+                              const stepPart: Part = {
+                                type: 'step-start',
+                                id: `step-${msgId}`,
+                                sessionID: inner.sessionID,
+                                messageID: msgId,
+                              };
+                              return [...partsList.filter((p) => p.id !== stepPart.id), stepPart];
+                            });
+                            break;
+                          }
+                          case 'step_ended': {
+                            msgs = updateMessageParts(msgs, msgId, convId, (partsList) => {
+                              const finishPart: Part = {
+                                type: 'step-finish',
+                                id: `finish-${msgId}`,
+                                sessionID: inner.sessionID,
+                                messageID: msgId,
+                                reason: inner.finish || '',
+                                cost: inner.cost || 0,
+                                tokens: inner.tokens || {},
+                              };
+                              return [...partsList.filter((p) => p.id !== finishPart.id), finishPart];
+                            });
+                            msgs = (msgs as any[]).map((m: any) =>
+                              m.id === msgId ? { ...m, status: 'complete' } : m
+                            );
+                            break;
+                          }
+                          case 'session_status': {
+                            const isIdle = inner.status === 'idle';
+                            if (isIdle) {
+                              forceCompleted = true;
+                              msgs = (msgs as any[]).map((m: any) =>
+                                m.role === 'assistant' ? { ...m, status: 'complete' as const } : m
+                              );
+                            }
+                            break;
+                          }
+                          default:
+                            break;
+                        }
+
+                        const nextStatus = forceCompleted ? 'completed' : ((session.status === 'completed' || session.status === 'failed') ? session.status : 'running');
+                        nextSessions = {
+                          ...nextSessions,
+                          [mutation.callID]: {
+                            ...session,
+                            messages: msgs as Message[],
+                            status: nextStatus,
+                            completedAt: forceCompleted ? Date.now() : session.completedAt,
+                          }
+                        };
+                        break;
+                      }
+                      case 'subtask_completed': {
+                        const session = nextSessions[mutation.callID];
+                        if (session) {
+                          const nextMsgs = session.messages.map((m) =>
+                            m.role === 'assistant' ? { ...m, status: 'complete' as const } : m
+                          );
+                          nextSessions = {
+                            ...nextSessions,
+                            [mutation.callID]: {
+                              ...session,
+                              status: 'completed',
+                              messages: nextMsgs,
+                              completedAt: Date.now(),
+                            }
+                          };
+                        }
+                        break;
+                      }
+                      case 'subtask_failed': {
+                        const session = nextSessions[mutation.callID];
+                        if (session) {
+                          const nextMsgs = session.messages.map((m) =>
+                            m.role === 'assistant' ? { ...m, status: 'complete' as const } : m
+                          );
+                          nextSessions = {
+                            ...nextSessions,
+                            [mutation.callID]: {
+                              ...session,
+                              status: 'failed',
+                              errors: [...(session.errors || []), mutation.error],
+                              messages: nextMsgs,
+                              completedAt: Date.now(),
+                            }
+                          };
+                        }
+                        break;
+                      }
+                      default:
+                        break;
+                    }
+                  });
+                  return nextSessions;
+                });
+
+                if (nextRunning !== null) setRunning(nextRunning);
+                if (nextRunStatusText !== undefined) setRunStatusText(nextRunStatusText);
+                if (newApprovals.length > 0) {
+                  setApprovals((prev) => {
+                    let nextApp = [...prev];
+                    newApprovals.forEach((mutationPayload) => {
+                      nextApp = nextApp.filter((a) => a.id !== mutationPayload.id);
+                      nextApp.push({
+                        id: mutationPayload.id,
+                        conversationId: conversationIdRef.current || '',
+                        title: mutationPayload.action || 'Permission Request',
+                        description: mutationPayload.action || '',
+                        riskLevel: 'medium',
+                        status: 'pending',
+                        createdAt: new Date().toISOString(),
+                      });
+                    });
+                    return nextApp;
+                  });
+                }
+                if (newPendingQuestion) {
+                  setPendingQuestion({
+                    id: newPendingQuestion.id,
+                    conversationId: conversationIdRef.current || '',
+                    questions: newPendingQuestion.questions || [],
+                    createdAt: new Date().toISOString(),
+                  });
+                }
+                
+                sseTimer = setTimeout(processQueue, 150) as any;
+              };
+              sseTimer = setTimeout(processQueue, 150) as any;
             }
           },
 
@@ -514,6 +1566,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
       socket?.disconnect();
       socketRef.current = null;
       onSocketChange?.(null);
+      if (sseTimer) clearTimeout(sseTimer);
     };
   }, [user.token, activeCodespace.id, defaultConversationId, conversationScope, keepAliveDuration]);
 
@@ -524,6 +1577,13 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
       socketRef.current.emit('opencode:keepalive', { durationMinutes: keepAliveDuration });
     }
   }, [keepAliveDuration, socketStatus]);
+
+  // Reset submitting guard when running transitions to false
+  useEffect(() => {
+    if (!running) {
+      submittingRef.current = false;
+    }
+  }, [running]);
 
   // Inbuilt/hardware back button handler
   useEffect(() => {
@@ -545,6 +1605,8 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   // ─── Action handlers ──────────────────────────────────────────────────
 
   const handleSubmitPrompt = () => {
+    if (submittingRef.current) return;
+
     const content = inputPrompt.trim();
     if (!content) return;
 
@@ -559,14 +1621,22 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
       return;
     }
 
-    const targetConversationId = conversationId || defaultConversationId;
+    const targetConversationId = conversationIdRef.current || defaultConversationId;
     setConversationId(targetConversationId);
     conversationIdRef.current = targetConversationId;
     secureStoreService.saveOpenCodeConversationId(conversationScope, targetConversationId).catch(() => undefined);
-    setMessages((prev) => [...prev, createLocalMessage(targetConversationId, content)]);
+    submittingRef.current = true;
+    setMessages((prev) => [...prev, {
+      id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      conversationId: targetConversationId,
+      role: 'user',
+      content,
+      createdAt: new Date().toISOString(),
+      status: 'pending',
+    }]);
     setInputPrompt('');
     setRunning(true);
-    setRunStatusText('Starting run...');
+    setRunStatusText('Working...');
     
     // Force scroll to bottom when sending a message
     shouldScrollToBottomRef.current = true;
@@ -575,6 +1645,11 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     }, 50);
 
     emitOpenCodeMessage(socketRef.current, { conversationId: targetConversationId, sessionId, content });
+    
+    // Safety watchdog to release submittingRef if we get stuck
+    setTimeout(() => {
+      submittingRef.current = false;
+    }, 15000);
   };
 
   const handleInstallOpenCode = () => {
@@ -619,6 +1694,22 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     if (!conversationId) return;
     emitOpenCodeStop(socketRef.current, conversationId);
     setRunning(false);
+    setMessages((prev) => prev.map((msg) => {
+      if (msg.role === 'assistant' && msg.parts) {
+        return {
+          ...msg,
+          parts: msg.parts.map((p) => {
+            if (p.type === 'text' || p.type === 'reasoning') {
+              if (!p.time?.end) {
+                return { ...p, time: { ...(p.time || { start: Date.now() }), end: Date.now() } } as Part;
+              }
+            }
+            return p;
+          }),
+        };
+      }
+      return msg;
+    }));
   };
 
   // Reset the installing guard when capability leaves the installing state
@@ -709,26 +1800,31 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     }
   };
 
-  const handlePillPress = (text: string) => {
+  const handlePillPress = useCallback((text: string) => {
     setInputPrompt(text);
     setTimeout(() => {
       textInputRef.current?.focus();
     }, 100);
-  };
+  }, []);
 
   // ─── Toggle handlers ─────────────────────────────────────────────────
 
-  const handleToggleTurn = (turnId: string) => {
+  const handleToggleTurn = useCallback((turnId: string) => {
     setExpandedTurns((prev) => ({ ...prev, [turnId]: !prev[turnId] }));
-  };
+  }, []);
 
-  const handleToggleTool = (toolId: string) => {
+  const handleToggleTool = useCallback((toolId: string) => {
     setExpandedTools((prev) => ({ ...prev, [toolId]: !prev[toolId] }));
-  };
+  }, []);
 
-  const handleToggleThought = (turnId: string) => {
+  const handleToggleThought = useCallback((turnId: string) => {
     setExpandedThoughts((prev) => ({ ...prev, [turnId]: !prev[turnId] }));
-  };
+  }, []);
+
+  const handleOpenSubtask = useCallback((callID: string) => {
+    if (!callID) return;
+    setActiveSubtaskId(callID);
+  }, []);
 
   // ─── Render ───────────────────────────────────────────────────────────
 
@@ -754,11 +1850,22 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             }}>
               <View style={[styles.socketStatusDot, { backgroundColor: socketStatus === 'connected' ? Theme.colors.secondary.default : socketStatus === 'connecting' ? '#f59e0b' : Theme.colors.accent.default }]} />
               <Text style={{ fontSize: 10, fontWeight: '600', color: socketStatus === 'connected' ? Theme.colors.secondary.default : socketStatus === 'connecting' ? '#f59e0b' : Theme.colors.accent.default }}>
-                {socketStatus === 'connected' ? 'Connected' : socketStatus === 'connecting' ? 'Connecting...' : 'Offline'}
+                {socketStatus === 'connected' ? '' : socketStatus === 'connecting' ? 'Connecting...' : 'Offline'}
               </Text>
             </View>
           </View>
           <View style={styles.headerRight}>
+            <TouchableOpacity
+              style={[styles.iconButton, { marginRight: 8 }]}
+              onPress={() => setThinkingMode((prev) => prev === 'show' ? 'hide' : 'show')}
+              activeOpacity={0.7}
+            >
+              <MaterialIcons
+                name={thinkingMode === 'show' ? 'visibility' : 'visibility-off'}
+                size={20}
+                color={Theme.colors.primary.glow}
+              />
+            </TouchableOpacity>
             <TouchableOpacity
               style={[styles.iconButton, { marginRight: 8 }]}
               onPress={() => setShowEnvModal(true)}
@@ -797,6 +1904,16 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
 
         {isOpenCodeReady ? (
           <>
+            {activeSubtaskId !== null && subtaskSessions[activeSubtaskId] ? (
+              <SubtaskView
+                subtask={subtaskSessions[activeSubtaskId]}
+                onBack={() => setActiveSubtaskId(null)}
+                thinkingMode={thinkingMode}
+                expandedTools={expandedTools}
+                onToggleTool={handleToggleTool}
+              />
+            ) : (
+              <>
             <ChatTimeline
               groupedTimelineItems={groupedTimelineItems}
               running={running}
@@ -817,8 +1934,34 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               flatListRef={flatListRef}
               onScroll={handleScroll}
               onContentSizeChange={handleContentSizeChange}
-              onScrollToBottom={() => scrollToBottom(true)}
+              onScrollToBottom={scrollToBottom}
+              thinkingMode={thinkingMode}
+              onOpenSubtask={handleOpenSubtask}
             />
+
+            {pendingQuestion && questionCollapsed && (
+              <TouchableOpacity
+                style={styles.collapsedQuestionBanner}
+                onPress={() => setQuestionCollapsed(false)}
+                activeOpacity={0.8}
+              >
+                <View style={styles.collapsedQuestionContent}>
+                  <View style={styles.collapsedQuestionIconContainer}>
+                    <MaterialIcons name="help-outline" size={18} color={Theme.colors.primary.glow} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.collapsedQuestionTitle}>Agent has a question</Text>
+                    <Text style={styles.collapsedQuestionSubtitle} numberOfLines={1}>
+                      {pendingQuestion.questions[0]?.question || 'Tap to respond'}
+                    </Text>
+                  </View>
+                </View>
+                <View style={styles.collapsedQuestionAction}>
+                  <Text style={styles.collapsedQuestionActionText}>Open</Text>
+                  <MaterialIcons name="keyboard-arrow-up" size={18} color={Theme.colors.primary.glow} />
+                </View>
+              </TouchableOpacity>
+            )}
 
             <ChatInputBar
               inputPrompt={inputPrompt}
@@ -833,6 +1976,8 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               onInputHeightChange={setInputHeight}
               textInputRef={textInputRef}
               isVisible={isVisible}
+              thinkingMode={thinkingMode}
+              onToggleThinkingMode={() => setThinkingMode((prev) => prev === 'show' ? 'hide' : 'show')}
               slashCommandsAutocomplete={
                 <SlashCommandsAutocomplete
                   inputPrompt={inputPrompt}
@@ -842,6 +1987,10 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
                 />
               }
             />
+
+            </>
+
+            )}
 
              <CredentialsModal
               visible={showConnectModal}
@@ -867,6 +2016,15 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               onDeleteConversation={handleDeleteConversation}
               onClose={() => setShowHistory(false)}
               onNewChat={handleNewChatPress}
+            />
+
+            <QuestionDialog
+              question={pendingQuestion}
+              conversationId={conversationId}
+              socket={socketRef.current}
+              onDismiss={() => setPendingQuestion(null)}
+              onCollapse={() => setQuestionCollapsed(true)}
+              visible={!!pendingQuestion && !questionCollapsed}
             />
           </>
         ) : (
@@ -1012,5 +2170,53 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 14,
     fontWeight: '700',
+  },
+  collapsedQuestionBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    borderRadius: 12,
+    backgroundColor: 'rgba(99, 102, 241, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(99, 102, 241, 0.3)',
+  },
+  collapsedQuestionContent: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  collapsedQuestionIconContainer: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(99, 102, 241, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  collapsedQuestionTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: Theme.colors.text.primary,
+  },
+  collapsedQuestionSubtitle: {
+    fontSize: 11,
+    color: Theme.colors.text.muted,
+    marginTop: 1,
+  },
+  collapsedQuestionAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingLeft: 12,
+  },
+  collapsedQuestionActionText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: Theme.colors.primary.glow,
   },
 });

@@ -1,7 +1,9 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -10,16 +12,18 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import { Socket } from 'socket.io-client';
 import {
+  Message,
   OpenCodeApprovalRequest,
   OpenCodeFileChange,
-  OpenCodeMessage,
   OpenCodeToolActivity,
+  Part,
 } from '../../types/opencode';
 import { Theme } from '../../styles/theme';
-import { AnimatedDotsText, ChatTurn, GroupedItem } from './ControlScreenConstants';
-import { ChatMessageBubble } from './ChatMessageBubble';
-import { ToolActivityRow, FileChangeCard, ApprovalRequestCard } from './ToolActivityCard';
+import { AnimatedDotsText, ChatTurn, GroupedItem, thoughtMarkdownStyles } from './ControlScreenConstants';
+import { ChatMessageBubble, markdownRules } from './ChatMessageBubble';
+import { ToolActivityRow, ApprovalRequestCard, PatchRenderer } from './ToolActivityCard';
 import { CopyChipProvider, useCopyChip } from './CopyChipContext';
+import Markdown from 'react-native-markdown-display';
 
 // ─── Props ──────────────────────────────────────────────────────────────────
 
@@ -44,6 +48,8 @@ interface ChatTimelineProps {
   onScroll: (event: any) => void;
   onContentSizeChange: (w: number, h: number) => void;
   onScrollToBottom: () => void;
+  thinkingMode?: 'show' | 'hide';
+  onOpenSubtask?: (callID: string) => void;
 }
 
 // ─── Prompt pills ───────────────────────────────────────────────────────────
@@ -55,9 +61,52 @@ const promptPills = [
   { label: 'Check status', text: 'Check status' },
 ];
 
+// ─── Duration helper ────────────────────────────────────────────────────────
+
+const formatDuration = (startedAt?: string, completedAt?: string): string => {
+  if (!startedAt) return '';
+  const start = new Date(startedAt).getTime();
+  const end = completedAt ? new Date(completedAt).getTime() : Date.now();
+  const diffMs = Math.max(0, end - start);
+  const totalSec = Math.floor(diffMs / 1000);
+  if (totalSec < 1) return '<1s';
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
+};
+
+export const formatDurationMs = (start: number | string, end?: number | string): string => {
+  if (!start) return '';
+  const startTime = typeof start === 'number' ? start : new Date(start).getTime();
+  const endTime = end
+    ? (typeof end === 'number' ? end : new Date(end).getTime())
+    : Date.now();
+  const diffMs = Math.max(0, endTime - startTime);
+  const totalSec = Math.floor(diffMs / 1000);
+  if (isNaN(totalSec)) return '';
+  if (totalSec < 1) return '<1s';
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
+};
+
+export const extractReasoningSummary = (text: string): { title: string | null; body: string } => {
+  const match = text.match(/^\*\*([^*\n]+)\*\*(?:\r?\n\r?\n|$)/);
+  if (!match) return { title: null, body: text };
+  return { title: match[1].trim(), body: text.slice(match[0].length).trimEnd() };
+};
+
 // ─── Main component ─────────────────────────────────────────────────────────
 
-export const ChatTimeline: React.FC<ChatTimelineProps> = ({
+// ─── Key extractor ──────────────────────────────────────────────────────────
+
+const keyExtractor = (item: GroupedItem) => item.key;
+
+// ─── Main component ─────────────────────────────────────────────────────────
+
+const ChatTimelineComponent: React.FC<ChatTimelineProps> = ({
   groupedTimelineItems,
   running,
   runStatusText,
@@ -78,8 +127,131 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   onScroll,
   onContentSizeChange,
   onScrollToBottom,
+  thinkingMode = 'hide',
+  onOpenSubtask,
 }) => {
-  const renderItem = ({ item }: { item: GroupedItem }) => {
+  const [inlineExpandedThoughts, setInlineExpandedThoughts] = useState<Record<string, boolean>>({});
+
+  const toggleInlineThought = useCallback((key: string) => {
+    setInlineExpandedThoughts((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
+  const lastTurnKey = useMemo(() => {
+    const turnItems = groupedTimelineItems.filter((g) => g.type === 'turn');
+    return turnItems[turnItems.length - 1]?.key;
+  }, [groupedTimelineItems]);
+
+  const renderPartActivity = (part: Part, turnId: string, isActive: boolean) => {
+    if (__DEV__) {
+      console.log(`[DEBUG-SUBTASK-RENDER] renderPartActivity called with part.type=${part.type}, id=${part.id}, tool=${(part as any).tool}, callID=${(part as any).callID}`);
+    }
+    switch (part.type) {
+      case 'text': {
+        const partKey = `text-${turnId}-${part.id}`;
+        if (!part.text.trim()) return null;
+        
+        const isSubtask = part.sessionID || (part as any).metadata?.sessionID || (part as any).metadata?.childSessionID;
+        if (isSubtask && isSubtask !== conversationId) {
+          return null;
+        }
+        
+        return (
+          <View key={partKey} style={styles.intermediateTextBlock}>
+            <Text style={styles.intermediateTextBody}>{part.text}</Text>
+          </View>
+        );
+      }
+      case 'reasoning': {
+        const partKey = `reasoning-${turnId}-${part.id}`;
+        const isExpanded = !!inlineExpandedThoughts[partKey];
+        const duration = part.time.end
+          ? formatDurationMs(part.time.start, part.time.end)
+          : undefined;
+        const { title, body } = extractReasoningSummary(part.text);
+        return (
+          <View key={partKey} style={styles.inlineThoughtBlock}>
+            <TouchableOpacity
+              style={styles.inlineThoughtHeader}
+              onPress={() => toggleInlineThought(partKey)}
+              activeOpacity={0.7}
+            >
+              <View style={styles.inlineThoughtHeaderLeft}>
+                <MaterialIcons name="psychology" size={14} color={Theme.colors.primary.glow} />
+                <Text style={styles.inlineThoughtHeaderText}>
+                  {isActive && !part.time.end
+                    ? `Thinking: ${title || ''}`
+                    : `Thought${title ? `: ${title}` : ''}${duration ? ` · ${duration}` : ''}`}
+                </Text>
+              </View>
+              <MaterialIcons
+                name={isExpanded ? 'keyboard-arrow-up' : 'keyboard-arrow-down'}
+                size={16}
+                color={Theme.colors.text.secondary}
+              />
+            </TouchableOpacity>
+            {(isExpanded || (isActive && !part.time.end)) && (
+              <View style={styles.inlineThoughtContent}>
+                <Markdown rules={markdownRules} style={thoughtMarkdownStyles}>{body}</Markdown>
+              </View>
+            )}
+          </View>
+        );
+      }
+      case 'tool':
+        return (
+          <View key={`tool-${part.id}`} style={styles.activityWrapper}>
+            <ToolActivityRow
+              part={part}
+              isTurnActive={isActive}
+              isExpanded={!!expandedTools[part.callID]}
+              onToggle={onToggleTool}
+              onOpenSubtask={onOpenSubtask}
+            />
+          </View>
+        );
+      case 'subtask':
+        return (
+          <TouchableOpacity
+            key={`subtask-${part.id}`}
+            style={styles.subtaskCard}
+            onPress={() => onOpenSubtask?.(part.callID)}
+            activeOpacity={0.7}
+          >
+            <View style={styles.subtaskCardContent}>
+              <View style={styles.subtaskCardHeader}>
+                <MaterialIcons name="account-tree" size={16} color={Theme.colors.primary.glow} />
+                <Text style={styles.subtaskCardTitle}>{part.description}</Text>
+              </View>
+              <Text style={styles.subtaskCardAgent}>Agent: {part.agent}</Text>
+              {part.status === 'running' && <Text style={styles.subtaskCardStatusRunning}>Running...</Text>}
+              {part.status === 'completed' && <Text style={styles.subtaskCardStatusComplete}>Completed</Text>}
+              {part.status === 'failed' && <Text style={styles.subtaskCardStatusFailed}>Failed</Text>}
+              <View style={styles.subtaskCardFooter}>
+                <Text style={styles.subtaskCardViewDetails}>View details →</Text>
+              </View>
+            </View>
+          </TouchableOpacity>
+        );
+      case 'patch':
+        return (
+          <View key={`patch-${part.id}`} style={styles.activityWrapper}>
+            <PatchRenderer part={part} />
+          </View>
+        );
+      case 'file':
+        return (
+          <View key={`file-${part.id}`} style={styles.activityWrapper}>
+            <Text style={styles.intermediateTextBody}>
+              📎 {part.filename || part.url || 'File attachment'}
+            </Text>
+          </View>
+        );
+      default:
+        return null;
+    }
+  };
+
+  const renderItem = useCallback(({ item }: { item: GroupedItem }) => {
     if (item.type === 'system_message') {
       return (
         <View style={styles.timelineRow}>
@@ -87,35 +259,65 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
             message={item.message}
             expandedThoughts={expandedThoughts}
             onToggleThought={onToggleThought}
+            runStatusText={runStatusText}
+            thinkingMode={thinkingMode}
           />
         </View>
       );
     }
 
     const { turn } = item;
-    const isLastTurn = groupedTimelineItems[groupedTimelineItems.length - 1]?.key === `turn-${turn.id}`;
+    const isLastTurn = lastTurnKey === `turn-${turn.id}`;
     const shouldShowThinking = turn.activities.length > 0 || (isLastTurn && running);
     const isExpanded = !!expandedTurns[turn.id];
 
     const toolActivities = turn.activities.filter((a): a is { type: 'tool'; activity: OpenCodeToolActivity } => a.type === 'tool');
+    const partToolActivities = turn.activities.filter((a) => a.type === 'part' && a.part.type === 'tool') as any[];
     const fileChangesCount = turn.activities.filter((a): a is { type: 'file'; change: OpenCodeFileChange } => a.type === 'file').length;
-    const totalTools = toolActivities.length;
+    const totalTools = toolActivities.length + partToolActivities.length;
+
+    const computeTurnDuration = (): string => {
+      let earliest: string | undefined;
+      let latest: string | undefined;
+      for (const act of turn.activities) {
+        if (act.type === 'tool') {
+          if (!earliest || act.activity.startedAt < earliest) earliest = act.activity.startedAt;
+          if (act.activity.completedAt && (!latest || act.activity.completedAt > latest)) latest = act.activity.completedAt;
+        } else if (act.type === 'thought_block') {
+          if (act.block.startedAt && (!earliest || act.block.startedAt < earliest)) earliest = act.block.startedAt;
+          if (act.block.completedAt && (!latest || act.block.completedAt > latest)) latest = act.block.completedAt;
+        } else if (act.type === 'part') {
+          const p = act.part;
+          const start = p.type === 'reasoning' ? new Date(p.time.start).toISOString() : undefined;
+          const end = p.type === 'reasoning' && p.time.end ? new Date(p.time.end).toISOString() : undefined;
+          if (start && (!earliest || start < earliest)) earliest = start;
+          if (end && (!latest || end > latest)) latest = end;
+        }
+      }
+      if (!earliest) return '';
+      return formatDuration(earliest, latest);
+    };
 
     let headerText = 'Thinking...';
-    let hasActiveTool = turn.activities.some((act) => act.type === 'tool' && ((act as any).activity.status === 'started' || (act as any).activity.status === 'running'));
-    let showHeaderSpinner = isLastTurn && running && (hasActiveTool || !turn.assistantMessage || turn.assistantMessage.status === 'streaming');
+    let showHeaderSpinner = isLastTurn && running;
 
     if (isLastTurn && running) {
       const activeTool = toolActivities.find((a) => a.activity.status === 'started' || a.activity.status === 'running');
+      const activePartTool = !activeTool ? partToolActivities.find((a) => a.part.state.status === 'running' || a.part.state.status === 'pending') : undefined;
       if (activeTool) {
         headerText = activeTool.activity.label;
+      } else if (activePartTool) {
+        headerText = activePartTool.part.tool;
       } else if (runStatusText) {
         headerText = runStatusText;
       } else {
         headerText = 'Thinking...';
       }
     } else {
-      if (totalTools > 0) {
+      const turnDuration = computeTurnDuration();
+      if (turnDuration) {
+        headerText = `Worked for ${turnDuration}`;
+      } else if (totalTools > 0) {
         headerText = totalTools === 1 ? 'Ran 1 tool' : `Ran ${totalTools} tools`;
         if (fileChangesCount > 0) {
           headerText += ` (${fileChangesCount} file change${fileChangesCount > 1 ? 's' : ''})`;
@@ -133,6 +335,8 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
               message={turn.userMessage}
               expandedThoughts={expandedThoughts}
               onToggleThought={onToggleThought}
+              runStatusText={null}
+              thinkingMode={thinkingMode}
             />
           </View>
         )}
@@ -151,9 +355,9 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                   <MaterialIcons name="done-all" size={16} color={Theme.colors.secondary.glow} style={{ marginRight: 8 }} />
                 )}
                 {headerText.endsWith('...') ? (
-                  <AnimatedDotsText text={headerText} style={styles.thinkingHeaderText} numberOfLines={1} />
+                  <AnimatedDotsText text={headerText} style={[styles.thinkingHeaderText, showHeaderSpinner && styles.thinkingHeaderActive]} numberOfLines={1} />
                 ) : (
-                  <Text style={styles.thinkingHeaderText} numberOfLines={1}>
+                  <Text style={[styles.thinkingHeaderText, showHeaderSpinner && styles.thinkingHeaderActive]} numberOfLines={1}>
                     {headerText}
                   </Text>
                 )}
@@ -168,20 +372,40 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
             {isExpanded && turn.activities.length > 0 && (
               <View style={styles.thinkingContent}>
                 {turn.activities.map((act) => {
-                  if (act.type === 'tool') return (
-                    <ToolActivityRow
-                      key={`tool-${act.activity.id}`}
-                      activity={act.activity}
-                      isTurnActive={isLastTurn && running}
-                      isExpanded={!!expandedTools[act.activity.id]}
-                      onToggle={onToggleTool}
-                    />
-                  );
+                  if (__DEV__) {
+                    console.log(`[DEBUG-SUBTASK-RENDER] activity in thinkingContent loop: act.type=${act.type}`);
+                    if (act.type === 'part') {
+                      console.log(`[DEBUG-SUBTASK-RENDER] activity is part: part.type=${act.part.type}, id=${act.part.id}, callID=${(act.part as any).callID}`);
+                    }
+                  }
+                  if (act.type === 'tool') {
+                    const legacyPart: any = {
+                      type: 'tool' as const,
+                      id: act.activity.id,
+                      sessionID: '',
+                      messageID: '',
+                      callID: act.activity.id,
+                      tool: act.activity.kind === 'command' ? 'bash' : act.activity.kind === 'file_read' ? 'read' : act.activity.kind === 'file_write' ? 'write' : act.activity.kind === 'search' ? 'grep' : act.activity.label,
+                      state: {
+                        status: act.activity.status === 'started' ? 'running' : act.activity.status,
+                        input: act.activity.metadata || {},
+                        output: '',
+                        title: act.activity.label,
+                        metadata: {},
+                        time: { start: new Date(act.activity.startedAt).getTime(), end: act.activity.completedAt ? new Date(act.activity.completedAt).getTime() : Date.now() },
+                      },
+                    };
+                    return renderPartActivity(legacyPart, turn.id, isLastTurn && running);
+                  }
                   if (act.type === 'file') return (
-                    <FileChangeCard
-                      key={`file-${act.change.id}`}
-                      change={act.change}
-                    />
+                    <View key={`file-${act.change.id}`} style={styles.activityWrapper}>
+                      <Text style={{ fontSize: 11, color: Theme.colors.text.muted, marginBottom: 6 }}>
+                        📄 {act.change.filePath}
+                      </Text>
+                      <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', fontSize: 10, fontWeight: '700', color: Theme.colors.text.muted }}>
+                        +{act.change.additions} -{act.change.deletions}
+                      </Text>
+                    </View>
                   );
                   if (act.type === 'approval') return (
                     <ApprovalRequestCard
@@ -191,6 +415,47 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                       socket={socket}
                     />
                   );
+                  if (act.type === 'thought_block') {
+                    const thoughtKey = `inline-thought-${turn.id}-${act.index}`;
+                    const isExpanded = !!inlineExpandedThoughts[thoughtKey];
+                    const duration = formatDuration(act.block.startedAt, act.block.completedAt);
+                    return (
+                      <View key={thoughtKey} style={styles.inlineThoughtBlock}>
+                        <TouchableOpacity
+                          style={styles.inlineThoughtHeader}
+                          onPress={() => toggleInlineThought(thoughtKey)}
+                          activeOpacity={0.7}
+                        >
+                          <View style={styles.inlineThoughtHeaderLeft}>
+                            <MaterialIcons name="psychology" size={14} color={Theme.colors.primary.glow} />
+                            <Text style={styles.inlineThoughtHeaderText}>
+                              Thought{duration ? ` for ${duration}` : ''}
+                            </Text>
+                          </View>
+                          <MaterialIcons
+                            name={isExpanded ? 'keyboard-arrow-up' : 'keyboard-arrow-down'}
+                            size={16}
+                            color={Theme.colors.text.secondary}
+                          />
+                        </TouchableOpacity>
+                        {isExpanded && (
+                          <View style={styles.inlineThoughtContent}>
+                            <Markdown rules={markdownRules} style={thoughtMarkdownStyles}>{act.block.content}</Markdown>
+                          </View>
+                        )}
+                      </View>
+                    );
+                  }
+                  if (act.type === 'intermediate_text') {
+                    return (
+                      <View key={`intermediate-${turn.id}-${act.index}`} style={styles.intermediateTextBlock}>
+                        <Text style={styles.intermediateTextBody}>{act.block.content}</Text>
+                      </View>
+                    );
+                  }
+                  if (act.type === 'part') {
+                    return renderPartActivity(act.part, turn.id, isLastTurn && running);
+                  }
                   return null;
                 })}
               </View>
@@ -202,14 +467,33 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
           <View style={styles.timelineRow}>
             <ChatMessageBubble
               message={turn.assistantMessage}
+              parts={turn.parts}
               expandedThoughts={expandedThoughts}
               onToggleThought={onToggleThought}
+              runStatusText={isLastTurn && running ? runStatusText : null}
+              thinkingMode={thinkingMode}
             />
           </View>
         )}
       </View>
     );
-  };
+  }, [
+    lastTurnKey,
+    running,
+    runStatusText,
+    expandedTurns,
+    expandedTools,
+    expandedThoughts,
+    onToggleTurn,
+    onToggleTool,
+    onToggleThought,
+    inlineExpandedThoughts,
+    toggleInlineThought,
+    conversationId,
+    socket,
+    thinkingMode,
+    onOpenSubtask,
+  ]);
 
   return (
     <CopyChipProvider>
@@ -217,7 +501,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
         <FlatList
           ref={flatListRef}
           data={groupedTimelineItems}
-          keyExtractor={(item) => item.key}
+          keyExtractor={keyExtractor}
           renderItem={renderItem}
           contentContainerStyle={groupedTimelineItems.length ? styles.timelineContent : styles.emptyContent}
           onScroll={onScroll}
@@ -269,15 +553,23 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   );
 };
 
+export const ChatTimeline = React.memo(ChatTimelineComponent);
+
 // ─── Dismiss Capture ───────────────────────────────────────────────────────
 
 const DismissCapture: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { activeMessageId, dismiss } = useCopyChip();
+  const { activeMessageId, dismiss, copyChipTag } = useCopyChip();
 
-  const handleCapture = useCallback(() => {
-    if (activeMessageId) dismiss();
+  const handleCapture = useCallback((event: any) => {
+    if (activeMessageId) {
+      const targetTag = event.nativeEvent.target;
+      if (targetTag && copyChipTag && targetTag === copyChipTag) {
+        return false;
+      }
+      dismiss();
+    }
     return false;
-  }, [activeMessageId, dismiss]);
+  }, [activeMessageId, dismiss, copyChipTag]);
 
   return (
     <View onStartShouldSetResponderCapture={handleCapture} style={{ flex: 1 }}>
@@ -326,8 +618,6 @@ const styles = StyleSheet.create({
   },
   thinkingContainer: {
     marginHorizontal: 16,
-    borderWidth: 1,
-    borderColor: Theme.colors.border,
     borderRadius: 8,
     backgroundColor: 'rgba(255, 255, 255, 0.02)',
     overflow: 'hidden',
@@ -351,11 +641,59 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
+  thinkingHeaderActive: {
+    color: Theme.colors.primary.glow,
+    fontWeight: '800',
+  },
   thinkingContent: {
-    padding: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 0,
     gap: 10,
-    borderTopWidth: 1,
-    borderTopColor: Theme.colors.border,
+  },
+  inlineThoughtBlock: {
+    borderRadius: 6,
+    backgroundColor: 'rgba(99, 102, 241, 0.03)',
+    overflow: 'hidden',
+  },
+  inlineThoughtHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    backgroundColor: 'rgba(99, 102, 241, 0.05)',
+  },
+  inlineThoughtHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  inlineThoughtHeaderText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: Theme.colors.primary.glow,
+  },
+  inlineThoughtContent: {
+    padding: 10,
+  },
+  inlineThoughtBody: {
+    fontSize: 12,
+    color: Theme.colors.text.secondary,
+    lineHeight: 17,
+  },
+  intermediateTextBlock: {
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+  },
+  intermediateTextBody: {
+    fontSize: 12,
+    color: Theme.colors.text.primary,
+    lineHeight: 17,
+    fontStyle: 'italic',
+    fontWeight: '600',
+  },
+  activityWrapper: {
+    paddingHorizontal: 4,
   },
   pillsContainer: {
     flexDirection: 'row',
@@ -395,5 +733,60 @@ const styles = StyleSheet.create({
     shadowRadius: 3.84,
     elevation: 5,
     zIndex: 9999,
+  },
+  subtaskCard: {
+    marginTop: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(99, 102, 241, 0.25)',
+    backgroundColor: 'rgba(99, 102, 241, 0.06)',
+    overflow: 'hidden',
+  },
+  subtaskCardContent: {
+    padding: 10,
+    gap: 4,
+  },
+  subtaskCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  subtaskCardTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: Theme.colors.primary.glow,
+    flex: 1,
+  },
+  subtaskCardAgent: {
+    fontSize: 11,
+    color: Theme.colors.text.secondary,
+    marginLeft: 22,
+  },
+  subtaskCardStatusRunning: {
+    fontSize: 11,
+    color: Theme.colors.primary.glow,
+    fontWeight: '600',
+    marginLeft: 22,
+  },
+  subtaskCardStatusComplete: {
+    fontSize: 11,
+    color: '#22c55e',
+    fontWeight: '600',
+    marginLeft: 22,
+  },
+  subtaskCardStatusFailed: {
+    fontSize: 11,
+    color: '#ef4444',
+    fontWeight: '600',
+    marginLeft: 22,
+  },
+  subtaskCardFooter: {
+    marginTop: 4,
+    alignItems: 'flex-end',
+  },
+  subtaskCardViewDetails: {
+    fontSize: 11,
+    color: Theme.colors.primary.glow,
+    fontWeight: '600',
   },
 });

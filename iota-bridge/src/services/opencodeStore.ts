@@ -4,6 +4,7 @@ import {
   OpenCodeConversation,
   OpenCodeFileChange,
   OpenCodeMessage,
+  OpenCodePart,
   OpenCodeToolActivity,
 } from '../types/opencode';
 import * as fs from 'fs';
@@ -30,6 +31,36 @@ class OpenCodeStore {
   private defaultConversationId?: string;
   private credentialsBySocket = new Map<string, Record<string, string>>();
   private lastWorkspaceRoot?: string;
+  private readonly SAVE_DEBOUNCE_MS = 300;
+  private dirtyConversations = new Set<string>();
+  private saveTimer: NodeJS.Timeout | null = null;
+
+  private markDirty(conversationId: string) {
+    this.dirtyConversations.add(conversationId);
+    if (!this.saveTimer) {
+      this.saveTimer = setTimeout(() => this.flushDirty(), this.SAVE_DEBOUNCE_MS);
+    }
+  }
+
+  private flushDirty() {
+    this.saveTimer = null;
+    const ids = Array.from(this.dirtyConversations);
+    this.dirtyConversations.clear();
+    for (const id of ids) {
+      const conversation = this.conversations.get(id);
+      if (conversation) {
+        this.saveConversation(conversation);
+      }
+    }
+  }
+
+  public flushPendingSaves() {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    this.flushDirty();
+  }
 
   private pruneOldConversations() {
     const maxConversations = 50;
@@ -42,7 +73,7 @@ class OpenCodeStore {
       for (const convo of toPrune) {
         logInfo(`[OpenCodeStore] Pruning old conversation: id=${convo.id}, title=${convo.title || 'Untitled'}`);
         this.conversations.delete(convo.id);
-        
+
         const rootDir = getWorkspaceRoot();
         const filePath = path.join(rootDir, '.iota', 'conversations', `${convo.id}.json`);
         if (fs.existsSync(filePath)) {
@@ -161,7 +192,7 @@ class OpenCodeStore {
   public deleteConversation(conversationId: string) {
     this.ensureLoaded();
     this.conversations.delete(conversationId);
-    
+
     const rootDir = getWorkspaceRoot();
     const filePath = path.join(rootDir, '.iota', 'conversations', `${conversationId}.json`);
     if (fs.existsSync(filePath)) {
@@ -245,7 +276,7 @@ class OpenCodeStore {
     const requestId = id('request');
     conversation.activeRequestId = requestId;
     conversation.status = 'starting';
-    conversation.lastRunPhase = 'preflight';
+    conversation.lastRunPhase = 'connecting';
     conversation.lastError = undefined;
     conversation.updatedAt = now();
     this.saveConversation(conversation);
@@ -278,6 +309,145 @@ class OpenCodeStore {
     return message;
   }
 
+  public startPart(conversationId: string, messageId: string, type: 'text' | 'reasoning', partId: string, metadata?: Record<string, unknown>) {
+    this.ensureLoaded();
+    const conversation = this.conversations.get(conversationId);
+    const message = conversation?.messages.find((m) => m.id === messageId);
+    if (!conversation || !message) return;
+    if (!message.parts) message.parts = [];
+    message.parts.push({ id: partId, type, text: '', time: { start: now() }, metadata });
+    conversation.updatedAt = now();
+    this.markDirty(conversation.id);
+  }
+
+  public appendPartDelta(conversationId: string, messageId: string, partId: string, delta: string) {
+    this.ensureLoaded();
+    const conversation = this.conversations.get(conversationId);
+    const message = conversation?.messages.find((m) => m.id === messageId);
+    const part = message?.parts?.find((p) => p.id === partId);
+    if (!conversation || !message || !part) return;
+    part.text = (part.text || '') + delta;
+    message.content = message.content ? message.content + delta : delta;
+    conversation.updatedAt = now();
+    this.markDirty(conversation.id);
+  }
+
+  public setPartText(conversationId: string, messageId: string, partId: string, text: string) {
+    this.ensureLoaded();
+    const conversation = this.conversations.get(conversationId);
+    const message = conversation?.messages.find((m) => m.id === messageId);
+    const part = message?.parts?.find((p) => p.id === partId);
+    if (!conversation || !message || !part) return;
+    part.text = text;
+    conversation.updatedAt = now();
+    this.markDirty(conversation.id);
+  }
+
+  public endPart(conversationId: string, messageId: string, partId: string) {
+    this.ensureLoaded();
+    const conversation = this.conversations.get(conversationId);
+    const message = conversation?.messages.find((m) => m.id === messageId);
+    const part = message?.parts?.find((p) => p.id === partId);
+    if (!conversation || !message || !part) return;
+    if (!part.time) part.time = { start: now() };
+    part.time.end = now();
+    conversation.updatedAt = now();
+    this.markDirty(conversation.id);
+  }
+
+  public updateToolStatus(
+    conversationId: string,
+    callID: string,
+    status: 'completed' | 'failed' | 'running',
+    options: { result?: unknown; output?: string; error?: string; completedAt?: string } = {}
+  ) {
+    this.ensureLoaded();
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation) return;
+    const tool = conversation.tools.find((t) => t.id === callID);
+    if (!tool) return;
+    tool.status = status === 'failed' ? 'failed' : status === 'completed' ? 'completed' : 'running';
+    if (status !== 'running') {
+      tool.completedAt = options.completedAt || now();
+    }
+    if (!tool.metadata) tool.metadata = {};
+    if (options.result !== undefined) tool.metadata.result = options.result;
+    if (options.output !== undefined) tool.metadata.output = options.output;
+    if (options.error !== undefined) tool.metadata.error = options.error;
+    conversation.updatedAt = now();
+    this.markDirty(conversation.id);
+  }
+
+  public addToolPart(conversationId: string, messageId: string, partId: string, toolName: string, input: Record<string, unknown>, sessionID?: string) {
+    this.ensureLoaded();
+    const conversation = this.conversations.get(conversationId);
+    const message = conversation?.messages.find((m) => m.id === messageId);
+    if (!conversation || !message) return;
+    if (!message.parts) message.parts = [];
+    let part = message.parts.find((p) => p.id === partId);
+    if (!part) {
+      part = {
+        id: partId,
+        type: 'tool',
+        tool: toolName,
+        callID: partId,
+        state: { status: 'running', input, raw: JSON.stringify(input) },
+        time: { start: now() },
+      };
+      if (sessionID) {
+        if (!(part as any).metadata) (part as any).metadata = {};
+        (part as any).metadata.sessionID = sessionID;
+        (part as any).metadata.childSessionID = sessionID;
+      }
+      message.parts.push(part);
+    } else {
+      part.tool = toolName;
+      if (part.state) {
+        part.state.input = input;
+      } else {
+        part.state = { status: 'running', input, raw: JSON.stringify(input) };
+      }
+    }
+    conversation.updatedAt = now();
+    this.markDirty(conversation.id);
+  }
+
+  public updateToolPartStatus(
+    conversationId: string,
+    messageId: string,
+    partId: string,
+    status: 'completed' | 'error',
+    options: { output?: string; error?: string } = {}
+  ) {
+    this.ensureLoaded();
+    const conversation = this.conversations.get(conversationId);
+    const message = conversation?.messages.find((m) => m.id === messageId);
+    const part = message?.parts?.find((p) => p.id === partId);
+    if (!conversation || !message || !part) return;
+    if (part.type === 'tool') {
+      if (!part.state) {
+        part.state = { status };
+      } else {
+        part.state.status = status;
+      }
+      if (options.output !== undefined) part.state.output = options.output;
+      if (options.error !== undefined) part.state.error = options.error;
+      if (!part.time) part.time = { start: now() };
+      part.time.end = now();
+    }
+    conversation.updatedAt = now();
+    this.markDirty(conversation.id);
+  }
+
+  public recordTokenUsage(conversationId: string, usage: { cost?: number; tokens?: Record<string, unknown> }) {
+    this.ensureLoaded();
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation) return;
+    conversation.tokenUsage = usage;
+    conversation.updatedAt = now();
+    this.markDirty(conversation.id);
+  }
+
   public addMessage(message: OpenCodeMessage) {
     this.ensureLoaded();
     const conversation = this.getOrCreateConversation(message.conversationId);
@@ -296,15 +466,19 @@ class OpenCodeStore {
     }
 
     conversation.updatedAt = now();
-    this.saveConversation(conversation);
+    this.markDirty(conversation.id);
   }
 
-  public appendAssistantDelta(conversationId: string, messageId: string, content: string, done = false): OpenCodeMessage | undefined {
+  public appendAssistantDelta(conversationId: string, messageId: string, partId: string, delta: string, done = false): OpenCodeMessage | undefined {
     this.ensureLoaded();
     const conversation = this.conversations.get(conversationId);
     const message = conversation?.messages.find((item) => item.id === messageId);
     if (!conversation || !message) return undefined;
-    message.content += content;
+    const part = message.parts?.find((p) => p.id === partId);
+    if (part) {
+      part.text = (part.text || '') + delta;
+    }
+    message.content += delta;
     message.status = done ? 'complete' : 'streaming';
     conversation.updatedAt = now();
     if (done) {
@@ -320,7 +494,7 @@ class OpenCodeStore {
     if (index >= 0) conversation.tools[index] = activity;
     else conversation.tools.push(activity);
     conversation.updatedAt = now();
-    this.saveConversation(conversation);
+    this.markDirty(conversation.id);
   }
 
   public addFileChange(change: OpenCodeFileChange) {
@@ -345,7 +519,8 @@ class OpenCodeStore {
     const conversation = this.conversations.get(decision.conversationId);
     const approval = conversation?.approvals.find((item) => item.id === decision.approvalId && item.status === 'pending');
     if (!conversation || !approval) return undefined;
-    approval.status = decision.decision === 'approve' ? 'approved' : 'denied';
+    const isApproved = decision.decision === 'once' || decision.decision === 'always';
+    approval.status = isApproved ? 'approved' : 'denied';
     approval.resolvedAt = now();
     conversation.status = conversation.activeRequestId ? 'running' : 'idle';
     conversation.updatedAt = now();
@@ -388,10 +563,9 @@ class OpenCodeStore {
     const conversation = this.conversations.get(conversationId);
     if (!conversation) return;
     conversation.lastRunPhase = phase;
-    if (phase === 'awaiting_first_output') conversation.status = 'awaiting_first_output';
     if (phase === 'streaming') conversation.status = 'running';
     conversation.updatedAt = now();
-    this.saveConversation(conversation);
+    this.markDirty(conversation.id);
   }
 
   public finishRequest(conversationId: string, failed = false, options: { stopped?: boolean; errorSummary?: string } = {}) {

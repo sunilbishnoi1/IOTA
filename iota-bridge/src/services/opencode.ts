@@ -3,7 +3,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as net from 'net';
 import * as http from 'http';
-import { OpenCodeCapabilityState, OpenCodeRunStatusEvent } from '../types/opencode';
+import { EventEmitter } from 'events';
+import { OpenCodeCapabilityState, OpenCodePromptStatusEvent } from '../types/opencode';
 import { opencodeStore } from './opencodeStore';
 import { EnvService } from './envService';
 import { logInfo, logError, getWorkspaceRoot } from './logger';
@@ -15,13 +16,13 @@ const OPENCODE_URL = `http://localhost:${OPENCODE_PORT}`;
 const checkPortReady = (port: number, host = '127.0.0.1', timeout = 3000): Promise<boolean> => {
   return new Promise((resolve) => {
     const start = Date.now();
-    logInfo(`[OpenCodeRunner] checkPortReady: probing ${host}:${port} with timeout=${timeout}ms`);
+    logInfo(`[OpenCodeServerClient] checkPortReady: probing ${host}:${port} with timeout=${timeout}ms`);
     const check = () => {
       let settled = false;
       const req = http.request({
         host,
         port,
-        path: '/',
+        path: '/global/health',
         method: 'GET',
         timeout: 500,
       }, (res) => {
@@ -29,7 +30,7 @@ const checkPortReady = (port: number, host = '127.0.0.1', timeout = 3000): Promi
         settled = true;
         const statusCode = res.statusCode ?? 0;
         const isReady = statusCode >= 200 && statusCode < 300;
-        logInfo(`[OpenCodeRunner] checkPortReady: received HTTP response status=${statusCode} from ${host}:${port} — server ${isReady ? 'ready' : 'not ready (non-2xx)'}`);
+        logInfo(`[OpenCodeServerClient] checkPortReady: received HTTP response status=${statusCode} from ${host}:${port} — server ${isReady ? 'ready' : 'not ready (non-2xx)'}`);
         resolve(isReady);
       });
 
@@ -37,7 +38,7 @@ const checkPortReady = (port: number, host = '127.0.0.1', timeout = 3000): Promi
         if (settled) return;
         settled = true;
         const elapsed = Date.now() - start;
-        logInfo(`[OpenCodeRunner] checkPortReady: probe failed on ${host}:${port} (error: ${err.message}) elapsed=${elapsed}ms`);
+        logInfo(`[OpenCodeServerClient] checkPortReady: probe failed on ${host}:${port} (error: ${err.message}) elapsed=${elapsed}ms`);
         if (elapsed > timeout) resolve(false);
         else setTimeout(check, 200);
       });
@@ -47,7 +48,7 @@ const checkPortReady = (port: number, host = '127.0.0.1', timeout = 3000): Promi
         if (settled) return;
         settled = true;
         const elapsed = Date.now() - start;
-        logInfo(`[OpenCodeRunner] checkPortReady: probe timed out on ${host}:${port} elapsed=${elapsed}ms`);
+        logInfo(`[OpenCodeServerClient] checkPortReady: probe timed out on ${host}:${port} elapsed=${elapsed}ms`);
         if (elapsed > timeout) resolve(false);
         else setTimeout(check, 200);
       });
@@ -58,7 +59,230 @@ const checkPortReady = (port: number, host = '127.0.0.1', timeout = 3000): Promi
   });
 };
 
-export interface OpenCodeRunOptions {
+class OpenCodeSSEClient extends EventEmitter {
+  private activeRequest: http.ClientRequest | null = null;
+  private sessionListeners = new Map<string, (event: any) => void>();
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
+  private isConnecting = false;
+  private reconnectAttempts = 0;
+  private isDesiredStateConnected = false;
+  public onEvent: ((type: string, payload: object) => void) | null = null;
+
+  constructor() {
+    super();
+  }
+
+  public registerSessionListener(sessionId: string, callback: (event: any) => void) {
+    logInfo(`[OpenCodeSSEClient] Registering listener for session ${sessionId}`);
+    this.sessionListeners.set(sessionId, callback);
+  }
+
+  public removeSessionListener(sessionId: string) {
+    logInfo(`[OpenCodeSSEClient] Removing listener for session ${sessionId}`);
+    this.sessionListeners.delete(sessionId);
+  }
+
+  public start() {
+    this.isDesiredStateConnected = true;
+    if (this.activeRequest || this.isConnecting) {
+      logInfo(`[OpenCodeSSEClient] SSE client is already started or connecting.`);
+      return;
+    }
+    this.connect();
+  }
+
+  public stop() {
+    this.isDesiredStateConnected = false;
+    this.cleanup();
+  }
+
+  private cleanup() {
+    if (this.activeRequest) {
+      logInfo(`[OpenCodeSSEClient] Aborting active SSE request.`);
+      this.activeRequest.destroy();
+      this.activeRequest = null;
+    }
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.clearHeartbeatTimer();
+    this.isConnecting = false;
+  }
+
+  private connect() {
+    if (!this.isDesiredStateConnected) return;
+    this.isConnecting = true;
+
+    const port = OPENCODE_PORT;
+    const host = '127.0.0.1';
+
+    // Auth variables
+    const password = process.env.OPENCODE_SERVER_PASSWORD || EnvService.getInstance().getEnvVars().OPENCODE_SERVER_PASSWORD;
+    const username = process.env.OPENCODE_SERVER_USERNAME || EnvService.getInstance().getEnvVars().OPENCODE_SERVER_USERNAME || 'opencode';
+
+    let path = '/event';
+    const headers: Record<string, string> = {
+      'Accept': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    };
+
+    if (password) {
+      const authHeaderValue = Buffer.from(`${username}:${password}`).toString('base64');
+      headers['Authorization'] = `Basic ${authHeaderValue}`;
+    }
+
+    logInfo(`[OpenCodeSSEClient] Connecting to http://${host}:${port}${path} (attempt=${this.reconnectAttempts + 1})`);
+
+    const req = http.request({
+      host,
+      port,
+      path,
+      method: 'GET',
+      headers,
+    }, (res) => {
+      this.isConnecting = false;
+      const statusCode = res.statusCode ?? 0;
+      if (statusCode < 200 || statusCode >= 300) {
+        logError(`[OpenCodeSSEClient] Connection failed with status code ${statusCode}`);
+        this.handleFailure();
+        return;
+      }
+
+      logInfo(`[OpenCodeSSEClient] Connection established with status code ${statusCode}`);
+      this.reconnectAttempts = 0; // Reset reconnect attempts on success
+      this.resetHeartbeatTimer();
+
+      let buffer = '';
+      res.on('data', (chunk) => {
+        buffer += chunk.toString();
+        while (true) {
+          let boundary = buffer.indexOf('\n\n');
+          let boundaryLen = 2;
+          const rnrnIdx = buffer.indexOf('\r\n\r\n');
+          if (rnrnIdx !== -1 && (boundary === -1 || rnrnIdx < boundary)) {
+            boundary = rnrnIdx;
+            boundaryLen = 4;
+          }
+          if (boundary === -1) {
+            break;
+          }
+          const block = buffer.slice(0, boundary).trim();
+          buffer = buffer.slice(boundary + boundaryLen);
+          if (block) {
+            this.parseBlock(block);
+          }
+        }
+      });
+
+      res.on('end', () => {
+        logInfo(`[OpenCodeSSEClient] SSE stream closed by server.`);
+        this.handleFailure();
+      });
+
+      res.on('error', (err) => {
+        logError(`[OpenCodeSSEClient] SSE response stream error: ${err.message}`);
+      });
+    });
+
+    req.on('error', (err) => {
+      this.isConnecting = false;
+      logError(`[OpenCodeSSEClient] Connection request error: ${err.message}`);
+      this.handleFailure();
+    });
+
+    req.end();
+    this.activeRequest = req;
+  }
+
+  private handleFailure() {
+    this.cleanup();
+    if (!this.isDesiredStateConnected) return;
+
+    this.reconnectAttempts++;
+    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+    logInfo(`[OpenCodeSSEClient] Scheduling reconnection in ${delay}ms`);
+    this.reconnectTimer = setTimeout(() => {
+      this.connect();
+    }, delay);
+  }
+
+  private parseBlock(block: string) {
+    const lines = block.split(/\r?\n/);
+    let dataBuffer = '';
+    for (const line of lines) {
+      if (line.startsWith('data:')) {
+        dataBuffer += line.slice(5).trim();
+      } else if (line.startsWith(':')) {
+        // Comment/heartbeat
+        this.resetHeartbeatTimer();
+      }
+    }
+    if (dataBuffer) {
+      try {
+        const event = JSON.parse(dataBuffer);
+        this.dispatchEvent(event);
+      } catch (err: any) {
+        logError(`[OpenCodeSSEClient] Failed to parse SSE JSON block: ${err.message}. Raw block: ${block}`);
+      }
+    }
+  }
+
+  private dispatchEvent(event: any) {
+    this.resetHeartbeatTimer();
+
+    if (event && typeof event === 'object') {
+      if (event.properties && typeof event.properties === 'object') {
+        Object.assign(event, event.properties);
+      }
+      if (event.payload && typeof event.payload === 'object') {
+        if (event.payload.properties && typeof event.payload.properties === 'object') {
+          Object.assign(event.payload, event.payload.properties);
+        }
+      }
+    }
+
+    const type = event.type || event.event || event.kind || (event.payload && (event.payload.type || event.payload.event || event.payload.kind));
+    const sessionId = event.sessionID || event.sessionId || event.session_id ||
+      (event.payload && (event.payload.sessionID || event.payload.sessionId || event.payload.session_id));
+
+    // logInfo(`[OpenCodeSSEClient] Dispatching event: type=${type}, sessionId=${sessionId}, raw=${JSON.stringify(event).slice(0, 300)}`);
+
+    if (this.onEvent && type) {
+      this.onEvent(String(type), event);
+    }
+
+    if (sessionId) {
+      const listener = this.sessionListeners.get(sessionId);
+      if (listener) {
+        listener(event);
+      }
+    }
+    this.emit('event', event);
+  }
+
+  private resetHeartbeatTimer() {
+    this.clearHeartbeatTimer();
+    // Heartbeat is sent every 15s. Let's set timeout to 30s to be safe.
+    this.heartbeatTimer = setTimeout(() => {
+      logError(`[OpenCodeSSEClient] Heartbeat timeout! Reconnecting...`);
+      this.handleFailure();
+    }, 30000);
+  }
+
+  private clearHeartbeatTimer() {
+    if (this.heartbeatTimer) {
+      clearTimeout(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+}
+
+export const openCodeSSEClient = new OpenCodeSSEClient();
+
+export interface PromptOptions {
   conversationId: string;
   requestId: string;
   prompt: string;
@@ -68,13 +292,12 @@ export interface OpenCodeRunOptions {
   onText?: (chunk: string) => void;
   onStderr?: (line: string) => void;
   onActivity?: () => void;
-  onRunStatus?: (status: OpenCodeRunStatusEvent) => void;
+  onRunStatus?: (status: OpenCodePromptStatusEvent) => void;
 }
 
-export interface OpenCodeRunHandle {
+export interface PromptHandle {
   stop: (reason?: 'user' | 'watchdog') => void;
-  done: Promise<{ exitCode: number | null; stderr: string; spawnError?: string }>;
-  mode: 'attached' | 'direct';
+  done: Promise<{ completed: boolean; error?: string }>;
 }
 
 interface CommandResult {
@@ -89,26 +312,43 @@ interface ServerReadinessResult {
   details: string;
 }
 
-class OpenCodeRunner {
+class OpenCodeServerClient {
   private serveProcess: ChildProcess | null = null;
-  private activeRun: ChildProcess | null = null;
-  private activeRequestId: string | null = null;
+  private activeRequestIds = new Map<string, string>();
   private userStoppedRequests = new Set<string>();
   private serverStartPromise: Promise<ServerReadinessResult> | null = null;
   private installing = false;
   private lastKnownCapability: OpenCodeCapabilityState | null = null;
+  private activeSessions = new Map<string, string>();
 
   public async checkCapability(): Promise<OpenCodeCapabilityState> {
     const timestamp = new Date().toISOString();
-    logInfo(`[OpenCodeRunner] checkCapability: probing opencode --version`);
+
+    // First probe the serve health endpoint to check if daemon is running
+    const healthOk = await checkPortReady(OPENCODE_PORT, '127.0.0.1', 1000);
+    if (healthOk) {
+      logInfo(`[OpenCodeServerClient] checkCapability: serve health endpoint responded OK`);
+      const available: OpenCodeCapabilityState = {
+        status: 'available',
+        details: 'OpenCode server is running',
+        canSubmit: true,
+        canInstall: false,
+        lastCheckedAt: timestamp,
+      };
+      this.lastKnownCapability = available;
+      return available;
+    }
+
+    // Fall back to CLI binary existence check
+    logInfo(`[OpenCodeServerClient] checkCapability: serve not responding, probing opencode --version`);
     const version = await this.runCommand('opencode', ['--version'], 5000);
-    logInfo(`[OpenCodeRunner] checkCapability: --version exitCode=${version.exitCode}, stdout="${(version.stdout || '').trim().slice(0, 80)}", stderr="${(version.stderr || '').trim().slice(0, 120)}"`);
+    logInfo(`[OpenCodeServerClient] checkCapability: --version exitCode=${version.exitCode}, stdout="${(version.stdout || '').trim().slice(0, 80)}", stderr="${(version.stderr || '').trim().slice(0, 120)}"`);
 
     if (version.exitCode !== 0) {
-      logInfo(`[OpenCodeRunner] checkCapability: OpenCode is missing or returned non-zero exit code`);
+      logInfo(`[OpenCodeServerClient] checkCapability: OpenCode is missing or returned non-zero exit code`);
       const missing: OpenCodeCapabilityState = {
         status: 'missing',
-        details: 'OpenCode is not installed in this Codespace',
+        details: 'OpenCode is not installed in this environment',
         canSubmit: false,
         canInstall: true,
         lastCheckedAt: timestamp,
@@ -119,9 +359,9 @@ class OpenCodeRunner {
     }
 
     const workspaceRoot = this.getWorkspaceRootSync();
-    logInfo(`[OpenCodeRunner] checkCapability: checking workspace root: ${workspaceRoot}`);
+    logInfo(`[OpenCodeServerClient] checkCapability: checking workspace root: ${workspaceRoot}`);
     if (!workspaceRoot || !fs.existsSync(workspaceRoot)) {
-      logError(`[OpenCodeRunner] checkCapability: workspace folder is not ready or not found: ${workspaceRoot}`);
+      logError(`[OpenCodeServerClient] checkCapability: workspace folder is not ready or not found: ${workspaceRoot}`);
       const uninitialized: OpenCodeCapabilityState = {
         status: 'installed_uninitialized',
         details: 'OpenCode is installed, but the workspace folder is not ready',
@@ -134,7 +374,7 @@ class OpenCodeRunner {
       return uninitialized;
     }
 
-    logInfo(`[OpenCodeRunner] checkCapability: OpenCode is ready and available`);
+    logInfo(`[OpenCodeServerClient] checkCapability: OpenCode binary found — can be started`);
     const available: OpenCodeCapabilityState = {
       status: 'available',
       details: 'OpenCode is ready',
@@ -151,9 +391,9 @@ class OpenCodeRunner {
   }
 
   public async install(onProgress: (message: string) => void): Promise<OpenCodeCapabilityState> {
-    logInfo(`[OpenCodeRunner] install: starting installation`);
+    logInfo(`[OpenCodeServerClient] install: starting installation`);
     if (this.installing) {
-      logInfo(`[OpenCodeRunner] install: already installing, skipping`);
+      logInfo(`[OpenCodeServerClient] install: already installing, skipping`);
       return {
         status: 'installing',
         details: 'OpenCode installation is already running',
@@ -169,39 +409,39 @@ class OpenCodeRunner {
     const npmCommand = await this.findNpmCommand();
     let npmResult: CommandResult | undefined;
     if (npmCommand) {
-      logInfo(`[OpenCodeRunner] install: running npm installer using command: ${npmCommand.command}`);
+      logInfo(`[OpenCodeServerClient] install: running npm installer using command: ${npmCommand.command}`);
       npmResult = await this.runInstaller(
         npmCommand.command,
         [...npmCommand.prefixArgs, 'install', '-g', 'opencode-ai'],
         onProgress
       );
     } else {
-      logInfo(`[OpenCodeRunner] install: npm not found, will fallback to curl`);
+      logInfo(`[OpenCodeServerClient] install: npm not found, will fallback to curl`);
       onProgress('npm was not found. Trying the official OpenCode installer...');
     }
 
     let capability = await this.checkCapability();
-    logInfo(`[OpenCodeRunner] install: capability after npm install attempt is ${capability.status}`);
+    logInfo(`[OpenCodeServerClient] install: capability after npm install attempt is ${capability.status}`);
     if (capability.status === 'available' || capability.status === 'installed_uninitialized') {
       this.installing = false;
-      logInfo(`[OpenCodeRunner] install: installation succeeded after npm install`);
+      logInfo(`[OpenCodeServerClient] install: installation succeeded after npm install`);
       return capability;
     }
 
-    logInfo(`[OpenCodeRunner] install: npm install did not make OpenCode available. Trying curl script installer...`);
+    logInfo(`[OpenCodeServerClient] install: npm install did not make OpenCode available. Trying curl script installer...`);
     onProgress('Trying the official OpenCode install script...');
     const curlResult = await this.runInstaller('bash', ['-lc', 'curl -fsSL https://opencode.ai/install | bash'], onProgress);
     capability = await this.checkCapability();
     this.installing = false;
-    logInfo(`[OpenCodeRunner] install: capability after curl install attempt is ${capability.status}`);
+    logInfo(`[OpenCodeServerClient] install: capability after curl install attempt is ${capability.status}`);
 
     if (capability.status === 'available' || capability.status === 'installed_uninitialized') {
-      logInfo(`[OpenCodeRunner] install: installation succeeded after curl script`);
+      logInfo(`[OpenCodeServerClient] install: installation succeeded after curl script`);
       return capability;
     }
 
     const failureText = this.sanitizeLine(curlResult.stderr || curlResult.stdout || npmResult?.stderr || npmResult?.stdout);
-    logError(`[OpenCodeRunner] install: installation failed. Failure text: "${failureText}"`);
+    logError(`[OpenCodeServerClient] install: installation failed. Failure text: "${failureText}"`);
     const failedCapability: OpenCodeCapabilityState = {
       status: 'install_failed',
       details: 'OpenCode installation failed',
@@ -213,249 +453,333 @@ class OpenCodeRunner {
     this.lastKnownCapability = failedCapability;
     return failedCapability;
   }
-  public async run(options: OpenCodeRunOptions): Promise<OpenCodeRunHandle> {
-    logInfo(`[OpenCodeRunner] Starting run request ${options.requestId} for conversation ${options.conversationId}, prompt="${options.prompt.slice(0, 80)}"`);
-    this.activeRequestId = options.requestId;
+  private async createSession(): Promise<string> {
+    const password = process.env.OPENCODE_SERVER_PASSWORD || EnvService.getInstance().getEnvVars().OPENCODE_SERVER_PASSWORD;
+    const username = process.env.OPENCODE_SERVER_USERNAME || EnvService.getInstance().getEnvVars().OPENCODE_SERVER_USERNAME || 'opencode';
+
+    return new Promise((resolve, reject) => {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (password) {
+        headers['Authorization'] = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+      }
+
+      const req = http.request({
+        host: '127.0.0.1',
+        port: OPENCODE_PORT,
+        path: '/session',
+        method: 'POST',
+        headers,
+      }, (res) => {
+        let body = '';
+        res.on('data', (chunk) => body += chunk);
+        res.on('end', () => {
+          if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+            try {
+              const parsed = JSON.parse(body);
+              if (parsed.id) {
+                resolve(parsed.id);
+              } else {
+                reject(new Error(`Failed to parse session ID from response: ${body}`));
+              }
+            } catch (err: any) {
+              reject(new Error(`Invalid JSON in session create response: ${err.message}`));
+            }
+          } else {
+            reject(new Error(`Session create failed with status code ${res.statusCode}: ${body}`));
+          }
+        });
+      });
+
+      req.on('error', (err) => reject(err));
+      req.write(JSON.stringify({}));
+      req.end();
+    });
+  }
+
+  private async postPromptAsync(sessionId: string, prompt: string, conversationId: string): Promise<void> {
+    const password = process.env.OPENCODE_SERVER_PASSWORD || EnvService.getInstance().getEnvVars().OPENCODE_SERVER_PASSWORD;
+    const username = process.env.OPENCODE_SERVER_USERNAME || EnvService.getInstance().getEnvVars().OPENCODE_SERVER_USERNAME || 'opencode';
+    const conversation = conversationId ? opencodeStore.getConversation(conversationId) : undefined;
+    const modelStr = conversation?.activeModel || 'opencode/deepseek-v4-flash-free';
+    const slashIdx = modelStr.indexOf('/');
+    const modelObj = slashIdx !== -1 ? {
+      providerID: modelStr.substring(0, slashIdx),
+      modelID: modelStr.substring(slashIdx + 1),
+    } : {
+      providerID: 'opencode',
+      modelID: modelStr,
+    };
+
+    return new Promise((resolve, reject) => {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (password) {
+        headers['Authorization'] = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+      }
+
+      const req = http.request({
+        host: '127.0.0.1',
+        port: OPENCODE_PORT,
+        path: `/session/${sessionId}/prompt_async`,
+        method: 'POST',
+        headers,
+      }, (res) => {
+        let body = '';
+        res.on('data', (chunk) => body += chunk);
+        res.on('end', () => {
+          if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+            resolve();
+          } else {
+            reject(new Error(`Prompt request failed with status code ${res.statusCode}: ${body}`));
+          }
+        });
+      });
+
+      req.on('error', (err) => reject(err));
+      req.write(JSON.stringify({
+        parts: [{ type: 'text', text: prompt }],
+        model: modelObj,
+      }));
+      req.end();
+    });
+  }
+
+  private async abortSession(sessionId: string): Promise<void> {
+    const password = process.env.OPENCODE_SERVER_PASSWORD || EnvService.getInstance().getEnvVars().OPENCODE_SERVER_PASSWORD;
+    const username = process.env.OPENCODE_SERVER_USERNAME || EnvService.getInstance().getEnvVars().OPENCODE_SERVER_USERNAME || 'opencode';
+
+    return new Promise((resolve, reject) => {
+      const headers: Record<string, string> = {};
+      if (password) {
+        headers['Authorization'] = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+      }
+
+      const req = http.request({
+        host: '127.0.0.1',
+        port: OPENCODE_PORT,
+        path: `/session/${sessionId}/abort`,
+        method: 'POST',
+        headers,
+      }, (res) => {
+        let body = '';
+        res.on('data', (chunk) => body += chunk);
+        res.on('end', () => {
+          if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+            resolve();
+          } else {
+            reject(new Error(`Abort request failed with status code ${res.statusCode}: ${body}`));
+          }
+        });
+      });
+
+      req.on('error', (err) => reject(err));
+      req.end();
+    });
+  }
+
+  public async executePrompt(options: PromptOptions): Promise<PromptHandle> {
+    logInfo(`[OpenCodeServerClient] Starting prompt request ${options.requestId} for conversation ${options.conversationId}, prompt="${options.prompt.slice(0, 80)}"`);
+    this.activeRequestIds.set(options.conversationId, options.requestId);
     options.onRunStatus?.({
       conversationId: options.conversationId,
       requestId: options.requestId,
-      phase: 'server_start',
+      phase: 'connecting',
       message: 'working...',
       retryable: false,
     });
 
     const server = await this.ensureServer();
-    logInfo(`[OpenCodeRunner] ensureServer result: ready=${server.ready}, details="${server.details}"`);
-    const initialAttach = server.ready;
-    
+    logInfo(`[OpenCodeServerClient] ensureServer result: ready=${server.ready}, details="${server.details}"`);
+
+    if (!server.ready) {
+      throw new Error(`OpenCode server failed to start: ${server.details}`);
+    }
+
     options.onRunStatus?.({
       conversationId: options.conversationId,
       requestId: options.requestId,
-      phase: initialAttach ? 'attached_run' : 'direct_run',
+      phase: 'session_created',
       message: 'working...',
       retryable: false,
     });
 
-    let currentChild: ChildProcess | null = null;
-    let mode: 'attached' | 'direct' = initialAttach ? 'attached' : 'direct';
+    let activeSessionId = options.sessionId;
 
-    const donePromise = new Promise<{ exitCode: number | null; stderr: string; spawnError?: string }>(async (resolve) => {
-      let attach = initialAttach;
-      let attemptCount = 0;
-      
-      while (true) {
-        attemptCount++;
-        const args = this.buildRunArgs(options.prompt, options.sessionId, attach, options.conversationId);
-        logInfo(`[OpenCodeRunner] Spawning process (attempt ${attemptCount}): opencode ${args.join(' ')}`);
-        
-        const child = this.spawnProcess('opencode', args, {
-          cwd: this.getWorkspaceRootSync(),
-          env: options.env,
-          detached: process.platform !== 'win32',
-        });
+    const donePromise = new Promise<{ completed: boolean; error?: string }>(async (resolve) => {
+      try {
+        if (!activeSessionId) {
+          logInfo(`[OpenCodeServerClient] Creating new session...`);
+          activeSessionId = await this.createSession();
+          logInfo(`[OpenCodeServerClient] Created new session ID: ${activeSessionId}`);
+          options.onJson({ type: 'session', sessionID: activeSessionId });
+        }
 
-        // Close stdin immediately to prevent Go CLI from blocking on piped input
-        child.stdin?.end();
+        this.activeSessions.set(options.conversationId, activeSessionId);
 
-        logInfo(`[OpenCodeRunner] Spawning attempt ${attemptCount} result - PID: ${child.pid}, connected: ${child.connected}`);
-
-        currentChild = child;
-        this.activeRun = child;
-
-        let buffer = '';
-        let stderr = '';
-        let jsonCount = 0;
-        let stdoutBytes = 0;
-        let stderrBytes = 0;
-
-        child.stdout?.on('data', (data) => {
+        openCodeSSEClient.registerSessionListener(activeSessionId, (event) => {
           options.onActivity?.();
-          const text = String(data);
-          stdoutBytes += data.length;
-          logInfo(`[OpenCode stdout] (${data.length}B, total=${stdoutBytes}B) ${text.trim().slice(0, 500)}`);
-          options.onText?.(text);
-          buffer += text;
-          const lines = buffer.split(/\r?\n/);
-          buffer = lines.pop() || '';
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            try {
-              const parsed = JSON.parse(line);
-              options.onJson(parsed);
-              jsonCount++;
-            } catch (err: any) {
-              logInfo(`[OpenCodeRunner] non-JSON line on stdout fallback to text_delta: "${line}" | Error: ${err.message}`);
-              options.onJson({ type: 'text_delta', content: line });
-            }
+
+          options.onJson(event);
+
+          if (event.type === 'session.status' && event.status?.type === 'idle') {
+            logInfo(`[OpenCodeServerClient] Session ${activeSessionId} status is idle, run completed.`);
+            openCodeSSEClient.removeSessionListener(activeSessionId!);
+            this.activeSessions.delete(options.conversationId);
+            resolve({ completed: true });
+          }
+
+          if (event.type === 'session.error') {
+            const errorMsg = event.error?.data?.message || event.error?.message || 'Unknown server error';
+            logError(`[OpenCodeServerClient] Session error: ${errorMsg}`);
+            options.onStderr?.(errorMsg);
+            openCodeSSEClient.removeSessionListener(activeSessionId!);
+            this.activeSessions.delete(options.conversationId);
+            resolve({ completed: false, error: errorMsg });
           }
         });
 
-        child.stderr?.on('data', (data) => {
-          const text = String(data);
-          stderrBytes += data.length;
-          logError(`[OpenCode stderr] (${data.length}B, total=${stderrBytes}B) ${text.trim().slice(0, 500)}`);
-          stderr += text;
-          for (const line of text.split(/\r?\n/)) {
-            const clean = this.sanitizeLine(line);
-            if (clean) options.onStderr?.(clean);
-          }
-        });
-
-        const childDone = new Promise<{ exitCode: number | null; stderr: string; spawnError?: string }>((resolveChild) => {
-          child.on('exit', (exitCode, signal) => {
-            logInfo(`[OpenCodeRunner] Process (attempt ${attemptCount}) exit event: exitCode=${exitCode}, signal=${signal}`);
-          });
-
-          child.on('close', (exitCode) => {
-            logInfo(`[OpenCodeRunner] Process (attempt ${attemptCount}) close event: exitCode=${exitCode}`);
-            if (buffer.trim()) {
-              try {
-                const parsed = JSON.parse(buffer);
-                options.onJson(parsed);
-                jsonCount++;
-              } catch {
-                options.onJson({ type: 'text_delta', content: buffer });
-              }
-            }
-            if (this.activeRun === child) this.activeRun = null;
-            resolveChild({ exitCode, stderr });
-          });
-          
-          child.on('error', (error) => {
-            logError(`[OpenCodeRunner] Process (attempt ${attemptCount}) error: ${error.message}`);
-            if (this.activeRun === child) this.activeRun = null;
-            resolveChild({ exitCode: null, stderr: error.message, spawnError: error.message });
-          });
-        });
-
-        const result = await childDone;
-        logInfo(`[OpenCodeRunner] Attempt ${attemptCount} finished: exitCode=${result.exitCode}, jsonCount=${jsonCount}, stdoutBytes=${stdoutBytes}, stderrBytes=${stderrBytes}, attach=${attach}, spawnError=${result.spawnError || 'none'}`);
-
-        if (this.userStoppedRequests.has(options.requestId)) {
-          logInfo(`[OpenCodeRunner] Run was explicitly stopped by user. Exiting loop.`);
-          this.userStoppedRequests.delete(options.requestId);
-          if (this.activeRequestId === options.requestId) this.activeRequestId = null;
-          resolve(result);
-          break;
-        }
-
-        // Check if fallback is needed
-        if (attach && jsonCount === 0) {
-          logError(`[OpenCodeRunner] Attached run failed/returned with exitCode=${result.exitCode}, spawnError=${result.spawnError || 'none'} and 0 JSON outputs. Triggering fallback to direct run.`);
-          
-          options.onRunStatus?.({
-            conversationId: options.conversationId,
-            requestId: options.requestId,
-            phase: 'direct_run',
-            message: 'working...',
-            retryable: false,
-          });
-
-          await this.clearStaleServer();
-          attach = false;
-          mode = 'direct';
-          continue; // rerun loop in direct mode
-        }
-
-        // Otherwise we are done
-        logInfo(`[OpenCodeRunner] Run loop completed after ${attemptCount} attempt(s). Final exitCode=${result.exitCode}, jsonCount=${jsonCount}`);
-        if (this.activeRequestId === options.requestId) this.activeRequestId = null;
-        resolve(result);
-        break;
+        logInfo(`[OpenCodeServerClient] Posting prompt_async for session ${activeSessionId}...`);
+        await this.postPromptAsync(activeSessionId, options.prompt, options.conversationId);
+      } catch (err: any) {
+        logError(`[OpenCodeServerClient] Failed execution for request ${options.requestId}: ${err.message}`);
+        resolve({ completed: false, error: err.message });
       }
     });
 
     return {
-      stop: (reason: 'user' | 'watchdog' = 'user') => {
-        logInfo(`[OpenCodeRunner] Stop requested for requestId=${options.requestId}, reason=${reason}`);
+      stop: async (reason: 'user' | 'watchdog' = 'user') => {
+        logInfo(`[OpenCodeServerClient] Stop requested for requestId=${options.requestId}, reason=${reason}`);
         if (reason === 'user') {
           this.userStoppedRequests.add(options.requestId);
         }
-        if (currentChild) {
-          this.killProcess(currentChild);
+        if (activeSessionId) {
+          try {
+            await this.abortSession(activeSessionId);
+          } catch (err: any) {
+            logError(`[OpenCodeServerClient] Failed to abort session ${activeSessionId}: ${err.message}`);
+          }
         }
       },
       done: donePromise,
-      get mode() {
-        return mode;
-      },
     };
   }
 
-  public stopActiveRun(reason: 'user' | 'watchdog' = 'user') {
-    if (reason === 'user' && this.activeRequestId) {
-      this.userStoppedRequests.add(this.activeRequestId);
+  public stopActiveRun(reason: 'user' | 'watchdog' = 'user', conversationId?: string) {
+    if (reason === 'user') {
+      if (conversationId) {
+        const requestId = this.activeRequestIds.get(conversationId);
+        if (requestId) {
+          this.userStoppedRequests.add(requestId);
+        }
+      } else {
+        for (const requestId of this.activeRequestIds.values()) {
+          this.userStoppedRequests.add(requestId);
+        }
+      }
     }
-    if (this.activeRun) {
-      logInfo(`[OpenCodeRunner] Stopping active run (reason=${reason})`);
-      this.killProcess(this.activeRun);
+  }
+
+  public async abortActiveSession(conversationId: string): Promise<void> {
+    const sessionId = this.activeSessions.get(conversationId);
+    if (!sessionId) {
+      logInfo(`[OpenCodeServerClient] abortActiveSession: no active session for conversation ${conversationId}`);
+      return;
     }
-    this.activeRun = null;
+    logInfo(`[OpenCodeServerClient] abortActiveSession: aborting session ${sessionId} for conversation ${conversationId}`);
+    try {
+      await this.abortSession(sessionId);
+      this.activeSessions.delete(conversationId);
+    } catch (err: any) {
+      logError(`[OpenCodeServerClient] abortActiveSession: failed to abort session ${sessionId}: ${err.message}`);
+    }
+  }
+
+  private getCorsArgs(): string[] {
+    const args: string[] = [];
+    const corsOrigins = process.env.OPENCODE_CORS_ORIGINS;
+    if (corsOrigins) {
+      const origins = corsOrigins.split(',').map(o => o.trim()).filter(Boolean);
+      for (const origin of origins) {
+        args.push('--cors', origin);
+      }
+    }
+    return args;
   }
 
   public async ensureServer(): Promise<ServerReadinessResult> {
     if (this.serverStartPromise) {
-      logInfo(`[OpenCodeRunner] ensureServer: server start is already in progress, waiting for it`);
+      logInfo(`[OpenCodeServerClient] ensureServer: server start is already in progress, waiting for it`);
       return this.serverStartPromise;
     }
 
     this.serverStartPromise = (async () => {
-      logInfo(`[OpenCodeRunner] ensureServer: serveProcess exists=${!!this.serveProcess}`);
+      logInfo(`[OpenCodeServerClient] ensureServer: serveProcess exists=${!!this.serveProcess}`);
       if (this.serveProcess) {
         const warm = await checkPortReady(OPENCODE_PORT, '127.0.0.1', 500);
-        logInfo(`[OpenCodeRunner] ensureServer: existing server warm=${warm}`);
-        if (warm) return { ready: true, url: OPENCODE_URL, details: 'OpenCode server is listening' };
-        logInfo(`[OpenCodeRunner] ensureServer: existing server is stale, clearing`);
+        logInfo(`[OpenCodeServerClient] ensureServer: existing server warm=${warm}`);
+        if (warm) {
+          openCodeSSEClient.start();
+          return { ready: true, url: OPENCODE_URL, details: 'OpenCode server is listening' };
+        }
+        logInfo(`[OpenCodeServerClient] ensureServer: existing server is stale, clearing`);
         await this.clearStaleServer();
       } else {
         // If we don't have an active serveProcess, but the port is listening, it is an orphaned daemon. Clear it!
         const activeOrphaned = await checkPortReady(OPENCODE_PORT, '127.0.0.1', 500);
         if (activeOrphaned) {
-          logInfo(`[OpenCodeRunner] ensureServer: detected orphaned opencode daemon on port ${OPENCODE_PORT}, killing it`);
+          logInfo(`[OpenCodeServerClient] ensureServer: detected orphaned opencode daemon on port ${OPENCODE_PORT}, killing it`);
           await this.killProcessOnPort(OPENCODE_PORT);
         }
       }
 
       const available = await this.commandExists('opencode');
-      logInfo(`[OpenCodeRunner] ensureServer: opencode binary available=${available}`);
+      logInfo(`[OpenCodeServerClient] ensureServer: opencode binary available=${available}`);
       if (!available) return { ready: false, details: 'OpenCode binary is missing' };
 
       try {
-        logInfo(`[OpenCodeRunner] ensureServer: spawning opencode serve --port ${OPENCODE_PORT}`);
-        const child = this.spawnProcess('opencode', ['serve', '--port', String(OPENCODE_PORT)], {
+        const corsArgs = this.getCorsArgs();
+        logInfo(`[OpenCodeServerClient] ensureServer: spawning opencode serve --port ${OPENCODE_PORT} --hostname 127.0.0.1${corsArgs.length ? ' ' + corsArgs.join(' ') : ''}`);
+        const child = this.spawnProcess('opencode', ['serve', '--port', String(OPENCODE_PORT), '--hostname', '127.0.0.1', ...corsArgs], {
           cwd: await this.getWorkspaceRoot(),
           stdio: 'ignore',
           detached: true,
         });
         this.serveProcess = child;
         child.unref();
-        logInfo(`[OpenCodeRunner] ensureServer: serve process PID=${child.pid}`);
+        logInfo(`[OpenCodeServerClient] ensureServer: serve process PID=${child.pid}`);
 
         child.on('close', (code) => {
-          logInfo(`[OpenCodeRunner] ensureServer: serve process PID=${child.pid} closed with code=${code}`);
+          logInfo(`[OpenCodeServerClient] ensureServer: serve process PID=${child.pid} closed with code=${code}`);
           if (this.serveProcess === child) {
             this.serveProcess = null;
           }
         });
         child.on('error', (err) => {
-          logError(`[OpenCodeRunner] ensureServer: serve process PID=${child.pid} error: ${err.message}`);
+          logError(`[OpenCodeServerClient] ensureServer: serve process PID=${child.pid} error: ${err.message}`);
           if (this.serveProcess === child) {
             this.serveProcess = null;
           }
         });
 
-        const ready = await checkPortReady(OPENCODE_PORT, '127.0.0.1', 3000);
-        logInfo(`[OpenCodeRunner] ensureServer: port probe result ready=${ready}`);
+        const ready = await checkPortReady(OPENCODE_PORT, '127.0.0.1', 10000);
+        logInfo(`[OpenCodeServerClient] ensureServer: port probe result ready=${ready}`);
         if (!ready) {
           await this.clearStaleServer();
           return { ready: false, details: 'OpenCode server port did not become ready' };
         }
-        
+
         // Warmup delay to allow daemon internal task pipelines to fully initialize
         await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        // Start the persistent SSE client
+        openCodeSSEClient.start();
+
         return { ready: true, url: OPENCODE_URL, details: 'OpenCode server is listening' };
       } catch (error: any) {
-        logError(`[OpenCodeRunner] ensureServer: exception: ${error?.message}`);
+        logError(`[OpenCodeServerClient] ensureServer: exception: ${error?.message}`);
         await this.clearStaleServer();
         return { ready: false, details: error?.message || 'OpenCode server could not start' };
       }
@@ -468,13 +792,22 @@ class OpenCodeRunner {
     }
   }
 
+  public registerChildSessionListener(sessionId: string, callback: (event: any) => void) {
+    openCodeSSEClient.registerSessionListener(sessionId, callback);
+  }
+
+  public removeChildSessionListener(sessionId: string) {
+    openCodeSSEClient.removeSessionListener(sessionId);
+  }
+
   public async clearStaleServer(): Promise<void> {
+    openCodeSSEClient.stop();
     if (this.serveProcess) {
-      logInfo(`[OpenCodeRunner] clearStaleServer: killing active serveProcess PID=${this.serveProcess.pid}`);
+      logInfo(`[OpenCodeServerClient] clearStaleServer: killing active serveProcess PID=${this.serveProcess.pid}`);
       try {
         this.killProcess(this.serveProcess);
       } catch (err: any) {
-        logError(`[OpenCodeRunner] clearStaleServer: failed to kill: ${err.message}`);
+        logError(`[OpenCodeServerClient] clearStaleServer: failed to kill: ${err.message}`);
       }
       this.serveProcess = null;
     }
@@ -482,7 +815,7 @@ class OpenCodeRunner {
   }
 
   private async killProcessOnPort(port: number): Promise<void> {
-    logInfo(`[OpenCodeRunner] Attempting to kill any process occupying port ${port}`);
+    logInfo(`[OpenCodeServerClient] Attempting to kill any process occupying port ${port}`);
     const isWin = process.platform === 'win32';
     try {
       const { exec } = require('child_process');
@@ -495,75 +828,364 @@ class OpenCodeRunner {
           const parts = line.split(/\s+/);
           const pid = parts[parts.length - 1];
           if (pid && !isNaN(Number(pid)) && Number(pid) > 0) {
-            logInfo(`[OpenCodeRunner] Killing process with PID ${pid} on port ${port}`);
+            logInfo(`[OpenCodeServerClient] Killing process with PID ${pid} on port ${port}`);
             await execAsync(`taskkill /F /PID ${pid}`).catch(() => undefined);
           }
         }
       } else {
         await execAsync(`lsof -t -sTCP:LISTEN -i :${port} | xargs kill -9`);
-        logInfo(`[OpenCodeRunner] Killed process on port ${port} via lsof`);
+        logInfo(`[OpenCodeServerClient] Killed process on port ${port} via lsof`);
       }
     } catch (err: any) {
-      logError(`[OpenCodeRunner] Failed to kill process on port ${port}: ${err.message || err}`);
+      logError(`[OpenCodeServerClient] Failed to kill process on port ${port}: ${err.message || err}`);
+    }
+  }
+
+  private async makeRequest(options: {
+    path: string;
+    method: 'GET' | 'POST' | 'DELETE' | 'PATCH';
+    body?: any;
+  }): Promise<string> {
+    const password = process.env.OPENCODE_SERVER_PASSWORD || EnvService.getInstance().getEnvVars().OPENCODE_SERVER_PASSWORD;
+    const username = process.env.OPENCODE_SERVER_USERNAME || EnvService.getInstance().getEnvVars().OPENCODE_SERVER_USERNAME || 'opencode';
+
+    return new Promise((resolve, reject) => {
+      const headers: Record<string, string> = {};
+      if (options.body) {
+        headers['Content-Type'] = 'application/json';
+      }
+      if (password) {
+        headers['Authorization'] = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+      }
+
+      const req = http.request({
+        host: '127.0.0.1',
+        port: OPENCODE_PORT,
+        path: options.path,
+        method: options.method,
+        headers,
+      }, (res) => {
+        let body = '';
+        res.on('data', (chunk) => body += chunk);
+        res.on('end', () => {
+          if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+            resolve(body);
+          } else {
+            reject(new Error(`Request ${options.method} ${options.path} failed with status code ${res.statusCode}: ${body}`));
+          }
+        });
+      });
+
+      req.on('error', (err) => reject(err));
+      if (options.body) {
+        req.write(JSON.stringify(options.body));
+      }
+      req.end();
+    });
+  }
+
+  public async respondToPermission(requestId: string, reply: 'once' | 'always' | 'reject'): Promise<boolean> {
+    logInfo(`[OpenCodeServerClient] respondToPermission: requestId=${requestId}, reply=${reply}`);
+    const body = await this.makeRequest({
+      path: `/permission/${requestId}/reply`,
+      method: 'POST',
+      body: { reply },
+    });
+    return body === 'true' || body === '';
+  }
+
+  public async respondToQuestion(requestId: string, answers: string[][]): Promise<boolean> {
+    logInfo(`[OpenCodeServerClient] respondToQuestion: requestId=${requestId}, answersCount=${answers.length}`);
+    const body = await this.makeRequest({
+      path: `/question/${requestId}/reply`,
+      method: 'POST',
+      body: { answers },
+    });
+    return body === 'true' || body === '';
+  }
+
+  public async rejectQuestion(requestId: string): Promise<boolean> {
+    logInfo(`[OpenCodeServerClient] rejectQuestion: requestId=${requestId}`);
+    const body = await this.makeRequest({
+      path: `/question/${requestId}/reject`,
+      method: 'POST',
+    });
+    return body === 'true' || body === '';
+  }
+
+  public async syncConversationHistory(conversationId: string): Promise<void> {
+    logInfo(`[OpenCodeServerClient] syncConversationHistory: conversationId=${conversationId}`);
+    const conversation = opencodeStore.getConversation(conversationId);
+    if (!conversation || !conversation.opencodeSessionId) {
+      logInfo(`[OpenCodeServerClient] syncConversationHistory: conversation not found or opencodeSessionId is missing`);
+      return;
+    }
+
+    try {
+      const body = await this.makeRequest({
+        path: `/session/${conversation.opencodeSessionId}/message`,
+        method: 'GET',
+      });
+      const parsed = JSON.parse(body);
+      if (!Array.isArray(parsed)) {
+        logError(`[OpenCodeServerClient] syncConversationHistory: expected array from messages, got ${typeof parsed}`);
+        return;
+      }
+
+      logInfo(`[OpenCodeServerClient] syncConversationHistory: fetched ${parsed.length} message(s) for session ${conversation.opencodeSessionId}`);
+
+      const mappedMessages = parsed.map((item: any) => {
+        const info = item.info || {};
+        const parts = Array.isArray(item.parts) ? item.parts : [];
+
+        let content = '';
+        const parsedBlocks: any[] = [];
+        const textParts = parts.filter((p: any) => p.type === 'text');
+        const lastTextPart = textParts[textParts.length - 1];
+
+        const baseTime = new Date(info.createdAt || new Date().toISOString()).getTime();
+        let partIndex = 0;
+
+        for (const part of parts) {
+          const rawTime = part.time || part.createdAt || part.updatedAt;
+          const partTime = rawTime ? new Date(rawTime).toISOString() : new Date(baseTime + partIndex * 10).toISOString();
+          partIndex++;
+
+          if (part.type === 'reasoning') {
+            const partText = part.text || part.delta || part.content || '';
+            content += `<thought>${partText}</thought>`;
+            parsedBlocks.push({
+              type: 'thought',
+              content: partText,
+              isFinished: true,
+              startedAt: partTime,
+              completedAt: partTime,
+            });
+          } else if (part.type === 'text') {
+            const partText = part.text || part.delta || part.content || '';
+            content += partText;
+            const isLast = part === lastTextPart;
+            parsedBlocks.push({
+              type: isLast ? 'text' : 'intermediate',
+              content: partText,
+              isFinished: true,
+              startedAt: partTime,
+              completedAt: partTime,
+            });
+          }
+        }
+
+        if (!content && parts.length > 0) {
+          content = parts.map((p: any) => p.text || p.content || '').join('');
+        }
+
+        return {
+          id: info.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          conversationId,
+          role: info.role || 'assistant',
+          content,
+          createdAt: info.createdAt || new Date().toISOString(),
+          status: 'complete' as const,
+          metadata: { parsedBlocks },
+          parts: parts.map((part: any, idx: number) => {
+            let startMs = baseTime + idx * 10;
+            let endMs = startMs;
+            
+            if (part.time) {
+              if (typeof part.time.start === 'number') startMs = part.time.start;
+              else if (typeof part.time.start === 'string') startMs = new Date(part.time.start).getTime();
+              
+              if (typeof part.time.end === 'number') endMs = part.time.end;
+              else if (typeof part.time.end === 'string') endMs = new Date(part.time.end).getTime();
+            } else {
+              const rawTime = part.createdAt || part.updatedAt;
+              if (rawTime) {
+                startMs = new Date(rawTime).getTime();
+                endMs = startMs;
+              }
+            }
+            
+            if (isNaN(startMs)) startMs = baseTime + idx * 10;
+            if (isNaN(endMs)) endMs = startMs;
+
+            return {
+              id: part.id || part.callID || `part-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              type: part.type,
+              text: part.text,
+              tool: part.tool,
+              callID: part.callID,
+              state: part.state,
+              input: part.input,
+              result: part.result,
+              output: part.output,
+              error: part.error,
+              sessionID: part.sessionID || conversation.opencodeSessionId,
+              messageID: part.messageID || info.id || `msg-${conversation.opencodeSessionId}`,
+              time: { start: startMs, end: endMs },
+              metadata: {
+                ...(part.metadata || {}),
+                sessionID: part.metadata?.sessionID || part.sessionID || conversation.opencodeSessionId,
+                messageID: part.metadata?.messageID || part.messageID || info.id || `msg-${conversation.opencodeSessionId}`,
+              },
+            };
+          }),
+        };
+      });
+
+      for (const msg of mappedMessages) {
+        if (!msg.parts) continue;
+        const taskPartsToSync = msg.parts.filter(
+          (p: any) => p.type === 'tool' && (p.tool === 'task' || p.toolName === 'task') && p.callID
+        );
+
+        for (const part of taskPartsToSync) {
+          const state = part.state || {};
+          const input = part.input || state.input || {};
+          const metadata = part.metadata || state.metadata || {};
+          const childSessionID = metadata.childSessionID || state.childSessionID || input.childSessionID;
+
+          if (childSessionID) {
+            try {
+              const childBody = await this.makeRequest({
+                path: `/session/${childSessionID}/message`,
+                method: 'GET',
+              });
+              const childParsed = JSON.parse(childBody);
+              if (Array.isArray(childParsed)) {
+                for (const childItem of childParsed) {
+                  const childParts = Array.isArray(childItem.parts) ? childItem.parts : [];
+                  let childPartIndex = 0;
+                  const childBaseTime = new Date(childItem.info?.createdAt || msg.createdAt || new Date().toISOString()).getTime();
+                  for (const cp of childParts) {
+                    let startMs = childBaseTime + childPartIndex * 10;
+                    let endMs = startMs;
+                    childPartIndex++;
+
+                    if (cp.time) {
+                      if (typeof cp.time.start === 'number') startMs = cp.time.start;
+                      else if (typeof cp.time.start === 'string') startMs = new Date(cp.time.start).getTime();
+                      
+                      if (typeof cp.time.end === 'number') endMs = cp.time.end;
+                      else if (typeof cp.time.end === 'string') endMs = new Date(cp.time.end).getTime();
+                    } else {
+                      const rawTime = cp.createdAt || cp.updatedAt;
+                      if (rawTime) {
+                        startMs = new Date(rawTime).getTime();
+                        endMs = startMs;
+                      }
+                    }
+                    if (isNaN(startMs)) startMs = childBaseTime + childPartIndex * 10;
+                    if (isNaN(endMs)) endMs = startMs;
+
+                    const mappedChildPart = {
+                      id: cp.id || cp.callID || `part-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                      type: cp.type,
+                      text: cp.text,
+                      tool: cp.tool,
+                      callID: cp.callID,
+                      state: cp.state,
+                      input: cp.input,
+                      result: cp.result,
+                      output: cp.output,
+                      error: cp.error,
+                      sessionID: childSessionID,
+                      messageID: childItem.info?.id || `msg-${childSessionID}`,
+                      time: { start: startMs, end: endMs },
+                      metadata: {
+                        ...(cp.metadata || {}),
+                        sessionID: childSessionID,
+                        childSessionID: childSessionID,
+                      }
+                    };
+                    msg.parts.push(mappedChildPart);
+                  }
+                }
+              }
+            } catch (childErr: any) {
+              logError(`[OpenCodeServerClient] Failed to sync child session ${childSessionID} for task ${part.callID}: ${childErr.message}`);
+            }
+          }
+        }
+      }
+
+      const localOnlyMessages = conversation.messages.filter(
+        m => m.role !== 'user' && m.role !== 'assistant'
+      );
+      conversation.messages = [...localOnlyMessages, ...mappedMessages];
+      conversation.updatedAt = new Date().toISOString();
+      opencodeStore.saveConversation(conversation);
+      logInfo(`[OpenCodeServerClient] syncConversationHistory: successfully synchronized ${mappedMessages.length} messages (preserved ${localOnlyMessages.length} local-only messages)`);
+    } catch (err: any) {
+      logError(`[OpenCodeServerClient] syncConversationHistory failed: ${err.message}`);
     }
   }
 
   public async listSessions(): Promise<unknown[]> {
-    logInfo(`[OpenCodeRunner] listSessions: listing session files`);
-    const result = await this.runCommand('opencode', ['session', 'list', '--format', 'json'], 5000);
+    logInfo(`[OpenCodeServerClient] listSessions: listing sessions via REST`);
     try {
-      const parsed = JSON.parse(result.stdout);
+      const body = await this.makeRequest({ path: '/session', method: 'GET' });
+      const parsed = JSON.parse(body);
       const list = Array.isArray(parsed) ? parsed : [parsed];
-      logInfo(`[OpenCodeRunner] listSessions: successfully retrieved ${list.length} session(s)`);
+      logInfo(`[OpenCodeServerClient] listSessions: successfully retrieved ${list.length} session(s)`);
       return list;
     } catch (err: any) {
-      logError(`[OpenCodeRunner] listSessions: failed to parse JSON: ${err.message}. Raw stdout: "${result.stdout}"`);
+      logError(`[OpenCodeServerClient] listSessions failed: ${err.message}`);
       return [];
     }
   }
 
   public async runModelsQuery(): Promise<string> {
-    logInfo(`[OpenCodeRunner] runModelsQuery: executing opencode models`);
-    const result = await this.runCommand('opencode', ['models'], 15000);
-    if (result.exitCode === 0) {
-      return result.stdout.trim();
+    logInfo(`[OpenCodeServerClient] runModelsQuery: querying providers config via REST`);
+    try {
+      const body = await this.makeRequest({ path: '/config/providers', method: 'GET' });
+      const parsed = JSON.parse(body);
+      let output = 'Available models:\n';
+      if (parsed.providers && Array.isArray(parsed.providers)) {
+        for (const prov of parsed.providers) {
+          if (prov.models && Array.isArray(prov.models)) {
+            for (const model of prov.models) {
+              output += `- ${prov.id}/${model.id || model}\n`;
+            }
+          }
+        }
+      }
+      return output.trim();
+    } catch (err: any) {
+      logError(`[OpenCodeServerClient] runModelsQuery failed: ${err.message}`);
+      throw err;
     }
-    throw new Error(result.stderr || `Failed to query models (code ${result.exitCode})`);
   }
 
   public async runStatsQuery(): Promise<string> {
-    logInfo(`[OpenCodeRunner] runStatsQuery: executing opencode stats`);
-    const result = await this.runCommand('opencode', ['stats'], 15000);
-    if (result.exitCode === 0) {
-      return result.stdout.trim();
+    logInfo(`[OpenCodeServerClient] runStatsQuery: querying health/stats via REST`);
+    try {
+      const body = await this.makeRequest({ path: '/global/health', method: 'GET' });
+      const parsed = JSON.parse(body);
+      return `Server is healthy: ${parsed.healthy}\nVersion: ${parsed.version}`;
+    } catch (err: any) {
+      logError(`[OpenCodeServerClient] runStatsQuery failed: ${err.message}`);
+      throw err;
     }
-    throw new Error(result.stderr || `Failed to query stats (code ${result.exitCode})`);
   }
 
   public async runSessionsQuery(): Promise<string> {
-    logInfo(`[OpenCodeRunner] runSessionsQuery: executing opencode session list`);
-    
+    logInfo(`[OpenCodeServerClient] runSessionsQuery: executing session list query`);
+
     let cliSessionsMd = '';
     try {
-      const result = await this.runCommand('opencode', ['session', 'list', '--format', 'json'], 15000);
-      if (result.exitCode === 0) {
-        const parsed = JSON.parse(result.stdout);
-        const list = Array.isArray(parsed) ? parsed : [parsed];
-        if (list.length > 0) {
-          cliSessionsMd = `### Active CLI Sessions (OpenCode)\n\n| Session ID | Title | Created | Updated |\n| :--- | :--- | :--- | :--- |\n`;
-          for (const ses of list) {
-            const createdDate = ses.created ? new Date(ses.created).toLocaleString() : 'N/A';
-            const updatedDate = ses.updated ? new Date(ses.updated).toLocaleString() : 'N/A';
-            cliSessionsMd += `| \`${ses.id}\` | ${ses.title || 'Untitled'} | ${createdDate} | ${updatedDate} |\n`;
-          }
-        } else {
-          cliSessionsMd = '### Active CLI Sessions (OpenCode)\n\nNo active CLI sessions found.';
+      const list = await this.listSessions();
+      if (list.length > 0) {
+        cliSessionsMd = `### Active CLI Sessions (OpenCode)\n\n| Session ID | Title | Created | Updated |\n| :--- | :--- | :--- | :--- |\n`;
+        for (const ses of list as any[]) {
+          const createdDate = ses.created ? new Date(ses.created).toLocaleString() : 'N/A';
+          const updatedDate = ses.updated ? new Date(ses.updated).toLocaleString() : 'N/A';
+          cliSessionsMd += `| \`${ses.id}\` | ${ses.title || 'Untitled'} | ${createdDate} | ${updatedDate} |\n`;
         }
       } else {
-        cliSessionsMd = `### Active CLI Sessions (OpenCode)\n\nFailed to load CLI sessions: ${result.stderr}`;
+        cliSessionsMd = '### Active CLI Sessions (OpenCode)\n\nNo active CLI sessions found.';
       }
     } catch (err: any) {
-      logError(`[OpenCodeRunner] runSessionsQuery: failed to load CLI sessions: ${err.message}`);
+      logError(`[OpenCodeServerClient] runSessionsQuery: failed to load CLI sessions: ${err.message}`);
       cliSessionsMd = `### Active CLI Sessions (OpenCode)\n\nFailed to load CLI sessions.`;
     }
 
@@ -586,12 +1208,9 @@ class OpenCodeRunner {
   }
 
   public async runSessionDelete(sessionId: string): Promise<string> {
-    logInfo(`[OpenCodeRunner] runSessionDelete: deleting session ${sessionId}`);
-    const result = await this.runCommand('opencode', ['session', 'delete', sessionId], 15000);
-    if (result.exitCode === 0) {
-      return result.stdout.trim() || `Session \`${sessionId}\` deleted successfully.`;
-    }
-    throw new Error(result.stderr || `Failed to delete session (code ${result.exitCode})`);
+    logInfo(`[OpenCodeServerClient] runSessionDelete: deleting session ${sessionId} via REST`);
+    await this.makeRequest({ path: `/session/${sessionId}`, method: 'DELETE' });
+    return `Session \`${sessionId}\` deleted successfully.`;
   }
 
   public async runExportQuery(sessionId?: string): Promise<string> {
@@ -606,52 +1225,42 @@ class OpenCodeRunner {
     if (!targetSessionId) {
       throw new Error('No active sessions found to export.');
     }
-    logInfo(`[OpenCodeRunner] runExportQuery: exporting session ${targetSessionId}`);
-    const result = await this.runCommand('opencode', ['export', targetSessionId], 15000);
-    if (result.exitCode === 0) {
-      return `\`\`\`json\n${result.stdout.trim()}\n\`\`\``;
+    logInfo(`[OpenCodeServerClient] runExportQuery: exporting session ${targetSessionId} via REST`);
+    const body = await this.makeRequest({ path: `/session/${targetSessionId}`, method: 'GET' });
+    try {
+      const parsed = JSON.parse(body);
+      return `\`\`\`json\n${JSON.stringify(parsed, null, 2)}\n\`\`\``;
+    } catch {
+      return `\`\`\`json\n${body}\n\`\`\``;
     }
-    throw new Error(result.stderr || `Failed to export session (code ${result.exitCode})`);
   }
 
   public async runCompactQuery(conversationId?: string): Promise<string> {
-    logInfo(`[OpenCodeRunner] runCompactQuery: executing opencode run with summarize instructions`);
+    logInfo(`[OpenCodeServerClient] runCompactQuery: summarizing session via REST`);
     const conversation = conversationId ? opencodeStore.getConversation(conversationId) : undefined;
-    const model = conversation?.activeModel || 'opencode/deepseek-v4-flash-free';
-    const result = await this.runCommand(
-      'opencode',
-      ['run', '--model', model, '--dangerously-skip-permissions', 'Please summarize our conversation and the changes made in the workspace so far.', '--format', 'json'],
-      30000
-    );
-    if (result.exitCode !== 0) {
-      throw new Error(result.stderr || `Failed to generate conversation summary (code ${result.exitCode})`);
+    const sessionId = conversation?.opencodeSessionId;
+    if (!sessionId) {
+      throw new Error(`No active session found for conversation ${conversationId || 'unknown'}`);
     }
-    try {
-      const lines = result.stdout.split(/\r?\n/).filter(Boolean);
-      let summaryText = '';
-      for (const line of lines) {
-        try {
-          const parsed = JSON.parse(line);
-          if (parsed.type === 'text' && parsed.part?.text) {
-            summaryText += parsed.part.text;
-          } else if (parsed.type === 'text_delta' && parsed.content) {
-            summaryText += parsed.content;
-          }
-        } catch {
-          if (!line.trim().startsWith('{')) {
-            summaryText += line + '\n';
-          }
-        }
+    const modelStr = conversation?.activeModel || 'opencode/deepseek-v4-flash-free';
+    const slashIdx = modelStr.indexOf('/');
+    const providerID = slashIdx !== -1 ? modelStr.substring(0, slashIdx) : 'opencode';
+    const modelID = slashIdx !== -1 ? modelStr.substring(slashIdx + 1) : modelStr;
+
+    await this.makeRequest({
+      path: `/session/${sessionId}/summarize`,
+      method: 'POST',
+      body: {
+        providerID,
+        modelID,
       }
-      const trimmed = summaryText.trim();
-      return trimmed || result.stdout.trim() || 'Conversation summarized successfully.';
-    } catch (err) {
-      return result.stdout.trim() || 'Conversation summarized successfully.';
-    }
+    });
+    return 'Conversation summarized successfully.';
   }
 
+
   public async runSkillsQuery(): Promise<string> {
-    logInfo(`[OpenCodeRunner] runSkillsQuery: reading local skills directory`);
+    logInfo(`[OpenCodeServerClient] runSkillsQuery: reading local skills directory`);
     const workspaceRoot = this.getWorkspaceRootSync();
     const skillsPath = path.join(workspaceRoot, '.agents', 'skills');
     try {
@@ -678,13 +1287,13 @@ class OpenCodeRunner {
       }
       return md.trim();
     } catch (err: any) {
-      logError(`[OpenCodeRunner] runSkillsQuery failed: ${err.message}`);
+      logError(`[OpenCodeServerClient] runSkillsQuery failed: ${err.message}`);
       return `Failed to read custom skills: ${err.message}`;
     }
   }
 
   public async runInitQuery(): Promise<string> {
-    logInfo(`[OpenCodeRunner] runInitQuery: initializing workspace context`);
+    logInfo(`[OpenCodeServerClient] runInitQuery: initializing workspace context`);
     const isWin = process.platform === 'win32';
     const scriptPath = isWin
       ? path.join('.specify', 'extensions', 'agent-context', 'scripts', 'powershell', 'update-agent-context.ps1')
@@ -700,53 +1309,6 @@ class OpenCodeRunner {
     throw new Error(result.stderr || `Failed to initialize workspace (code ${result.exitCode})`);
   }
 
-
-  public writeInput(input: string): boolean {
-    if (this.activeRun && this.activeRun.stdin && this.activeRun.stdin.writable) {
-      this.activeRun.stdin.write(input);
-      return true;
-    }
-    return false;
-  }
-
-  public async syncFromCliSessions(conversationId?: string): Promise<void> {
-    logInfo(`[OpenCodeRunner] syncFromCliSessions: syncing sessions for conversationId=${conversationId}`);
-    const sessions = await this.listSessions();
-    if (sessions && sessions.length > 0) {
-      const session = sessions[0] as { id?: string; sessionId?: string; session_id?: string; messages?: any[]; status?: string };
-      const sessionId = session.id || session.sessionId || session.session_id;
-      logInfo(`[OpenCodeRunner] syncFromCliSessions: target sessionId=${sessionId}`);
-      if (sessionId) {
-        const conversation = opencodeStore.getOrCreateConversation(conversationId, sessionId);
-        if (session.status) conversation.status = session.status as any;
-        if (Array.isArray(session.messages) && session.messages.length > 0) {
-          logInfo(`[OpenCodeRunner] syncFromCliSessions: syncing ${session.messages.length} message(s) for conversation ${conversation.id}`);
-          conversation.messages = session.messages.map((msg: any) => ({
-            id: msg.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            conversationId: conversation.id,
-            role: msg.role || 'assistant',
-            content: msg.content || '',
-            createdAt: msg.createdAt || new Date().toISOString(),
-            status: msg.status || 'complete',
-          }));
-        }
-      }
-    } else {
-      logInfo(`[OpenCodeRunner] syncFromCliSessions: no CLI sessions to sync`);
-    }
-  }
-
-  private buildRunArgs(prompt: string, sessionId?: string, attach = false, conversationId?: string): string[] {
-    const conversation = conversationId ? opencodeStore.getConversation(conversationId) : undefined;
-    const model = conversation?.activeModel || 'opencode/deepseek-v4-flash-free';
-    const args = ['run', '--model', model, '--dangerously-skip-permissions'];
-    if (attach) args.push('--attach', OPENCODE_URL);
-    if (sessionId) args.push('--continue', '--session', sessionId);
-    args.push(prompt, '--format', 'json');
-    logInfo(`[OpenCodeRunner] buildRunArgs: attach=${attach}, sessionId=${sessionId || 'none'}, argCount=${args.length}, fullArgs=[${args.join(', ')}]`);
-    return args;
-  }
-
   private spawnProcess(
     command: string,
     args: string[],
@@ -757,20 +1319,20 @@ class OpenCodeRunner {
       stdio?: any;
     }
   ): ChildProcess {
-    const env = { 
-      ...process.env, 
+    const env = {
+      ...process.env,
       ...EnvService.getInstance().getEnvVars(),
-      ...options.env, 
+      ...options.env,
       WORKSPACE_ROOT: options.cwd,
       IOTA_WORKSPACE_ROOT: options.cwd,
-      PATH: this.buildInstallerPath() 
+      PATH: this.buildInstallerPath()
     };
-    logInfo(`[OpenCodeRunner] spawnProcess - command="${command}" args=${JSON.stringify(args)}`);
-    logInfo(`[OpenCodeRunner] spawnProcess - cwd="${options.cwd}" PATH length: ${env.PATH?.length || 0}`);
+    logInfo(`[OpenCodeServerClient] spawnProcess - command="${command}" args=${JSON.stringify(args)}`);
+    logInfo(`[OpenCodeServerClient] spawnProcess - cwd="${options.cwd}" PATH length: ${env.PATH?.length || 0}`);
     const keysPresent = Object.keys(options.env || {}).filter(k => k.includes('KEY') || k.includes('TOKEN'));
-    logInfo(`[OpenCodeRunner] spawnProcess - custom environment key variables present: ${JSON.stringify(keysPresent)}`);
+    logInfo(`[OpenCodeServerClient] spawnProcess - custom environment key variables present: ${JSON.stringify(keysPresent)}`);
     if (process.platform === 'win32') {
-      logInfo(`[OpenCodeRunner] Spawning win32 process`);
+      logInfo(`[OpenCodeServerClient] Spawning win32 process`);
       return spawn(command, args, {
         cwd: options.cwd,
         env,
@@ -780,7 +1342,7 @@ class OpenCodeRunner {
       });
     } else {
       const shArgs = ['-c', `exec ${command} "$@"`, '--', ...args];
-      logInfo(`[OpenCodeRunner] Spawning POSIX process wrapper: /bin/sh ${shArgs.join(' ')}`);
+      logInfo(`[OpenCodeServerClient] Spawning POSIX process wrapper: /bin/sh ${shArgs.join(' ')}`);
       return spawn('/bin/sh', shArgs, {
         cwd: options.cwd,
         env,
@@ -847,7 +1409,7 @@ class OpenCodeRunner {
 
   private runInstaller(command: string, args: string[], onProgress: (message: string) => void): Promise<CommandResult> {
     return new Promise((resolve) => {
-      logInfo(`[OpenCodeRunner] runInstaller: spawning ${command} ${args.join(' ')}`);
+      logInfo(`[OpenCodeServerClient] runInstaller: spawning ${command} ${args.join(' ')}`);
       const child = this.spawnProcess(command, args, {
         cwd: this.getWorkspaceRootSync(),
       });
@@ -865,11 +1427,11 @@ class OpenCodeRunner {
         onProgress(this.summarizeInstallChunk(text));
       });
       child.on('close', (exitCode) => {
-        logInfo(`[OpenCodeRunner] runInstaller: ${command} closed with code=${exitCode}`);
+        logInfo(`[OpenCodeServerClient] runInstaller: ${command} closed with code=${exitCode}`);
         resolve({ exitCode, stdout, stderr });
       });
       child.on('error', (error) => {
-        logError(`[OpenCodeRunner] runInstaller: ${command} error: ${error.message}`);
+        logError(`[OpenCodeServerClient] runInstaller: ${command} error: ${error.message}`);
         resolve({ exitCode: null, stdout, stderr: error.message });
       });
     });
@@ -880,7 +1442,7 @@ class OpenCodeRunner {
       let settled = false;
       let stdout = '';
       let stderr = '';
-      logInfo(`[OpenCodeRunner] runCommand: spawning ${command} ${args.join(' ')} with timeout=${timeoutMs}ms`);
+      logInfo(`[OpenCodeServerClient] runCommand: spawning ${command} ${args.join(' ')} with timeout=${timeoutMs}ms`);
       const child = this.spawnProcess(command, args, {
         cwd: this.getWorkspaceRootSync(),
       });
@@ -888,7 +1450,7 @@ class OpenCodeRunner {
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
-        logError(`[OpenCodeRunner] runCommand: ${command} ${args.join(' ')} timed out after ${timeoutMs}ms. Killing child.`);
+        logError(`[OpenCodeServerClient] runCommand: ${command} ${args.join(' ')} timed out after ${timeoutMs}ms. Killing child.`);
         this.killProcess(child);
         resolve({ exitCode: null, stdout, stderr: stderr || 'Command timed out' });
       }, timeoutMs);
@@ -898,14 +1460,14 @@ class OpenCodeRunner {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        logInfo(`[OpenCodeRunner] runCommand: ${command} ${args.join(' ')} finished with exitCode=${exitCode}`);
+        logInfo(`[OpenCodeServerClient] runCommand: ${command} ${args.join(' ')} finished with exitCode=${exitCode}`);
         resolve({ exitCode, stdout, stderr });
       });
       child.on('error', (error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        logError(`[OpenCodeRunner] runCommand: ${command} ${args.join(' ')} encountered error: ${error.message}`);
+        logError(`[OpenCodeServerClient] runCommand: ${command} ${args.join(' ')} encountered error: ${error.message}`);
         resolve({ exitCode: null, stdout, stderr: error.message });
       });
     });
@@ -913,23 +1475,23 @@ class OpenCodeRunner {
 
   private killProcess(child: ChildProcess) {
     if (!child.pid) {
-      logInfo(`[OpenCodeRunner] killProcess: child has no PID, skipping`);
+      logInfo(`[OpenCodeServerClient] killProcess: child has no PID, skipping`);
       return;
     }
     const pid = child.pid;
-    logInfo(`[OpenCodeRunner] killProcess: killing PID=${pid}, platform=${process.platform}`);
+    logInfo(`[OpenCodeServerClient] killProcess: killing PID=${pid}, platform=${process.platform}`);
     if (process.platform !== 'win32') {
       try {
         // Send SIGTERM to the process group first
         process.kill(-pid, 'SIGTERM');
-        logInfo(`[OpenCodeRunner] killProcess: sent SIGTERM to process group -${pid}`);
+        logInfo(`[OpenCodeServerClient] killProcess: sent SIGTERM to process group -${pid}`);
 
         // Schedule a SIGKILL fallback after 3 seconds
         const killTimer = setTimeout(() => {
           try {
             // Check if the process group is still alive
             process.kill(-pid, 0);
-            logInfo(`[OpenCodeRunner] killProcess: process group -${pid} still alive after SIGTERM, sending SIGKILL`);
+            logInfo(`[OpenCodeServerClient] killProcess: process group -${pid} still alive after SIGTERM, sending SIGKILL`);
             process.kill(-pid, 'SIGKILL');
           } catch (e) {
             // Process group has already exited cleanly
@@ -938,7 +1500,7 @@ class OpenCodeRunner {
         killTimer.unref();
         return;
       } catch (err: any) {
-        logInfo(`[OpenCodeRunner] killProcess: process group kill failed (${err.message}), falling back to child.kill()`);
+        logInfo(`[OpenCodeServerClient] killProcess: process group kill failed (${err.message}), falling back to child.kill()`);
       }
     }
     child.kill();
@@ -958,4 +1520,4 @@ class OpenCodeRunner {
   }
 }
 
-export const opencodeRunner = new OpenCodeRunner();
+export const opencodeServerClient = new OpenCodeServerClient();

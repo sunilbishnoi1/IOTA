@@ -1,15 +1,32 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import * as Clipboard from 'expo-clipboard';
-import { Animated, Platform, Text } from 'react-native';
+import { Platform, Text } from 'react-native';
 import {
+  Message,
   OpenCodeApprovalRequest,
   OpenCodeCapabilityState,
   OpenCodeFileChange,
   OpenCodeMessage,
-  OpenCodeRunStatusEvent,
   OpenCodeToolActivity,
+  Part,
 } from '../../types/opencode';
 import { Theme } from '../../styles/theme';
+
+// ── Backward-compat: old parsed block model (migrating to Part) ────
+export interface ParsedBlock {
+  type: 'thought' | 'text' | 'intermediate';
+  content: string;
+  isFinished: boolean;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export type InterleavedItem =
+  | { type: 'tool'; activity: OpenCodeToolActivity; timestamp: string }
+  | { type: 'file'; change: OpenCodeFileChange; timestamp: string }
+  | { type: 'approval'; approval: OpenCodeApprovalRequest; timestamp: string }
+  | { type: 'thought_block'; block: ParsedBlock; index: number; timestamp: string }
+  | { type: 'intermediate_text'; block: ParsedBlock; index: number; timestamp: string };
 
 // ─── Shared hooks ───────────────────────────────────────────────────────────
 
@@ -30,24 +47,28 @@ export function useCopyToClipboard(resetMs = 2000) {
 export type SocketStatus = 'disconnected' | 'connecting' | 'connected';
 
 export type TimelineItem =
-  | { key: string; type: 'message'; message: OpenCodeMessage }
+  | { key: string; type: 'message'; message: Message }
   | { key: string; type: 'tool'; activity: OpenCodeToolActivity }
   | { key: string; type: 'file'; change: OpenCodeFileChange }
   | { key: string; type: 'approval'; approval: OpenCodeApprovalRequest };
 
 export interface ChatTurn {
   id: string;
-  userMessage?: OpenCodeMessage;
-  assistantMessage?: OpenCodeMessage;
+  userMessage?: Message;
+  assistantMessage?: Message;
   activities: (
     | { type: 'tool'; activity: OpenCodeToolActivity }
     | { type: 'file'; change: OpenCodeFileChange }
     | { type: 'approval'; approval: OpenCodeApprovalRequest }
+    | { type: 'thought_block'; block: ParsedBlock; index: number; timestamp: string }
+    | { type: 'intermediate_text'; block: ParsedBlock; index: number; timestamp: string }
+    | { type: 'part'; part: Part; timestamp: string }
   )[];
+  parts?: Part[];
 }
 
 export type GroupedItem =
-  | { key: string; type: 'system_message'; message: OpenCodeMessage }
+  | { key: string; type: 'system_message'; message: Message }
   | { key: string; type: 'turn'; turn: ChatTurn };
 
 // ─── Default values ─────────────────────────────────────────────────────────
@@ -61,42 +82,104 @@ export const defaultCapability: OpenCodeCapabilityState = {
 
 // ─── Utility functions ──────────────────────────────────────────────────────
 
-export const createLocalMessage = (conversationId: string, content: string): OpenCodeMessage => ({
+export const createLocalMessage = (sessionID: string): Message => ({
   id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-  conversationId,
+  sessionID,
   role: 'user',
-  content,
-  createdAt: new Date().toISOString(),
-  status: 'pending',
+  time: { created: Date.now() },
 });
 
 export const sanitizeConversationScope = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '_');
 
-export const mergeMessages = (local: OpenCodeMessage[], snapshot: OpenCodeMessage[]) => {
-  const merged = new Map<string, OpenCodeMessage>();
-  for (const message of snapshot) merged.set(message.id, message);
-  for (const message of local) {
-    const duplicateServerMessage = Array.from(merged.values()).some((item) => (
-      message.status === 'pending' &&
-      item.role === message.role &&
-      item.content === message.content
-    ));
-    if (!duplicateServerMessage || ['stopped', 'error', 'streaming'].includes(message.status)) {
-      const existing = merged.get(message.id);
-      if (existing) {
-        const preferLocal =
-          (message.status === 'streaming' && existing.status !== 'complete') ||
-          (message.createdAt > existing.createdAt) ||
-          (message.content.length > existing.content.length);
-        if (preferLocal) {
-          merged.set(message.id, message);
+export const deduplicateUserMessages = (list: any[]): any[] => {
+  const result: any[] = [];
+  const seenContent = new Map<string, number>();
+
+  for (let i = 0; i < list.length; i++) {
+    const msg = list[i];
+    if (msg.role === 'user') {
+      const key = msg.content || '';
+      if (seenContent.has(key)) {
+        const firstIdx = seenContent.get(key)!;
+        const existing = result[firstIdx];
+        
+        // Upgrade ID if the new one is more canonical
+        const existingIsLocal = existing.id.startsWith('local-');
+        const existingIsUser = existing.id.startsWith('user-');
+        const newIsLocal = msg.id.startsWith('local-');
+        const newIsUser = msg.id.startsWith('user-');
+        
+        const upgradeToNew = (!newIsLocal && !newIsUser) || (newIsUser && existingIsLocal);
+        
+        if (upgradeToNew) {
+          result[firstIdx] = msg;
         }
       } else {
-        merged.set(message.id, message);
+        seenContent.set(key, result.length);
+        result.push(msg);
+      }
+    } else {
+      result.push(msg);
+    }
+  }
+
+  return result;
+};
+
+export const mergeParts = (local: Part[], incoming: Part[]): Part[] => {
+  const merged = new Map<string, Part>();
+  for (const p of local) merged.set(p.id, p);
+  
+  for (const p of incoming) {
+    const existing = merged.get(p.id);
+    if (!existing) {
+      merged.set(p.id, p);
+    } else {
+      if (p.type === 'tool') {
+        const existingTool = existing as any;
+        const incomingTool = p as any;
+        // Deep merge tool parts to protect state parameters
+        merged.set(p.id, {
+          ...existingTool,
+          ...incomingTool,
+          state: {
+            ...(existingTool.state || {}),
+            ...(incomingTool.state || {}),
+          }
+        } as Part);
+      } else if (p.type === 'text' || p.type === 'reasoning') {
+        const incomingIsComplete = (p as any).time?.end;
+        const existingIsComplete = (existing as any).time?.end;
+        if (incomingIsComplete || ((p as any).text?.length || 0) >= ((existing as any).text?.length || 0)) {
+          merged.set(p.id, p);
+        }
+      } else {
+        merged.set(p.id, p);
       }
     }
   }
-  return Array.from(merged.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const result = Array.from(merged.values());
+  // Ensure the getPartTimestamp helper is available here or exported if needed
+  result.sort((a: any, b: any) => {
+    const timeA = a._stableTime || (a.time?.start ? (typeof a.time.start === 'number' ? a.time.start : new Date(a.time.start).getTime()) : 0);
+    const timeB = b._stableTime || (b.time?.start ? (typeof b.time.start === 'number' ? b.time.start : new Date(b.time.start).getTime()) : 0);
+    return timeA - timeB;
+  });
+  return result;
+};
+
+export const mergeMessages = (local: Message[], snapshot: Message[]) => {
+  const merged = new Map<string, Message>();
+  for (const m of snapshot) merged.set(m.id, m);
+  for (const m of local) {
+    const existing = merged.get(m.id);
+    const mTime = m.time?.created || ((m as any).createdAt ? new Date((m as any).createdAt).getTime() : 0);
+    const existingTime = existing ? (existing.time?.created || ((existing as any).createdAt ? new Date((existing as any).createdAt).getTime() : 0)) : 0;
+    if (!existing || mTime > existingTime) {
+      merged.set(m.id, m);
+    }
+  }
+  return deduplicateUserMessages(Array.from(merged.values()));
 };
 
 export const mergeById = <T extends { id: string }>(local: T[], snapshot: T[]) => {
@@ -104,35 +187,6 @@ export const mergeById = <T extends { id: string }>(local: T[], snapshot: T[]) =
   for (const item of snapshot) merged.set(item.id, item);
   for (const item of local) merged.set(item.id, merged.get(item.id) || item);
   return Array.from(merged.values());
-};
-
-export const getNormalizedStatusText = (phase: string, message: string): string => {
-  const lowerMsg = message.toLowerCase();
-  if (
-    ['server_start', 'attached_run', 'direct_run', 'awaiting_first_output', 'streaming'].includes(phase) ||
-    lowerMsg.includes('checking opencode') ||
-    lowerMsg.includes('warm server') ||
-    lowerMsg.includes('starting attached') ||
-    lowerMsg.includes('direct execution') ||
-    lowerMsg.includes('waiting for opencode output') ||
-    lowerMsg.includes('opencode is responding')
-  ) {
-    return 'Working...';
-  }
-  return message;
-};
-
-export const createRunStatusMessage = (status: OpenCodeRunStatusEvent): OpenCodeMessage => {
-  const content = getNormalizedStatusText(status.phase, status.message);
-  return {
-    id: `run-${status.requestId}`,
-    conversationId: status.conversationId,
-    role: 'status',
-    content,
-    createdAt: new Date().toISOString(),
-    status: status.phase === 'failed' ? 'error' : status.phase === 'stopped' ? 'stopped' : 'complete',
-    metadata: { phase: status.phase, requestId: status.requestId, retryable: status.retryable },
-  };
 };
 
 // ─── Shared components ──────────────────────────────────────────────────────
@@ -221,3 +275,26 @@ export const markdownStyles: Record<string, any> = {
     marginVertical: 6,
   },
 };
+
+export const thoughtMarkdownStyles: Record<string, any> = {
+  ...markdownStyles,
+  body: {
+    ...markdownStyles.body,
+    fontSize: 12,
+    color: Theme.colors.text.secondary,
+    lineHeight: 17,
+  },
+  code_inline: {
+    ...markdownStyles.code_inline,
+    fontSize: 11,
+  },
+  heading1: {
+    ...markdownStyles.heading1,
+    fontSize: 14,
+  },
+  heading2: {
+    ...markdownStyles.heading2,
+    fontSize: 13,
+  },
+};
+

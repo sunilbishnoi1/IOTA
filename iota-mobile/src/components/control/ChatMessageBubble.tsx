@@ -1,5 +1,7 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
+  findNodeHandle,
   Platform,
   Pressable,
   ScrollView,
@@ -11,17 +13,20 @@ import {
 import Markdown from 'react-native-markdown-display';
 import * as Clipboard from 'expo-clipboard';
 import { MaterialIcons } from '@expo/vector-icons';
-import { OpenCodeMessage } from '../../types/opencode';
+import { Message, Part, ThinkingMode } from '../../types/opencode';
 import { Theme } from '../../styles/theme';
-import { AnimatedDotsText, markdownStyles, useCopyToClipboard } from './ControlScreenConstants';
+import { AnimatedDotsText, markdownStyles, thoughtMarkdownStyles, useCopyToClipboard } from './ControlScreenConstants';
 import { useCopyChip } from './CopyChipContext';
 
 // ─── Props ──────────────────────────────────────────────────────────────────
 
 interface ChatMessageBubbleProps {
-  message: OpenCodeMessage;
+  message: Message;
+  parts?: Part[];
   expandedThoughts: Record<string, boolean>;
   onToggleThought: (turnId: string) => void;
+  runStatusText?: string | null;
+  thinkingMode?: ThinkingMode;
 }
 
 // ─── Internal helpers ───────────────────────────────────────────────────────
@@ -30,17 +35,27 @@ const isShortSingleLine = (content: string) => {
   return !content.includes('\n') && !content.includes('```') && content.length < 60;
 };
 
-const parseMessageThoughts = (content: string): { cleanContent: string; thoughts?: string } => {
-  const match = content.match(/<thought>([\s\S]*?)<\/thought>/);
-  if (match) {
-    const thoughts = match[1].trim();
-    const cleanContent = content.replace(/<thought>[\s\S]*?<\/thought>/, '').trim();
-    return { cleanContent, thoughts };
-  }
-  return { cleanContent: content };
+const reasoningSummary = (text: string): { title: string | null; body: string } => {
+  const match = text.match(/^\*\*([^*\n]+)\*\*(?:\r?\n\r?\n|$)/);
+  if (!match) return { title: null, body: text };
+  return { title: match[1].trim(), body: text.slice(match[0].length).trimEnd() };
 };
 
-// ─── Sub-components ─────────────────────────────────────────────────────────
+const formatDurationMs = (start: number | string, end?: number | string): string => {
+  if (!start) return '';
+  const startTime = typeof start === 'number' ? start : new Date(start).getTime();
+  const endTime = end
+    ? (typeof end === 'number' ? end : new Date(end).getTime())
+    : Date.now();
+  const diffMs = Math.max(0, endTime - startTime);
+  const totalSec = Math.floor(diffMs / 1000);
+  if (isNaN(totalSec)) return '';
+  if (totalSec < 1) return '<1s';
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
+};
 
 const CopyableCodeBlock: React.FC<{ code: string; language?: string }> = ({ code, language }) => {
   const [copied, setCopied] = useState(false);
@@ -73,7 +88,7 @@ const CopyableCodeBlock: React.FC<{ code: string; language?: string }> = ({ code
   );
 };
 
-const markdownRules = {
+export const markdownRules = {
   fence: (node: any) => {
     return (
       <CopyableCodeBlock
@@ -93,22 +108,149 @@ const markdownRules = {
   },
 };
 
+// ─── ThrottledMarkdown ──────────────────────────────────────────────────────
+
+const ThrottledMarkdown = ({ content, rules, style, isStreaming }: { content: string; rules: any; style: any; isStreaming: boolean }) => {
+  const [throttled, setThrottled] = useState(content);
+  const lastUpdateRef = useRef(Date.now());
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    if (!isStreaming) {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      setThrottled(content);
+      return;
+    }
+
+    const now = Date.now();
+    const timeSinceLast = now - lastUpdateRef.current;
+    const delay = 500;
+
+    if (timeSinceLast >= delay) {
+      setThrottled(content);
+      lastUpdateRef.current = now;
+    } else {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        setThrottled(content);
+        lastUpdateRef.current = Date.now();
+      }, delay - timeSinceLast);
+    }
+    
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [content, isStreaming]);
+
+  return <Markdown rules={rules} style={style}>{throttled}</Markdown>;
+};
+
+// ─── ReasoningBlock component ───────────────────────────────────────────────
+
+interface ReasoningBlockProps {
+  part: Part & { type: 'reasoning' };
+  defaultExpanded: boolean;
+  isActive: boolean;
+}
+
+const ReasoningBlock: React.FC<ReasoningBlockProps> = ({ part, defaultExpanded, isActive }) => {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  const isStreaming = part.time && part.time.end === undefined;
+  const { title, body } = reasoningSummary(part.text);
+
+  useEffect(() => {
+    setExpanded(defaultExpanded);
+  }, [defaultExpanded]);
+
+  const duration = part.time?.end
+    ? formatDurationMs(part.time.start, part.time.end)
+    : undefined;
+
+  if (isStreaming) {
+    return (
+      <View style={styles.reasoningBlock}>
+        <View style={styles.reasoningHeader}>
+          <ActivityIndicator size="small" color={Theme.colors.primary.glow} />
+          <Text style={styles.reasoningTitle}>
+            Thinking{title ? `: ${title}` : ''}
+          </Text>
+        </View>
+        <View style={styles.reasoningBody}>
+          <ThrottledMarkdown rules={markdownRules} style={thoughtMarkdownStyles} content={body} isStreaming={isStreaming} />
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.reasoningBlock}>
+      <TouchableOpacity
+        style={styles.reasoningHeader}
+        onPress={() => setExpanded((p) => !p)}
+        activeOpacity={0.7}
+      >
+        <View style={styles.thinkingLeft}>
+          <MaterialIcons name="psychology" size={16} color={Theme.colors.primary.glow} />
+          <Text style={styles.reasoningTitle}>
+            Thought{title ? `: ${title}` : ''}{duration ? ` · ${duration}` : ''}
+          </Text>
+        </View>
+        <MaterialIcons
+          name={expanded ? 'keyboard-arrow-up' : 'keyboard-arrow-down'}
+          size={18}
+          color={Theme.colors.text.secondary}
+        />
+      </TouchableOpacity>
+      {expanded && (
+        <View style={styles.reasoningBody}>
+          <ThrottledMarkdown rules={markdownRules} style={thoughtMarkdownStyles} content={body} isStreaming={isStreaming} />
+        </View>
+      )}
+    </View>
+  );
+};
+
+// ─── Sub-components ─────────────────────────────────────────────────────────
+
 // ─── Main component ─────────────────────────────────────────────────────────
 
-export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
+const ChatMessageBubbleComponent: React.FC<ChatMessageBubbleProps> = ({
   message,
+  parts,
   expandedThoughts,
   onToggleThought,
+  runStatusText,
+  thinkingMode = 'hide',
 }) => {
   const isUser = message.role === 'user';
-  const isSystem = message.role === 'system' || message.role === 'status';
+  const isSystem = message.role === 'system';
+  const isInterrupted = !!message.error;
 
-  const { activeMessageId, setActiveMessageId, dismiss } = useCopyChip();
+  const textParts = (parts || []).filter((p): p is Part & { type: 'text' } => p.type === 'text');
+  const reasoningParts = (parts || []).filter((p): p is Part & { type: 'reasoning' } => p.type === 'reasoning');
+  let displayContent = textParts.map((p) => p.text).join('\n');
+  if (!displayContent.trim() && (message as any).content) {
+    displayContent = (message as any).content;
+  }
+
+  const { activeMessageId, setActiveMessageId, dismiss, setCopyChipTag } = useCopyChip();
   const { copied, copy } = useCopyToClipboard();
 
   const showCopy = activeMessageId === message.id;
+  const isCopyingRef = useRef(false);
+  const copyChipRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (showCopy && copyChipRef.current) {
+      const tag = findNodeHandle(copyChipRef.current);
+      if (tag) {
+        setCopyChipTag(tag);
+      }
+    }
+  }, [showCopy, setCopyChipTag]);
 
   const handlePress = useCallback(() => {
+    if (isCopyingRef.current) return;
     if (activeMessageId) dismiss();
   }, [dismiss, activeMessageId]);
 
@@ -117,9 +259,10 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
   }, [message.id, setActiveMessageId]);
 
   const handleCopyMessage = useCallback(() => {
-    copy(message.content);
+    isCopyingRef.current = true;
+    copy(displayContent);
     setTimeout(() => dismiss(), 2000);
-  }, [copy, message.content, dismiss]);
+  }, [copy, displayContent, dismiss]);
 
   const renderCopyChip = () => {
     if (!showCopy) return null;
@@ -130,115 +273,139 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
         : styles.copyChipAssistant;
     return (
       <TouchableOpacity
+        ref={copyChipRef}
         style={[styles.copyChip, chipAlign]}
         onPress={handleCopyMessage}
         activeOpacity={0.7}
       >
-        <MaterialIcons
-          name={copied ? 'check' : 'content-copy'}
-          size={13}
-          color={copied ? Theme.colors.secondary.glow : Theme.colors.text.secondary}
-        />
-        <Text style={[styles.copyChipText, copied && { color: Theme.colors.secondary.glow }]}>
-          {copied ? 'Copied!' : 'Copy'}
-        </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }} pointerEvents="none">
+          <MaterialIcons
+            name={copied ? 'check' : 'content-copy'}
+            size={13}
+            color={copied ? Theme.colors.secondary.glow : Theme.colors.text.secondary}
+          />
+          <Text style={[styles.copyChipText, copied && { color: Theme.colors.secondary.glow }]}>
+            {copied ? 'Copied!' : 'Copy'}
+          </Text>
+        </View>
       </TouchableOpacity>
     );
   };
 
-  if (!message.content.trim()) {
+
+
+  if (!displayContent.trim()) {
+    if (reasoningParts.length > 0) {
+      return (
+        <View style={styles.reasoningBlock}>
+          {reasoningParts.map((rp) => (
+            <ReasoningBlock
+              key={`rb-${rp.id}`}
+              part={rp}
+              defaultExpanded={thinkingMode === 'show'}
+              isActive={!!runStatusText}
+            />
+          ))}
+        </View>
+      );
+    }
     return null;
   }
 
-  let content = message.content;
-  let thoughts: string | undefined;
-
-  if (message.role === 'assistant') {
-    const parsed = parseMessageThoughts(content);
-    content = parsed.cleanContent;
-    thoughts = parsed.thoughts;
-  }
-
-  if (!content.trim() && thoughts) {
-    return renderThinkingAccordion(thoughts, message.id, expandedThoughts, onToggleThought);
-  }
-
-  if (message.role === 'assistant') {
-    const isShort = isShortSingleLine(content);
+  if (isUser) {
     return (
       <Pressable onPress={handlePress} onLongPress={handleLongPress} delayLongPress={400}>
-        <View style={[
-          styles.assistantContainer,
-          isShort ? styles.assistantShort : styles.assistantFullWidth
-        ]}>
+        <View style={[styles.messageBubbleWrapper, styles.userBubbleWrapper]}>
           {renderCopyChip()}
-          {!!thoughts && renderThinkingAccordion(thoughts, message.id, expandedThoughts, onToggleThought)}
-          {!!content.trim() && (
-            <Markdown rules={markdownRules} style={markdownStyles}>{content}</Markdown>
-          )}
+          <View style={[styles.messageBubble, styles.userBubble]}>
+            {displayContent.endsWith('...') ? (
+              <AnimatedDotsText text={displayContent} style={styles.messageText} />
+            ) : (
+              <Text style={styles.messageText}>{displayContent}</Text>
+            )}
+          </View>
         </View>
       </Pressable>
     );
   }
 
+  if (isSystem) {
+    return (
+      <Pressable onPress={handlePress} onLongPress={handleLongPress} delayLongPress={400}>
+        <View style={[styles.messageBubbleWrapper, styles.systemBubbleWrapper]}>
+          {renderCopyChip()}
+          <View style={[styles.messageBubble, styles.systemBubble]}>
+            <Text style={styles.messageText}>{displayContent}</Text>
+          </View>
+        </View>
+      </Pressable>
+    );
+  }
+
+  const isShort = isShortSingleLine(displayContent);
+
   return (
     <Pressable onPress={handlePress} onLongPress={handleLongPress} delayLongPress={400}>
       <View style={[
-        styles.messageBubbleWrapper,
-        isUser && styles.userBubbleWrapper,
-        isSystem && styles.systemBubbleWrapper,
+        styles.assistantContainer,
+        isShort ? styles.assistantShort : styles.assistantFullWidth
       ]}>
+        {isInterrupted && (
+          <View style={styles.interruptedBadge}>
+            <MaterialIcons name="flash-on" size={12} color={Theme.colors.accent.glow} />
+            <Text style={styles.interruptedText}>Interrupted</Text>
+          </View>
+        )}
         {renderCopyChip()}
-        <View style={[styles.messageBubble, isUser && styles.userBubble, isSystem && styles.systemBubble]}>
-          {isUser || isSystem ? (
-            content.endsWith('...') ? (
-              <AnimatedDotsText text={content} style={styles.messageText} />
-            ) : (
-              <Text style={styles.messageText}>{content}</Text>
-            )
-          ) : (
-            <Markdown rules={markdownRules} style={markdownStyles}>{content}</Markdown>
-          )}
-        </View>
+        {reasoningParts.map((rp) => (
+          <ReasoningBlock
+            key={`rb-${rp.id}`}
+            part={rp}
+            defaultExpanded={thinkingMode === 'show'}
+            isActive={!!runStatusText}
+          />
+        ))}
+        {!!displayContent.trim() && (
+          <ThrottledMarkdown rules={markdownRules} style={markdownStyles} content={displayContent} isStreaming={(message as any).status === 'streaming' || (message as any).status === 'pending'} />
+        )}
       </View>
     </Pressable>
   );
 };
 
-// ─── Thinking accordion (used internally) ───────────────────────────────────
+const partsEqual = (a?: Part[], b?: Part[]) => {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const pA = a[i];
+    const pB = b[i];
+    if (pA.type !== pB.type || pA.id !== pB.id) return false;
+    if (pA.type === 'text' || pA.type === 'reasoning') {
+      if ((pA as any).text !== (pB as any).text) return false;
+    } else if (pA.type === 'tool' && pB.type === 'tool') {
+      if (pA.state?.status !== pB.state?.status) return false;
+      if ((pA.state as any)?.output !== (pB.state as any)?.output) return false;
+      if ((pA.state as any)?.error !== (pB.state as any)?.error) return false;
+    }
+  }
+  return true;
+};
 
-function renderThinkingAccordion(
-  thinkingText: string,
-  turnId: string,
-  expandedThoughts: Record<string, boolean>,
-  onToggleThought: (turnId: string) => void,
-) {
-  const isExpanded = !!expandedThoughts[turnId];
-  return (
-    <View style={styles.thinkingTextContainer}>
-      <TouchableOpacity
-        style={styles.thinkingTextHeader}
-        onPress={() => onToggleThought(turnId)}
-        activeOpacity={0.7}
-      >
-        <View style={styles.thinkingLeft}>
-          <MaterialIcons name="psychology" size={16} color={Theme.colors.primary.glow} />
-          <Text style={styles.thinkingTitle}>Thought Process</Text>
-        </View>
-        <MaterialIcons
-          name={isExpanded ? 'keyboard-arrow-up' : 'keyboard-arrow-down'}
-          size={18}
-          color={Theme.colors.text.secondary}
-        />
-      </TouchableOpacity>
-      {isExpanded && (
-        <ScrollView style={styles.thinkingTextScroll} nestedScrollEnabled>
-          <Text style={styles.thinkingTextBody}>{thinkingText}</Text>
-        </ScrollView>
-      )}
-    </View>
-  );
-}
+export const ChatMessageBubble = React.memo(
+  ChatMessageBubbleComponent,
+  (prevProps, nextProps) => {
+    return (
+      prevProps.message.id === nextProps.message.id &&
+      prevProps.message.role === nextProps.message.role &&
+      (prevProps.message as any).content === (nextProps.message as any).content &&
+      partsEqual(prevProps.parts, nextProps.parts) &&
+      prevProps.runStatusText === nextProps.runStatusText &&
+      prevProps.thinkingMode === nextProps.thinkingMode
+    );
+  }
+);
+
 
 // ─── Styles ─────────────────────────────────────────────────────────────────
 
@@ -313,8 +480,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 7,
     borderRadius: 8,
-    borderWidth: 1,
-    borderColor: Theme.colors.border,
     backgroundColor: 'rgba(255, 255, 255, 0.04)',
   },
   assistantFullWidth: {
@@ -368,15 +533,13 @@ const styles = StyleSheet.create({
     color: '#e2e8f0',
     fontSize: 13,
   },
-  thinkingTextContainer: {
+  reasoningBlock: {
     marginVertical: 4,
-    borderWidth: 1,
-    borderColor: Theme.colors.border,
     borderRadius: 6,
     backgroundColor: 'rgba(99, 102, 241, 0.03)',
     overflow: 'hidden',
   },
-  thinkingTextHeader: {
+  reasoningHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -384,25 +547,41 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     backgroundColor: 'rgba(99, 102, 241, 0.05)',
   },
+  reasoningTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: Theme.colors.primary.glow,
+    flex: 1,
+  },
+  reasoningBody: {
+    padding: 8,
+  },
+  reasoningText: {
+    fontSize: 12,
+    color: Theme.colors.text.secondary,
+    lineHeight: 17,
+  },
   thinkingLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    flex: 1,
   },
-  thinkingTitle: {
-    fontSize: 12,
+  interruptedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 6,
+    paddingVertical: 2,
+    paddingHorizontal: 8,
+    borderRadius: 4,
+    backgroundColor: 'rgba(244, 63, 94, 0.12)',
+    alignSelf: 'flex-start',
+  },
+  interruptedText: {
+    fontSize: 11,
     fontWeight: '700',
-    color: Theme.colors.primary.glow,
-  },
-  thinkingTextScroll: {
-    maxHeight: 120,
-    padding: 8,
-    borderTopWidth: 1,
-    borderTopColor: Theme.colors.border,
-  },
-  thinkingTextBody: {
-    fontSize: 12,
-    color: Theme.colors.text.secondary,
-    lineHeight: 17,
+    color: Theme.colors.accent.glow,
+    textTransform: 'uppercase',
   },
 });

@@ -3,7 +3,7 @@ import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
 import { listUserCodespaces, startUserCodespace, getUserCodespace, listUserRepos, createCodespace, stopCodespace, deleteCodespace, registerSelfKeepAlive, pokeSelfKeepAlive } from '../services/codespaceService';
 import { getOctokitClient } from '../services/github';
 import { getRepoPath, getBranch } from '../services/git';
-import { opencodeRunner } from '../services/opencode';
+import { opencodeServerClient } from '../services/opencode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getWorkspaceRoot, setWorkspaceRoot } from '../services/logger';
@@ -75,12 +75,12 @@ router.get('/status', requireAuth, async (req: AuthenticatedRequest, res: Respon
     const [repository, branch, liveCapability] = await Promise.all([
       getRepoPath().catch(() => process.env.GITHUB_REPOSITORY || 'sunilbishnoi1/IOTA'),
       getBranch().catch(() => 'main'),
-      opencodeRunner.checkCapability(),
+      opencodeServerClient.checkCapability(),
     ]);
 
     // Prefer the cached capability if it carries richer state (e.g. install_failed
     // with errorSummary), but fall back to the live check for fresh page loads.
-    const cached = opencodeRunner.getLastCapability();
+    const cached = opencodeServerClient.getLastCapability();
     const capability = cached && cached.status === 'install_failed' && liveCapability.status === 'missing'
       ? cached
       : liveCapability;
