@@ -1,4 +1,11 @@
-package.json
-package-lock.json
-node_modules/
-iota-bridge/
+/package.json
+/package-lock.json
+/node_modules/
+/iota-bridge/
+/.agents/
+/.codex/
+/.gradle_home/
+/.jdk/
+*.apk
+*.zip
+*.log
