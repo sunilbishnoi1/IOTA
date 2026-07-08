@@ -188,6 +188,15 @@ export type Part =
   | { type: "retry"; id: string; sessionID: string; messageID: string; attempt: number; error: object }
   | { type: "compaction"; id: string; sessionID: string; messageID: string; auto: boolean }
 
+// ── FilePart (for upload — no server-controlled fields) ─────────────────
+
+export interface FilePart {
+  type: 'file';
+  mime: string;
+  url: string;
+  filename?: string;
+}
+
 // ── Message model (new typed message for part-based flow) ───────────────
 
 export type Message = {

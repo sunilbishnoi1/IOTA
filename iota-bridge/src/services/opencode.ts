@@ -282,10 +282,18 @@ class OpenCodeSSEClient extends EventEmitter {
 
 export const openCodeSSEClient = new OpenCodeSSEClient();
 
+export interface FilePartInput {
+  type: 'file';
+  mime: string;
+  url: string;
+  filename?: string;
+}
+
 export interface PromptOptions {
   conversationId: string;
   requestId: string;
   prompt: string;
+  parts?: FilePartInput[];
   sessionId?: string;
   env?: Record<string, string>;
   onJson: (payload: unknown) => void;
@@ -498,7 +506,7 @@ class OpenCodeServerClient {
     });
   }
 
-  private async postPromptAsync(sessionId: string, prompt: string, conversationId: string): Promise<void> {
+  private async postPromptAsync(sessionId: string, prompt: string, conversationId: string, parts?: FilePartInput[]): Promise<void> {
     const password = process.env.OPENCODE_SERVER_PASSWORD || EnvService.getInstance().getEnvVars().OPENCODE_SERVER_PASSWORD;
     const username = process.env.OPENCODE_SERVER_USERNAME || EnvService.getInstance().getEnvVars().OPENCODE_SERVER_USERNAME || 'opencode';
     const conversation = conversationId ? opencodeStore.getConversation(conversationId) : undefined;
@@ -539,8 +547,11 @@ class OpenCodeServerClient {
       });
 
       req.on('error', (err) => reject(err));
+      const bodyParts: Array<{ type: string; text?: string; mime?: string; url?: string; filename?: string }> = [];
+      if (prompt) bodyParts.push({ type: 'text', text: prompt });
+      if (parts) bodyParts.push(...parts);
       req.write(JSON.stringify({
-        parts: [{ type: 'text', text: prompt }],
+        parts: bodyParts,
         model: modelObj,
       }));
       req.end();
@@ -642,7 +653,7 @@ class OpenCodeServerClient {
         });
 
         logInfo(`[OpenCodeServerClient] Posting prompt_async for session ${activeSessionId}...`);
-        await this.postPromptAsync(activeSessionId, options.prompt, options.conversationId);
+        await this.postPromptAsync(activeSessionId, options.prompt, options.conversationId, options.parts);
       } catch (err: any) {
         logError(`[OpenCodeServerClient] Failed execution for request ${options.requestId}: ${err.message}`);
         resolve({ completed: false, error: err.message });
@@ -1019,6 +1030,9 @@ class OpenCodeServerClient {
               result: part.result,
               output: part.output,
               error: part.error,
+              mime: part.mime,
+              filename: part.filename,
+              url: part.url,
               sessionID: part.sessionID || conversation.opencodeSessionId,
               messageID: part.messageID || info.id || `msg-${conversation.opencodeSessionId}`,
               time: { start: startMs, end: endMs },
@@ -1088,6 +1102,9 @@ class OpenCodeServerClient {
                       result: cp.result,
                       output: cp.output,
                       error: cp.error,
+                      mime: cp.mime,
+                      filename: cp.filename,
+                      url: cp.url,
                       sessionID: childSessionID,
                       messageID: childItem.info?.id || `msg-${childSessionID}`,
                       time: { start: startMs, end: endMs },

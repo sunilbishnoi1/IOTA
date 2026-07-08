@@ -60,6 +60,9 @@ export interface OpenCodePart {
   result?: unknown;
   output?: string;
   error?: string;
+  mime?: string;
+  filename?: string;
+  url?: string;
   time?: { start: string; end?: string };
   metadata?: Record<string, unknown>;
 }
@@ -145,10 +148,18 @@ export interface OpenCodeConversation {
   tokenUsage?: OpenCodeTokenUsage;
 }
 
+export interface FilePart {
+  type: 'file';
+  mime: string;
+  url: string;
+  filename?: string;
+}
+
 export interface OpenCodeMessageRequest {
   conversationId?: string;
   sessionId?: string;
   content: string;
+  parts?: FilePart[];
 }
 
 export interface OpenCodeApprovalDecision {

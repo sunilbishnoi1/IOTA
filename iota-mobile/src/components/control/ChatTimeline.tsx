@@ -2,6 +2,8 @@ import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  Image,
+  Linking,
   Platform,
   ScrollView,
   StyleSheet,
@@ -96,6 +98,49 @@ export const extractReasoningSummary = (text: string): { title: string | null; b
   const match = text.match(/^\*\*([^*\n]+)\*\*(?:\r?\n\r?\n|$)/);
   if (!match) return { title: null, body: text };
   return { title: match[1].trim(), body: text.slice(match[0].length).trimEnd() };
+};
+
+// ─── File Attachment View ───────────────────────────────────────────────────
+
+const FileAttachmentView: React.FC<{ part: Part; compact?: boolean }> = ({ part, compact }) => {
+  if (part.type !== 'file') return null;
+
+  const isImage = part.mime?.startsWith('image/');
+
+  const handlePress = () => {
+    if (!part.url || part.url.startsWith('data:')) return;
+    Linking.openURL(part.url).catch(() => {});
+  };
+
+  if (isImage) {
+    const imgStyle = compact ? styles.fileImageCompact : styles.fileImage;
+    return (
+      <View style={compact ? styles.fileImageContainerCompact : styles.fileImageContainer}>
+        <Image
+          source={{ uri: part.url }}
+          style={imgStyle}
+          resizeMode="cover"
+        />
+      </View>
+    );
+  }
+
+  const containerStyle = compact ? styles.fileGenericContainerCompact : styles.fileGenericContainer;
+  return (
+    <TouchableOpacity
+      style={containerStyle}
+      onPress={handlePress}
+      disabled={!part.url || part.url.startsWith('data:')}
+      activeOpacity={0.7}
+    >
+      <MaterialIcons name="insert-drive-file" size={compact ? 14 : 20} color="rgba(255,255,255,0.5)" />
+      <View style={styles.fileGenericInfo}>
+        <Text style={[styles.fileGenericName, compact && { fontSize: 11 }]} numberOfLines={1}>
+          {part.filename || 'File'}
+        </Text>
+      </View>
+    </TouchableOpacity>
+  );
 };
 
 // ─── Main component ─────────────────────────────────────────────────────────
@@ -241,9 +286,7 @@ const ChatTimelineComponent: React.FC<ChatTimelineProps> = ({
       case 'file':
         return (
           <View key={`file-${part.id}`} style={styles.activityWrapper}>
-            <Text style={styles.intermediateTextBody}>
-              📎 {part.filename || part.url || 'File attachment'}
-            </Text>
+            <FileAttachmentView part={part} />
           </View>
         );
       default:
@@ -331,6 +374,13 @@ const ChatTimelineComponent: React.FC<ChatTimelineProps> = ({
       <View style={styles.turnContainer}>
         {turn.userMessage && (
           <View style={styles.timelineRow}>
+            {(turn.userMessage as any)?.parts?.filter((p: any) => p.type === 'file').length > 0 && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.userFileAttachmentScroll} contentContainerStyle={{ gap: 6 }}>
+                {(turn.userMessage as any).parts.filter((p: Part) => p.type === 'file').map((fp: Part & { type: 'file' }) => (
+                  <FileAttachmentView key={fp.id} part={fp} compact />
+                ))}
+              </ScrollView>
+            )}
             <ChatMessageBubble
               message={turn.userMessage}
               expandedThoughts={expandedThoughts}
@@ -612,6 +662,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     width: '100%',
   },
+  userFileAttachmentScroll: {
+    marginBottom: 4,
+    alignSelf: 'flex-end',
+    maxWidth: '100%',
+  },
   turnContainer: {
     width: '100%',
     gap: 12,
@@ -628,7 +683,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 12,
     paddingVertical: 10,
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
   },
   thinkingHeaderLeft: {
     flex: 1,
@@ -695,6 +749,56 @@ const styles = StyleSheet.create({
   activityWrapper: {
     paddingHorizontal: 4,
   },
+  fileImageContainer: {
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(0,0,0,0.2)',
+    maxWidth: 240,
+  },
+  fileImage: {
+    width: 200,
+    height: 150,
+  },
+  fileImageContainerCompact: {
+    borderRadius: 6,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(0,0,0,0.2)',
+  },
+  fileImageCompact: {
+    width: 72,
+    height: 72,
+  },
+  fileGenericContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  fileGenericContainerCompact: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
+  fileGenericInfo: {
+    flex: 1,
+  },
+  fileGenericName: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: 'rgba(255,255,255,0.8)',
+  },
+  fileGenericMime: {
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.4)',
+    marginTop: 1,
+  },
   pillsContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -737,8 +841,6 @@ const styles = StyleSheet.create({
   subtaskCard: {
     marginTop: 4,
     borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(99, 102, 241, 0.25)',
     backgroundColor: 'rgba(99, 102, 241, 0.06)',
     overflow: 'hidden',
   },

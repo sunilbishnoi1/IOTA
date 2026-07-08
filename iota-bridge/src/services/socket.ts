@@ -15,6 +15,7 @@ import {
   OpenCodeApprovalDecision,
   OpenCodeMessage,
   OpenCodeMessageRequest,
+  OpenCodePart,
   OpenCodePromptStatusEvent,
   OpenCodeStopRequest,
   OpenCodeSyncRequest,
@@ -121,8 +122,9 @@ export const initSocketIO = (server: HttpServer) => {
 
     socket.on('opencode:message', async (payload: OpenCodeMessageRequest) => {
       pokeSelfKeepAlive();
-      const content = payload?.content?.trim();
-      if (!content) {
+      const content = payload?.content?.trim() || '';
+      const hasParts = payload?.parts && payload.parts.length > 0;
+      if (!content && !hasParts) {
         logError(`[Socket] Received empty prompt from socket ${socket.id}`);
         socket.emit('opencode:error', {
           code: 'OPENCODE_EMPTY_PROMPT',
@@ -287,7 +289,14 @@ export const initSocketIO = (server: HttpServer) => {
 
       logInfo(`[Socket] Starting request ${request.requestId} for conversation ${conversation.id}`);
 
-      const userMessage = opencodeStore.addUserMessage(conversation.id, content);
+      const partsToStore: OpenCodePart[] | undefined = payload.parts?.map(p => ({
+        id: id('part'),
+        type: 'file' as const,
+        mime: p.mime,
+        url: p.url,
+        filename: p.filename,
+      }));
+      const userMessage = opencodeStore.addUserMessage(conversation.id, content, partsToStore);
       io.emit('opencode:message', { conversationId: conversation.id, message: userMessage });
       emitRunStatus({
         conversationId: conversation.id,
@@ -578,6 +587,7 @@ export const initSocketIO = (server: HttpServer) => {
           conversationId: conversation.id,
           requestId: request.requestId,
           prompt: runPrompt,
+          parts: payload.parts,
           sessionId: conversation.opencodeSessionId || payload.sessionId,
           env: opencodeStore.getCredentials(socket.id),
           onActivity: markFirstActivity,

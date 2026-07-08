@@ -283,7 +283,7 @@ class OpenCodeStore {
     return { ok: true, requestId };
   }
 
-  public addUserMessage(conversationId: string, content: string): OpenCodeMessage {
+  public addUserMessage(conversationId: string, content: string, parts?: OpenCodePart[]): OpenCodeMessage {
     const message: OpenCodeMessage = {
       id: id('user'),
       conversationId,
@@ -291,6 +291,7 @@ class OpenCodeStore {
       content,
       createdAt: now(),
       status: 'complete',
+      parts,
     };
     this.addMessage(message);
     return message;

@@ -98,7 +98,13 @@ export const deduplicateUserMessages = (list: any[]): any[] => {
   for (let i = 0; i < list.length; i++) {
     const msg = list[i];
     if (msg.role === 'user') {
-      const key = msg.content || '';
+      let key = msg.content || '';
+      if (key === '' && msg.parts?.length) {
+        key = 'empty:' + msg.parts.map((p: any) => p.filename || p.mime || p.type).join('|');
+      } else if (key === '') {
+        key = `empty-id:${msg.id}`;
+      }
+      
       if (seenContent.has(key)) {
         const firstIdx = seenContent.get(key)!;
         const existing = result[firstIdx];
@@ -112,7 +118,15 @@ export const deduplicateUserMessages = (list: any[]): any[] => {
         const upgradeToNew = (!newIsLocal && !newIsUser) || (newIsUser && existingIsLocal);
         
         if (upgradeToNew) {
-          result[firstIdx] = msg;
+          result[firstIdx] = {
+            ...msg,
+            parts: (msg.parts && msg.parts.length > 0) ? msg.parts : (existing.parts || []),
+          };
+        } else {
+          result[firstIdx] = {
+            ...existing,
+            parts: (existing.parts && existing.parts.length > 0) ? existing.parts : (msg.parts || []),
+          };
         }
       } else {
         seenContent.set(key, result.length);
@@ -128,7 +142,9 @@ export const deduplicateUserMessages = (list: any[]): any[] => {
 
 export const mergeParts = (local: Part[], incoming: Part[]): Part[] => {
   const merged = new Map<string, Part>();
-  for (const p of local) merged.set(p.id, p);
+  for (const p of local) {
+    merged.set(p.id, p);
+  }
   
   for (const p of incoming) {
     const existing = merged.get(p.id);
@@ -159,13 +175,26 @@ export const mergeParts = (local: Part[], incoming: Part[]): Part[] => {
     }
   }
   const result = Array.from(merged.values());
-  // Ensure the getPartTimestamp helper is available here or exported if needed
-  result.sort((a: any, b: any) => {
+
+  // Deduplicate file parts by URL: SSE relay may produce file parts with
+  // different IDs than the bridge-generated ones, causing duplicates.
+  const fileUrlSet = new Set<string>();
+  const deduped = result.filter((p) => {
+    if (p.type === 'file' && (p as any).url) {
+      if (fileUrlSet.has((p as any).url)) {
+         return false;
+      }
+      fileUrlSet.add((p as any).url);
+    }
+    return true;
+  });
+
+  deduped.sort((a: any, b: any) => {
     const timeA = a._stableTime || (a.time?.start ? (typeof a.time.start === 'number' ? a.time.start : new Date(a.time.start).getTime()) : 0);
     const timeB = b._stableTime || (b.time?.start ? (typeof b.time.start === 'number' ? b.time.start : new Date(b.time.start).getTime()) : 0);
     return timeA - timeB;
   });
-  return result;
+  return deduped;
 };
 
 export const mergeMessages = (local: Message[], snapshot: Message[]) => {

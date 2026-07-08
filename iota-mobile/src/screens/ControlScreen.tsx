@@ -4,6 +4,7 @@ import {
   Alert,
   BackHandler,
   FlatList,
+  Image,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
@@ -14,6 +15,10 @@ import {
   View,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
+import * as FileSystem from 'expo-file-system';
 import io, { Socket } from 'socket.io-client';
 import { secureStoreService } from '../services/secureStore';
 import {
@@ -37,6 +42,7 @@ import {
   OpenCodeFileChange,
   OpenCodeMessage,
   OpenCodeToolActivity,
+  FilePart,
   OpenCodeConversation,
   OpenCodeQuestionRequest,
   Part,
@@ -185,8 +191,20 @@ const mergeParts = (local: Part[], incoming: Part[]): Part[] => {
     }
   }
   const result = Array.from(merged.values());
-  result.sort((a, b) => getPartTimestamp(a) - getPartTimestamp(b));
-  return result;
+
+  // Deduplicate file parts by URL: SSE relay may produce file parts with
+  // different IDs than the bridge-generated ones, causing duplicates.
+  const fileUrlSet = new Set<string>();
+  const deduped = result.filter((p) => {
+    if (p.type === 'file' && (p as any).url) {
+      if (fileUrlSet.has((p as any).url)) return false;
+      fileUrlSet.add((p as any).url);
+    }
+    return true;
+  });
+
+  deduped.sort((a, b) => getPartTimestamp(a) - getPartTimestamp(b));
+  return deduped;
 };
 
 const mergeIncomingMessage = (prev: OpenCodeMessage[], incoming: OpenCodeMessage): OpenCodeMessage[] => {
@@ -207,7 +225,11 @@ const mergeIncomingMessage = (prev: OpenCodeMessage[], incoming: OpenCodeMessage
 
   let mergedParts = incoming.parts || [];
   if (existingMsg && existingMsg.parts && existingMsg.parts.length > 0) {
-    mergedParts = mergeParts(existingMsg.parts, mergedParts);
+    if (incoming.role === 'user') {
+      mergedParts = mergedParts.length > 0 ? mergedParts : existingMsg.parts;
+    } else {
+      mergedParts = mergeParts(existingMsg.parts, mergedParts);
+    }
   }
 
   let mergedContent = incoming.content || '';
@@ -234,8 +256,20 @@ const mergeIncomingMessage = (prev: OpenCodeMessage[], incoming: OpenCodeMessage
   }
 
   mapped = mapped.map(msg => {
-    if (msg.role === 'user' && incoming.role === 'user' && msg.id.startsWith('local-') && msg.content === incoming.content) {
-      return { ...incoming, id: incoming.id };
+    if (msg.role === 'user' && incoming.role === 'user' && msg.id.startsWith('local-')) {
+      let isMatch = false;
+      if (msg.content && incoming.content && msg.content === incoming.content) {
+        isMatch = true;
+      } else if (!msg.content && !incoming.content) {
+        const msgPartsKey = msg.parts?.map((p: any) => p.filename || p.mime || p.type).join('|') || '';
+        const inPartsKey = incoming.parts?.map((p: any) => p.filename || p.mime || p.type).join('|') || '';
+        if (msgPartsKey === inPartsKey && msgPartsKey !== '') {
+          isMatch = true;
+        }
+      }
+      if (isMatch) {
+        return { ...incoming, id: incoming.id };
+      }
     }
     return msg;
   });
@@ -266,6 +300,8 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const [pendingQuestion, setPendingQuestion] = useState<OpenCodeQuestionRequest | null>(null);
   const [questionCollapsed, setQuestionCollapsed] = useState<boolean>(false);
   const [running, setRunning] = useState(false);
+  const [selectedParts, setSelectedParts] = useState<Array<{ id: string; type: 'file'; mime: string; url: string; filename: string }>>([]);
+  const [pendingAttachments, setPendingAttachments] = useState<Array<{ id: string; uri: string; mime: string; filename: string }>>([]);
 
   useEffect(() => {
     if (pendingQuestion) {
@@ -304,6 +340,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const conversationIdRef = useRef<string | undefined>(conversationId);
   const isInstallingRef = useRef(false);
   const submittingRef = useRef(false);
+  const cancelledAttachmentsRef = useRef<Set<string>>(new Set());
   const flatListRef = useRef<FlatList<GroupedItem>>(null);
   const textInputRef = useRef<TextInput>(null);
   const [expandedTurns, setExpandedTurns] = useState<Record<string, boolean>>({});
@@ -568,7 +605,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
 
   const timelineItemsLength = messages.length + approvals.length + messages.reduce((acc, m) => acc + (m.parts?.length || 0), 0);
 
-  const canSubmit = socketStatus === 'connected' && capability.canSubmit && !running && inputPrompt.trim().length > 0;
+  const canSubmit = socketStatus === 'connected' && capability.canSubmit && !running && (inputPrompt.trim().length > 0 || selectedParts.length > 0 || pendingAttachments.length > 0);
 
   // ─── Refs sync ──────────────────────────────────────────────────────────
 
@@ -744,7 +781,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               return normalized;
             });
 
-setMessages((prev) => {
+            setMessages((prev) => {
               const result = nextMessages.map((nm) => {
                 let existing = prev.find((p) => p.id === nm.id);
                 
@@ -757,7 +794,9 @@ setMessages((prev) => {
                   return {
                     ...nm,
                     content: existing.content || nm.content, // Prefer rich local content during active runs
-                    parts: (nm.parts && nm.parts.length > 0) ? mergeParts(existing.parts || [], nm.parts) : (existing.parts || []),
+                    parts: nm.role === 'user'
+                      ? (nm.parts && nm.parts.length > 0 ? nm.parts : (existing.parts || []))
+                      : (nm.parts && nm.parts.length > 0 ? mergeParts(existing.parts || [], nm.parts) : (existing.parts || [])),
                   };
                 }
                 return nm;
@@ -1024,6 +1063,10 @@ setMessages((prev) => {
                         nextMsgs = updateMessageParts(nextMsgs, msgId, conversationIdRef.current || defaultConversationId, (partsList) => {
                           const idx = partsList.findIndex((p) => p.id === updatedPart.id);
                           if (idx === -1) {
+                            // Deduplicate file parts by URL: server-generated parts may have different IDs but same URL
+                            if (updatedPart.type === 'file' && (updatedPart as any).url && partsList.some(p => p.type === 'file' && (p as any).url === (updatedPart as any).url)) {
+                              return partsList;
+                            }
                             return [...partsList, updatedPart];
                           }
                           const copy = [...partsList];
@@ -1046,7 +1089,7 @@ setMessages((prev) => {
                         break;
                       }
                       case 'tool_updated': {
-                        console.log(`[DEBUG-SUBTASK-EVENT] tool_updated for partId=${mutation.partId}, msgId=${mutation.messageId}, tool=${mutation.tool}`);
+                        // console.log(`[DEBUG-SUBTASK-EVENT] tool_updated for partId=${mutation.partId}, msgId=${mutation.messageId}, tool=${mutation.tool}`);
                         nextMsgs = updateMessageParts(nextMsgs, mutation.messageId, conversationIdRef.current || defaultConversationId, (partsList) => {
                           const idx = partsList.findIndex((p) => p.id === mutation.partId);
                           if (idx === -1) return partsList;
@@ -1120,7 +1163,7 @@ setMessages((prev) => {
                       }
                       case 'subtask_prompt': {
                         const sc = mutation;
-                        console.log(`[DEBUG-SUBTASK] subtask_prompt received for callID: ${sc.callID}, messageID: "${sc.messageID}"`);
+                        // console.log(`[DEBUG-SUBTASK] subtask_prompt received for callID: ${sc.callID}, messageID: "${sc.messageID}"`);
                         nextMsgs = updateMessageParts(nextMsgs, sc.messageID, conversationIdRef.current || defaultConversationId, (partsList) => {
                           const subtaskPart: Part = {
                             type: 'subtask',
@@ -1135,10 +1178,10 @@ setMessages((prev) => {
                           };
                           const idx = partsList.findIndex((p) => p.type === 'subtask' && p.id === sc.callID);
                           if (idx === -1) {
-                            console.log(`[DEBUG-SUBTASK] Appending new subtask part to partsList. Total parts before: ${partsList.length}`);
+                            // console.log(`[DEBUG-SUBTASK] Appending new subtask part to partsList. Total parts before: ${partsList.length}`);
                             return [...partsList, subtaskPart];
                           }
-                          console.log(`[DEBUG-SUBTASK] Updating existing subtask part in partsList.`);
+                          // console.log(`[DEBUG-SUBTASK] Updating existing subtask part in partsList.`);
                           const copy = [...partsList];
                           copy[idx] = subtaskPart;
                           return copy;
@@ -1146,10 +1189,10 @@ setMessages((prev) => {
                         break;
                       }
                       case 'subtask_session_mapped': {
-                        console.log(`[DEBUG-SUBTASK] subtask_session_mapped received for callID: ${mutation.callID}, messageID (using empty string for update): ""`);
+                        // console.log(`[DEBUG-SUBTASK] subtask_session_mapped received for callID: ${mutation.callID}, messageID (using empty string for update): ""`);
                         // Use findMessageIdByPartId to find the real message ID, as empty string is ignored by updateMessageParts
                         const msgId = findMessageIdByPartId(nextMsgs, mutation.callID);
-                        console.log(`[DEBUG-SUBTASK] Found msgId for mapped subtask: "${msgId}"`);
+                        // console.log(`[DEBUG-SUBTASK] Found msgId for mapped subtask: "${msgId}"`);
                         
                         nextMsgs = updateMessageParts(nextMsgs, msgId, conversationIdRef.current || defaultConversationId, (partsList) => {
                           return partsList.map((p) =>
@@ -1367,7 +1410,7 @@ setMessages((prev) => {
                             break;
                           }
                           case 'tool_called': {
-                            console.log(`[DEBUG-SUBTASK-EVENT] tool_called inner.partId=${inner.partId}, tool=${inner.tool}`);
+                            // console.log(`[DEBUG-SUBTASK-EVENT] tool_called inner.partId=${inner.partId}, tool=${inner.tool}`);
                             msgs = updateMessageParts(msgs, msgId, convId, (partsList) => {
                               const existingIdx = partsList.findIndex((p) => p.type === 'tool' && p.id === inner.partId);
                               if (existingIdx >= 0) return partsList;
@@ -1403,7 +1446,13 @@ setMessages((prev) => {
                             if (partMsgId) {
                               msgs = updateMessageParts(msgs, partMsgId, convId, (partsList) => {
                                 const idx = partsList.findIndex((p) => p.id === updatedPart.id);
-                                if (idx === -1) return [...partsList, updatedPart];
+                                if (idx === -1) {
+                                  // Deduplicate file parts by URL
+                                  if (updatedPart.type === 'file' && (updatedPart as any).url && partsList.some(p => p.type === 'file' && (p as any).url === (updatedPart as any).url)) {
+                                    return partsList;
+                                  }
+                                  return [...partsList, updatedPart];
+                                }
                                 const copy = [...partsList];
                                 copy[idx] = updatedPart;
                                 return copy;
@@ -1604,20 +1653,153 @@ setMessages((prev) => {
 
   // ─── Action handlers ──────────────────────────────────────────────────
 
+  const readFileAsBase64 = async (uri: string): Promise<string> => {
+    const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+    return base64;
+  };
+
+  const compressImage = async (uri: string, mime: string): Promise<{ uri: string; mime: string }> => {
+    try {
+      const format = mime === 'image/png' ? SaveFormat.PNG : mime === 'image/webp' ? SaveFormat.WEBP : SaveFormat.JPEG;
+      const result = await manipulateAsync(
+        uri,
+        [{ resize: { width: 1920 } }],
+        { compress: 0.8, format }
+      );
+      return { uri: result.uri, mime };
+    } catch {
+      return { uri, mime };
+    }
+  };
+
+  const addAttachment = async (uri: string, mime: string, filename: string, pendingId: string) => {
+    try {
+      const isImage = mime.startsWith('image/');
+      let fileUri = uri;
+      let fileMime = mime;
+      if (isImage) {
+        const compressed = await compressImage(uri, mime);
+        fileUri = compressed.uri;
+        fileMime = compressed.mime;
+      }
+      const base64 = await readFileAsBase64(fileUri);
+      const dataUrl = `data:${fileMime};base64,${base64}`;
+      if (cancelledAttachmentsRef.current.has(pendingId)) {
+        cancelledAttachmentsRef.current.delete(pendingId);
+        return;
+      }
+      setPendingAttachments((prev) => prev.filter((p) => p.id !== pendingId));
+      setSelectedParts((prev) => [...prev, {
+        id: pendingId,
+        type: 'file' as const,
+        mime: fileMime,
+        url: dataUrl,
+        filename,
+      }]);
+    } catch (err: any) {
+      setPendingAttachments((prev) => prev.filter((p) => p.id !== pendingId));
+      Alert.alert('Attachment Error', err.message || 'Failed to read file.');
+    }
+  };
+
+  const handlePickFromCamera = async () => {
+    try {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Permission Denied', 'Camera access is required to take photos.');
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        quality: 0.8,
+        allowsEditing: false,
+      });
+      if (!result.canceled && result.assets?.[0]) {
+        const asset = result.assets[0];
+        const pendingId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        setPendingAttachments((prev) => [...prev, { id: pendingId, uri: asset.uri, mime: asset.mimeType || 'image/jpeg', filename: asset.fileName || `camera-${Date.now()}.jpg` }]);
+        addAttachment(asset.uri, asset.mimeType || 'image/jpeg', asset.fileName || `camera-${Date.now()}.jpg`, pendingId);
+      }
+    } catch (err: any) {
+      Alert.alert('Camera Error', err.message || 'Failed to open camera.');
+    }
+  };
+
+  const handlePickFromGallery = async () => {
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Permission Denied', 'Gallery access is required to pick photos.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        quality: 0.8,
+        allowsMultipleSelection: true,
+      });
+      if (!result.canceled && result.assets) {
+        for (const asset of result.assets) {
+          const pendingId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          setPendingAttachments((prev) => [...prev, { id: pendingId, uri: asset.uri, mime: asset.mimeType || 'image/jpeg', filename: asset.fileName || `image-${Date.now()}.jpg` }]);
+          addAttachment(asset.uri, asset.mimeType || 'image/jpeg', asset.fileName || `image-${Date.now()}.jpg`, pendingId);
+        }
+      }
+    } catch (err: any) {
+      Alert.alert('Gallery Error', err.message || 'Failed to open gallery.');
+    }
+  };
+
+  const handlePickDocument = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: '*/*',
+        multiple: true,
+        copyToCacheDirectory: true,
+      });
+      if (!result.canceled && result.assets) {
+        for (const asset of result.assets) {
+          const mime = asset.mimeType || 'application/octet-stream';
+          const pendingId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          setPendingAttachments((prev) => [...prev, { id: pendingId, uri: asset.uri, mime, filename: asset.name || `file-${Date.now()}` }]);
+          addAttachment(asset.uri, mime, asset.name || `file-${Date.now()}`, pendingId);
+        }
+      }
+    } catch (err: any) {
+      Alert.alert('Document Error', err.message || 'Failed to pick document.');
+    }
+  };
+
+  const handleAttachFile = () => {
+    Alert.alert('Attach File', 'Choose a source', [
+      { text: 'Camera', onPress: handlePickFromCamera },
+      { text: 'Gallery', onPress: handlePickFromGallery },
+      { text: 'Document', onPress: handlePickDocument },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
+  const removeAttachment = (id: string) => {
+    cancelledAttachmentsRef.current.add(id);
+    setSelectedParts((prev) => prev.filter((p) => p.id !== id));
+    setPendingAttachments((prev) => prev.filter((p) => p.id !== id));
+  };
+
   const handleSubmitPrompt = () => {
     if (submittingRef.current) return;
+    submittingRef.current = true;
 
     const content = inputPrompt.trim();
-    if (!content) return;
+    const hasAttachments = selectedParts.length > 0;
+    if (!content && !hasAttachments) { submittingRef.current = false; return; }
 
     if (handleSlashCommand(content)) {
       setInputPrompt('');
+      submittingRef.current = false;
       return;
     }
 
-    if (!socketRef.current) return;
+    if (!socketRef.current) { submittingRef.current = false; return; }
     if (!capability.canSubmit) {
       Alert.alert('OpenCode unavailable', capability.details);
+      submittingRef.current = false;
       return;
     }
 
@@ -1625,16 +1807,35 @@ setMessages((prev) => {
     setConversationId(targetConversationId);
     conversationIdRef.current = targetConversationId;
     secureStoreService.saveOpenCodeConversationId(conversationScope, targetConversationId).catch(() => undefined);
-    submittingRef.current = true;
+    const msgId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const fileParts: Part[] = selectedParts.map((f) => ({
+      type: 'file' as const,
+      id: f.id,
+      sessionID: '',
+      messageID: msgId,
+      mime: f.mime,
+      filename: f.filename,
+      url: f.url,
+    }));
     setMessages((prev) => [...prev, {
-      id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: msgId,
       conversationId: targetConversationId,
       role: 'user',
       content,
       createdAt: new Date().toISOString(),
       status: 'pending',
+      parts: fileParts.length > 0 ? fileParts : undefined,
     }]);
+    const parts: FilePart[] | undefined = selectedParts.length > 0 ? selectedParts.map((f) => ({
+      type: 'file' as const,
+      mime: f.mime,
+      url: f.url,
+      filename: f.filename,
+    })) : undefined;
     setInputPrompt('');
+    setSelectedParts([]);
+    setPendingAttachments([]);
+    cancelledAttachmentsRef.current.clear();
     setRunning(true);
     setRunStatusText('Working...');
     
@@ -1644,7 +1845,12 @@ setMessages((prev) => {
       scrollToBottom(true);
     }, 50);
 
-    emitOpenCodeMessage(socketRef.current, { conversationId: targetConversationId, sessionId, content });
+    try {
+      emitOpenCodeMessage(socketRef.current, { conversationId: targetConversationId, sessionId, content, parts });
+    } catch {
+      submittingRef.current = false;
+      return;
+    }
     
     // Safety watchdog to release submittingRef if we get stuck
     setTimeout(() => {
@@ -1830,7 +2036,7 @@ setMessages((prev) => {
 
   return (
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'android' ? 'height' : 'padding'}
         style={styles.container}
       >
         <View style={styles.header}>
@@ -1963,11 +2169,47 @@ setMessages((prev) => {
               </TouchableOpacity>
             )}
 
+            {(selectedParts.length > 0 || pendingAttachments.length > 0) && (
+              <View style={styles.attachmentsBar}>
+                <View style={styles.attachmentsScroll}>
+                  {pendingAttachments.map((file) => (
+                    <View key={file.id} style={styles.attachmentChip}>
+                      {file.mime.startsWith('image/') ? (
+                        <MaterialIcons name="image" size={16} color="rgba(255,255,255,0.5)" />
+                      ) : (
+                        <MaterialIcons name="insert-drive-file" size={16} color="rgba(255,255,255,0.5)" />
+                      )}
+                      <ActivityIndicator size="small" color="rgba(255,255,255,0.5)" style={{ marginLeft: 4 }} />
+                      <TouchableOpacity onPress={() => removeAttachment(file.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                        <MaterialIcons name="close" size={14} color="rgba(255,255,255,0.5)" />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                  {selectedParts.map((file) => (
+                    <View key={file.id} style={styles.attachmentChip}>
+                      {file.mime.startsWith('image/') ? (
+                        <Image source={{ uri: file.url }} style={styles.attachmentThumb} />
+                      ) : (
+                        <MaterialIcons name="insert-drive-file" size={16} color="rgba(255,255,255,0.5)" />
+                      )}
+                      {!file.mime.startsWith('image/') && (
+                        <Text style={styles.attachmentChipText} numberOfLines={1}>{file.filename}</Text>
+                      )}
+                      <TouchableOpacity onPress={() => removeAttachment(file.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                        <MaterialIcons name="close" size={14} color="rgba(255,255,255,0.5)" />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            )}
+
             <ChatInputBar
               inputPrompt={inputPrompt}
               onChangePrompt={setInputPrompt}
               onSubmit={handleSubmitPrompt}
               onStop={handleStopOpenCode}
+              onAttachFile={handleAttachFile}
               canSubmit={canSubmit}
               running={running}
               socketStatus={socketStatus}
@@ -2218,5 +2460,36 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: Theme.colors.primary.glow,
+  },
+  attachmentsBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingBottom: 4,
+  },
+  attachmentsScroll: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    flex: 1,
+  },
+  attachmentChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
+  attachmentThumb: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+  },
+  attachmentChipText: {
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.7)',
+    maxWidth: 120,
   },
 });

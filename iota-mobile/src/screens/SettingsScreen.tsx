@@ -14,11 +14,14 @@ import {
   Alert,
   BackHandler,
   Switch,
+  ActivityIndicator,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { ShaderGradient } from '../components/ShaderGradient';
 import { Theme } from '../styles/theme';
 import { secureStoreService } from '../services/secureStore';
+import { updateService } from '../services/updateService';
+import { UpdateState, GitHubRelease } from '../types';
 
 interface SettingsScreenProps {
   user: { token: string; username?: string; avatarUrl?: string };
@@ -55,6 +58,52 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
   const [groqKeyInput, setGroqKeyInput] = useState<string>('');
   const [isGroqKeySaved, setIsGroqKeySaved] = useState<boolean>(false);
+
+  const [updateState, setUpdateState] = useState<UpdateState>({ status: 'idle' });
+
+  const handleCheckForUpdates = async () => {
+    setUpdateState({ status: 'checking' });
+    const result = await updateService.checkForUpdate(user.token);
+    
+    if (result.error) {
+      setUpdateState({ status: 'error', message: result.error });
+      return;
+    }
+
+    if (result.hasUpdate && result.release) {
+      setUpdateState({ status: 'available', release: result.release });
+    } else {
+      setUpdateState({ status: 'up_to_date', currentVersion: result.currentVersion });
+    }
+  };
+
+  const handleDownloadUpdate = async (release: GitHubRelease) => {
+    const asset = release.assets.find(a => a.name.endsWith('.apk'));
+    if (!asset) {
+      setUpdateState({ status: 'error', message: 'No APK found in the release.' });
+      return;
+    }
+
+    setUpdateState({ status: 'downloading', progress: 0 });
+    try {
+      const fileUri = await updateService.downloadUpdate(asset.browser_download_url, (progress) => {
+        setUpdateState({ status: 'downloading', progress });
+      });
+      setUpdateState({ status: 'downloaded', fileUri, release });
+    } catch (e: any) {
+      setUpdateState({ status: 'error', message: e.message || 'Download failed.' });
+    }
+  };
+
+  const handleInstallUpdate = async (fileUri: string) => {
+    setUpdateState({ status: 'installing' });
+    try {
+      await updateService.installUpdate(fileUri);
+      setUpdateState({ status: 'idle' }); 
+    } catch (e: any) {
+      setUpdateState({ status: 'error', message: e.message || 'Install failed.' });
+    }
+  };
 
   useEffect(() => {
     async function loadGroqKey() {
@@ -214,7 +263,82 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             </View>
           </View>
 
-          
+          {/* App Updates Section */}
+          <View style={styles.sectionCard}>
+            <View style={styles.sectionHeader}>
+              <MaterialIcons name="system-update" size={20} color={Theme.colors.primary.glow} />
+              <Text style={styles.sectionTitle}>APP UPDATES</Text>
+            </View>
+            <Text style={styles.description}>
+              Check for new versions of IOTA and install them directly.
+            </Text>
+
+            {updateState.status === 'idle' && (
+              <TouchableOpacity style={styles.updateButton} onPress={handleCheckForUpdates}>
+                <Text style={styles.updateButtonText}>Check for Updates</Text>
+              </TouchableOpacity>
+            )}
+
+            {updateState.status === 'checking' && (
+              <View style={styles.updateStateContainer}>
+                <ActivityIndicator color={Theme.colors.primary.glow} />
+                <Text style={styles.updateStateText}>Checking for updates...</Text>
+              </View>
+            )}
+
+            {updateState.status === 'available' && (
+              <View style={styles.updateCard}>
+                <Text style={styles.updateVersionText}>New Version Available: {updateState.release.name}</Text>
+                <ScrollView style={{ maxHeight: 100, marginVertical: 10 }}>
+                  <Text style={styles.updateChangelog}>{updateState.release.body}</Text>
+                </ScrollView>
+                <TouchableOpacity style={styles.updateButton} onPress={() => handleDownloadUpdate(updateState.release)}>
+                  <Text style={styles.updateButtonText}>Download Update</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {updateState.status === 'downloading' && (
+              <View style={styles.updateStateContainer}>
+                <Text style={styles.updateStateText}>Downloading: {Math.round(updateState.progress * 100)}%</Text>
+                <View style={styles.progressBarBg}>
+                  <View style={[styles.progressBarFill, { width: `${Math.round(updateState.progress * 100)}%` }]} />
+                </View>
+              </View>
+            )}
+
+            {updateState.status === 'downloaded' && (
+              <View style={styles.updateStateContainer}>
+                <Text style={styles.updateStateText}>Ready to install {updateState.release.name}</Text>
+                <TouchableOpacity style={styles.updateButton} onPress={() => handleInstallUpdate(updateState.fileUri)}>
+                  <Text style={styles.updateButtonText}>Install Now</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {updateState.status === 'installing' && (
+              <View style={styles.updateStateContainer}>
+                <ActivityIndicator color={Theme.colors.primary.glow} />
+                <Text style={styles.updateStateText}>Installing...</Text>
+              </View>
+            )}
+
+            {updateState.status === 'up_to_date' && (
+              <View style={styles.updateStateContainer}>
+                <MaterialIcons name="check-circle" size={24} color={Theme.colors.secondary.glow} />
+                <Text style={[styles.updateStateText, { marginLeft: 8 }]}>You're up to date (v{updateState.currentVersion})</Text>
+              </View>
+            )}
+
+            {updateState.status === 'error' && (
+              <View style={styles.updateStateContainer}>
+                <Text style={styles.errorText}>{updateState.message}</Text>
+                <TouchableOpacity style={[styles.updateButton, { marginTop: 10, width: '100%' }]} onPress={handleCheckForUpdates}>
+                  <Text style={styles.updateButtonText}>Retry</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
 
           {/* Keep-Alive Section */}
           <View style={styles.sectionCard}>
@@ -684,5 +808,63 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
+  },
+  updateButton: {
+    backgroundColor: Theme.colors.primary.default,
+    borderRadius: 8,
+    height: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  updateButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  updateStateContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+    flexWrap: 'wrap',
+  },
+  updateStateText: {
+    color: Theme.colors.text.primary,
+    fontSize: 14,
+    marginLeft: 8,
+  },
+  updateCard: {
+    backgroundColor: 'rgba(0, 0, 0, 0.2)',
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 8,
+    borderColor: Theme.colors.border,
+    borderWidth: 1,
+  },
+  updateVersionText: {
+    color: Theme.colors.text.primary,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  updateChangelog: {
+    color: Theme.colors.text.secondary,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  progressBarBg: {
+    height: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 4,
+    width: '100%',
+    marginTop: 8,
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: '100%',
+    backgroundColor: Theme.colors.primary.glow,
+  },
+  errorText: {
+    color: Theme.colors.accent.glow,
+    fontSize: 13,
   },
 });

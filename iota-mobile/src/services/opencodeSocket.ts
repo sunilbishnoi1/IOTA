@@ -1,5 +1,5 @@
 import { Socket } from 'socket.io-client';
-import { GlobalEvent, OpenCodeApprovalRequest, OpenCodeConversation, OpenCodeFileChange, OpenCodeMessage, OpenCodeQuestionRequest, OpenCodeToolActivity, Part } from '../types/opencode';
+import { FilePart, GlobalEvent, OpenCodeApprovalRequest, OpenCodeConversation, OpenCodeFileChange, OpenCodeMessage, OpenCodeQuestionRequest, OpenCodeToolActivity, Part } from '../types/opencode';
 
 export interface OpenCodeSocketHandlers {
   onCapability?: (payload: unknown) => void;
@@ -76,9 +76,9 @@ export const emitOpenCodeInstall = (socket?: Socket | null) => {
 
 export const emitOpenCodeMessage = (
   socket: Socket | null | undefined,
-  payload: { conversationId?: string; sessionId?: string; content: string }
+  payload: { conversationId?: string; sessionId?: string; content: string; parts?: FilePart[] }
 ) => {
-  console.log('[SocketClient] Emitting opencode:message:', JSON.stringify(payload));
+  console.log('[SocketClient] Emitting opencode:message:', JSON.stringify({ ...payload, parts: payload.parts ? `[${payload.parts.length} files]` : undefined }));
   socket?.emit('opencode:message', payload);
 };
 

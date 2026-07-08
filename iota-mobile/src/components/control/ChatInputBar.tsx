@@ -24,6 +24,7 @@ interface ChatInputBarProps {
   onChangePrompt: (text: string) => void;
   onSubmit: () => void;
   onStop: () => void;
+  onAttachFile?: () => void;
   canSubmit: boolean;
   running: boolean;
   socketStatus: SocketStatus;
@@ -44,6 +45,7 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
   onChangePrompt,
   onSubmit,
   onStop,
+  onAttachFile,
   canSubmit,
   running,
   socketStatus,
@@ -213,7 +215,7 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
       {slashCommandsAutocomplete}
 
       <View style={styles.bottomBar}>
-        <View style={[styles.inputWrapper, { minHeight: 48, height: isRecording ? 48 : Math.max(48, inputHeight) }]}>
+        <View style={styles.inputWrapper}>
           {isRecording ? (
             renderVoiceWaves()
           ) : (
@@ -222,8 +224,8 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
               style={[styles.textInput, { height: Math.max(36, inputHeight - 12) }]}
               value={inputPrompt}
               onChangeText={onChangePrompt}
-              placeholder={capability.canSubmit ? 'Ask OpenCode to change code...' : 'OpenCode is not ready'}
-              placeholderTextColor="rgba(255, 255, 255, 0.35)"
+              placeholder={capability.canSubmit ? 'Ask iota...' : 'I/////ota is not ready'}
+              placeholderTextColor="rgba(255, 255, 255, 0.5)"
               multiline
               scrollEnabled={true}
               onContentSizeChange={(e) => {
@@ -233,65 +235,66 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
             />
           )}
 
-          <View style={styles.actionButtonsContainer}>
-            {/* {!isRecording && (
+          <View style={styles.bottomRow}>
+            <View style={styles.leftActions}>
               <TouchableOpacity
-                style={[
-                  styles.thinkingToggleButton,
-                  thinkingMode === 'show' && styles.thinkingToggleButtonActive
-                ]}
-                onPress={onToggleThinkingMode}
+                style={styles.iconButton}
+                onPress={onAttachFile}
                 activeOpacity={0.7}
               >
-                <MaterialIcons
-                  name="psychology"
-                  size={18}
-                  color={thinkingMode === 'show' ? Theme.colors.primary.glow : 'rgba(255, 255, 255, 0.4)'}
-                />
+                <MaterialIcons name="add" size={28} color="rgba(255, 255, 255, 0.9)" />
               </TouchableOpacity>
-            )} */}
+            </View>
 
-            {!!groqApiKey && (
-              <TouchableOpacity
-                style={[
-                  styles.micButton,
-                  isRecording && styles.micButtonRecording
-                ]}
-                onPress={isRecording ? stopRecording : startRecording}
-                disabled={isTranscribing}
-                activeOpacity={0.7}
-              >
-                {isTranscribing ? (
-                  <ActivityIndicator size="small" color={Theme.colors.primary.glow} />
-                ) : (
-                  <MaterialIcons
-                    name={isRecording ? 'stop' : 'mic'}
-                    size={18}
-                    color={isRecording ? '#ffffff' : Theme.colors.primary.glow}
-                  />
-                )}
-              </TouchableOpacity>
-            )}
-
-            {!isRecording && (
-              running ? (
-                <TouchableOpacity 
-                  style={[styles.submitButton, { backgroundColor: Theme.colors.accent.default }]} 
-                  onPress={onStop} 
+            <View style={styles.rightActions}>
+              {!!groqApiKey && (
+                <TouchableOpacity
+                  style={[
+                    styles.actionButton,
+                    isRecording && styles.actionButtonActive
+                  ]}
+                  onPress={isRecording ? stopRecording : startRecording}
                   disabled={isTranscribing}
+                  activeOpacity={0.7}
                 >
-                  <MaterialIcons name="stop" size={20} color="#ffffff" />
+                  {isTranscribing ? (
+                    <ActivityIndicator size="small" color={Theme.colors.primary.glow} />
+                  ) : (
+                    <MaterialIcons
+                      name={isRecording ? 'stop' : 'mic'}
+                      size={22}
+                      color={isRecording ? '#ffffff' : "rgba(255, 255, 255, 0.9)"}
+                    />
+                  )}
                 </TouchableOpacity>
-              ) : (
-                <TouchableOpacity 
-                  style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]} 
-                  onPress={onSubmit} 
-                  disabled={!canSubmit || isTranscribing}
-                >
-                  <MaterialIcons name="arrow-upward" size={20} color="#ffffff" />
-                </TouchableOpacity>
-              )
-            )}
+              )}
+
+              {!isRecording && (
+                running ? (
+                  <TouchableOpacity 
+                    style={[styles.actionButton, { backgroundColor: Theme.colors.accent.default }]} 
+                    onPress={onStop} 
+                    disabled={isTranscribing}
+                    activeOpacity={0.7}
+                  >
+                    <MaterialIcons name="stop" size={22} color="#ffffff" />
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity 
+                    style={[styles.actionButton, !canSubmit && styles.actionButtonDisabled]} 
+                    onPress={onSubmit} 
+                    disabled={!canSubmit || isTranscribing}
+                    activeOpacity={0.7}
+                  >
+                    <MaterialIcons 
+                      name="arrow-upward" 
+                      size={22} 
+                      color={canSubmit ? "#ffffff" : "rgba(255, 255, 255, 0.3)"} 
+                    />
+                  </TouchableOpacity>
+                )
+              )}
+            </View>
           </View>
         </View>
       </View>
@@ -303,83 +306,74 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
 
 const styles = StyleSheet.create({
   bottomBar: {
-    borderTopWidth: 1,
-    borderTopColor: Theme.colors.border,
-    padding: 12,
-    backgroundColor: 'rgba(3, 0, 20, 0.96)',
+    backgroundColor: 'rgba(10, 8, 30, 0.96)',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    borderWidth: 1,
+    borderBottomWidth: 0,
+    borderColor: 'rgba(231, 231, 231, 0.5)',
+    marginHorizontal: -1,
+    paddingTop: 24,
+    paddingHorizontal: 17,
+    paddingBottom: 20,
+    shadowColor: Theme.colors.primary.default,
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 8,
   },
   inputWrapper: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 8,
-    borderWidth: 1,
-    borderColor: Theme.colors.border,
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    flexDirection: 'column',
+    minHeight: 48,
   },
   textInput: {
-    flex: 1,
-    maxHeight: 180,
     color: Theme.colors.text.primary,
-    fontSize: 14,
-    lineHeight: 20,
-    paddingTop: 4,
-    paddingBottom: 4,
+    fontSize: 16,
+    lineHeight: 24,
+    paddingTop: 0,
+    paddingBottom: 16,
+    textAlignVertical: 'top',
   },
-  submitButton: {
-    width: 34,
-    height: 34,
+  bottomRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 8,
-    backgroundColor: Theme.colors.primary.default,
   },
-  submitButtonDisabled: {
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  actionButtonsContainer: {
+  leftActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
   },
-  micButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 8,
-    backgroundColor: 'rgba(99, 102, 241, 0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(99, 102, 241, 0.25)',
+  rightActions: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 12,
   },
-  micButtonRecording: {
+  iconButton: {
+    width: 44,
+    height: 44,
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+  },
+  actionButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  actionButtonActive: {
     backgroundColor: Theme.colors.accent.default,
-    borderColor: Theme.colors.accent.glow,
   },
-  thinkingToggleButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 8,
+  actionButtonDisabled: {
     backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  thinkingToggleButtonActive: {
-    backgroundColor: 'rgba(99, 102, 241, 0.15)',
-    borderColor: 'rgba(99, 102, 241, 0.4)',
   },
   wavesContainer: {
-    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-start',
     gap: 6,
-    height: 36,
-    paddingHorizontal: 8,
+    paddingBottom: 16,
   },
   waveBar: {
     width: 4,
@@ -389,7 +383,7 @@ const styles = StyleSheet.create({
   },
   recordingText: {
     marginLeft: 10,
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: '600',
     color: Theme.colors.text.secondary,
   },

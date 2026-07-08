@@ -488,8 +488,6 @@ const styles = StyleSheet.create({
   codeBlockContainer: {
     width: '100%',
     borderRadius: 6,
-    borderWidth: 1,
-    borderColor: Theme.colors.border,
     backgroundColor: '#0b0f19',
     marginVertical: 8,
     overflow: 'hidden',

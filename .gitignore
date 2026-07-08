@@ -1,32 +1,56 @@
 # Universal
-.DS_Store
-Thumbs.db
 *.tmp
 *.swp
+
+# IDE / Editor
 .vscode/
 .idea/
 .codex/
-notes/
 .iota/
-claude.md
+iota-mobile/.claude/
 
-# Node.js/JavaScript/TypeScript (Expo & Bridge)
+# Local notes & agent config
+notes/
+claude.md
+opencode.json
+
+# Node.js / JavaScript / TypeScript
 node_modules/
 dist/
 build/
 *.log
-.env*
-.expo/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Generated during standalone APK build
+# Environment files
+.env*
+.env
+
+# Expo / React Native
+.expo/
+*.jsbundle
+*.bundle.js
+ios/Pods/
+android/.gradle/
+android/app/build/
+*.hprof
+
+# Generated APK build assets
 .jdk/
 .gradle_home/
 gradle-8.5-all.zip
-
-opencode.json
-.gitignore
 *.apk
+*.aab
 
+# Generated Specify integration caches
+.specify/integrations/.cache/
+
+# Windows OS artifacts
+nul
+%ProgramData%/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini

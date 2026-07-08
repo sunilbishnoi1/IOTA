@@ -4,6 +4,8 @@ const GITHUB_TOKEN_KEY = 'iota_github_token';
 const API_KEYS_PREFIX = 'iota_api_key_';
 const BRIDGE_URL_KEY = 'iota_bridge_url';
 const CONVERSATION_ID_PREFIX = 'iota_opencode_conversation_';
+const LAST_UPDATE_CHECK_KEY = 'iota_last_update_check';
+const SKIPPED_UPDATE_KEY = 'iota_skipped_update_version';
 
 const CHUNK_THRESHOLD = 1024;
 const CHUNK_PREFIX = '_chunk_';
@@ -123,6 +125,22 @@ export const secureStoreService = {
   async getKeepAliveDuration(): Promise<number | null> {
     const val = await secureGet('iota_keep_alive_duration');
     return val !== null ? parseInt(val, 10) : null;
+  },
+
+  async saveLastUpdateCheck(date: string): Promise<void> {
+    await secureSet(LAST_UPDATE_CHECK_KEY, date);
+  },
+
+  async getLastUpdateCheck(): Promise<string | null> {
+    return await secureGet(LAST_UPDATE_CHECK_KEY);
+  },
+
+  async saveSkippedVersion(version: string): Promise<void> {
+    await secureSet(SKIPPED_UPDATE_KEY, version);
+  },
+
+  async getSkippedVersion(): Promise<string | null> {
+    return await secureGet(SKIPPED_UPDATE_KEY);
   },
 
   async saveDeveloperModeEnabled(enabled: boolean): Promise<void> {

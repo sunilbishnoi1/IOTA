@@ -558,3 +558,12 @@ Root cause: OpenCode backend emitted message.part.updated without full text for 
 Root Cause: Subtask views skipped rendering streaming text because updateMessageParts fell back incorrectly for synthetic IDs, snapshot grouping dropped parts lacking sessionID, message_updated improperly renamed synthetic IDs, and subtask idle statuses mistakenly stopped the main session.
 Fix: Fixed ControlScreen.tsx to handle synthetic IDs cleanly, group snapshot parts by callID fallbacks, ignore UUID renames for subtask messages, and isolate main session run state from subtask idle events.
 
+## File Part IDs Must Match `prt_*` Format
+- **Root cause:** Mobile emitted file parts with custom `pending-*` IDs, but OpenCode server validates part IDs start with `"prt"`, rejecting with 400.
+- **Fix:** Use `FilePart[]` (no `id`/`sessionID`/`messageID`) instead of `Part[]` when emitting file attachments to the bridge — server generates its own IDs.
+- **Files:** `iota-mobile/src/types/opencode.ts`, `iota-mobile/src/screens/ControlScreen.tsx`, `iota-mobile/src/services/opencodeSocket.ts`
+
+# #   D u p l i c a t e   I m a g e   A t t a c h m e n t s   o n   S e n d  
+ -   * * R o o t   c a u s e : * *   D e d u p l i c a t i o n   b y   e x a c t   b a s e 6 4   U R L   f a i l e d   b e c a u s e   t h e   s e r v e r   r e - e n c o d e s   i m a g e s   s l i g h t l y ,   a n d   e m p t y   m e s s a g e s   m e r g e d   i n d i s c r i m i n a t e l y .  
+ -   * * F i x : * *   R e p l a c e d   l o c a l   f i l e   p a r t s   e n t i r e l y   w i t h   i n c o m i n g   s e r v e r   p a r t s   f o r   u s e r   m e s s a g e s ,   a n d   a d d e d   f i l e n a m e s   t o   t h e   e m p t y - m e s s a g e   d e d u p l i c a t i o n   k e y .  
+ 

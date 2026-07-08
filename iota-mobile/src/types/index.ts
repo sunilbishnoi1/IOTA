@@ -91,3 +91,39 @@ export interface TerminalExitPayload {
   exitCode: number;
   completed: boolean;
 }
+
+// Update Types
+
+export interface GitHubReleaseAsset {
+  name: string;
+  browser_download_url: string;
+  size: number;
+  content_type: string;
+}
+
+export interface GitHubRelease {
+  tag_name: string;
+  name: string;
+  body: string;
+  prerelease: boolean;
+  published_at: string;
+  assets: GitHubReleaseAsset[];
+}
+
+export interface UpdateCheckResult {
+  hasUpdate: boolean;
+  currentVersion: string;
+  remoteVersion: string | null;
+  release: GitHubRelease | null;
+  error: string | null;
+}
+
+export type UpdateState = 
+  | { status: 'idle' }
+  | { status: 'checking' }
+  | { status: 'available'; release: GitHubRelease }
+  | { status: 'up_to_date'; currentVersion: string }
+  | { status: 'downloading'; progress: number }
+  | { status: 'downloaded'; fileUri: string; release: GitHubRelease }
+  | { status: 'installing' }
+  | { status: 'error'; message: string };
