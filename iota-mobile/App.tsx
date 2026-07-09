@@ -38,7 +38,11 @@ const getLocalBridgeUrlFromBundle = (): string | null => {
     if (scriptURL && (scriptURL.startsWith('http://') || scriptURL.startsWith('https://'))) {
       const match = scriptURL.match(/^(https?:\/\/[^\/:]+)/);
       if (match && match[1]) {
-        return `${match[1]}:3000`;
+        let baseHost = match[1];
+        if (baseHost.includes('.app.github.dev')) {
+           return baseHost.replace(/-[0-9]+\.app\.github\.dev$/, '-3000.app.github.dev');
+        }
+        return `${baseHost}:3000`;
       }
     }
   } catch (e) {
@@ -287,9 +291,12 @@ export default function App() {
               username: userData.login,
               avatarUrl: userData.avatar_url,
             });
-          } else {
+          } else if (userResponse.status === 401) {
             await secureStoreService.deleteGithubToken();
             setUser(null);
+          } else {
+            // Keep the token on non-401 errors (e.g. 403 rate limit or 500)
+            setUser({ token });
           }
         }
       } catch (e) {

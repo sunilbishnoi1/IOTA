@@ -128,10 +128,11 @@ export const PreviewScreen: React.FC<PreviewScreenProps> = ({
 
   useEffect(() => {
     let active = true;
+    const apiUrl = activeCodespace.connectionUrl || bridgeUrl;
     async function loadConfig(retryCount = 0) {
       if (configLoadedRef.current) return;
       try {
-        const config = await fetchPreviewConfig(bridgeUrl, token);
+        const config = await fetchPreviewConfig(apiUrl, token);
         if (!active) return;
         if (configLoadedRef.current) return;
         setServers(config.servers || []);
@@ -153,7 +154,7 @@ export const PreviewScreen: React.FC<PreviewScreenProps> = ({
     }
     loadConfig();
     return () => { active = false; };
-  }, [bridgeUrl, token]);
+  }, [activeCodespace.connectionUrl, bridgeUrl, token]);
 
   // ─── WebSocket handlers ─────────────────────────────────────────────
 
@@ -231,8 +232,9 @@ export const PreviewScreen: React.FC<PreviewScreenProps> = ({
         emitPreviewConfigRequest(socket);
       } else {
         // Fallback: load config via HTTP REST if socket is not connected
+        const apiUrl = activeCodespace.connectionUrl || bridgeUrl;
         console.log('[PreviewScreen] Screen became visible, requesting config via HTTP');
-        fetchPreviewConfig(bridgeUrl, token)
+        fetchPreviewConfig(apiUrl, token)
           .then((config) => {
             setServers(config.servers || []);
             setIsPlaceholder(config.isPlaceholder || false);
@@ -247,7 +249,7 @@ export const PreviewScreen: React.FC<PreviewScreenProps> = ({
           });
       }
     }
-  }, [isVisible, socket, socketConnected, bridgeUrl, token]);
+  }, [isVisible, socket, socketConnected, activeCodespace.connectionUrl, bridgeUrl, token]);
 
   // ─── Request status when selected server changes ────────────────────
 

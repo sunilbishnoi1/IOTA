@@ -69,3 +69,10 @@
 ## Duplicate Metro Instance Corrupts Cache During Self-Preview
 - **Root cause:** Previewing an Expo Go app that is the same project already serving the host app starts a second `npx expo start` on a shifted port (8082). Two Metro instances for the same project share `.expo/` and cache files, corrupting each other's state — the host Metro then serves a corrupted bundle, crashing Expo Go on next launch.
 - **Fix:** In `startPreview()`, check if Metro (port 8081) is already running for expo-go type previews; if so, skip spawning and reuse the existing instance via the same URL.
+## Codespaces Port Forwarding Domain Resolution Error
+- **Root cause:** getLocalBridgeUrlFromBundle extracted the host from the Metro bundle URL and naively appended :3000. For Github Codespaces (e.g. https://name-8082.app.github.dev), this resulted in an invalid URL https://name-8082.app.github.dev:3000 which caused a 404/network error when fetching preview configurations.
+- **Fix:** Added logic to detect .app.github.dev domains and replace the port segment in the subdomain (e.g. -8082.app.github.dev to -3000.app.github.dev) instead of appending a port suffix.
+
+## FetchPreviewConfig Uses bridgeUrl Instead of Codespace ConnectionUrl
+- **Root cause:** PreviewScreen's `fetchPreviewConfig()` HTTP calls used the raw `bridgeUrl` prop instead of `activeCodespace.connectionUrl`. In the dev build, `bridgeUrl` is `http://localhost:3000` while the codespace bridge is at the forwarded domain (`.app.github.dev`), causing 404s.
+- **Fix:** Replace `bridgeUrl` with `activeCodespace.connectionUrl || bridgeUrl` in both the initial load effect and the visibility-change HTTP fallback in PreviewScreen.
