@@ -33,7 +33,6 @@ interface ChatInputBarProps {
   onInputHeightChange: (height: number) => void;
   textInputRef: React.RefObject<TextInput>;
   isVisible: boolean;
-  slashCommandsAutocomplete: React.ReactNode;
   thinkingMode: 'show' | 'hide';
   onToggleThinkingMode: () => void;
 }
@@ -54,7 +53,6 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
   onInputHeightChange,
   textInputRef,
   isVisible,
-  slashCommandsAutocomplete,
   thinkingMode,
   onToggleThinkingMode,
 }) => {
@@ -212,8 +210,6 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
 
   return (
     <>
-      {slashCommandsAutocomplete}
-
       <View style={styles.bottomBar}>
         <View style={styles.inputWrapper}>
           {isRecording ? (

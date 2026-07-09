@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Modal,
+  Dimensions,
   Platform,
   ScrollView,
   StyleSheet,
@@ -14,6 +14,7 @@ import { Socket } from 'socket.io-client';
 import { OpenCodeQuestionRequest } from '../../types/opencode';
 import { emitOpenCodeQuestionReply, emitOpenCodeQuestionReject } from '../../services/opencodeSocket';
 import { Theme } from '../../styles/theme';
+import { BottomDrawer } from './BottomDrawer';
 
 interface QuestionDialogProps {
   question: OpenCodeQuestionRequest | null;
@@ -191,328 +192,267 @@ export const QuestionDialog: React.FC<QuestionDialogProps> = ({
   if (!question) return null;
 
   return (
-    <Modal
+    <BottomDrawer
       visible={visible ?? !!question}
-      animationType="slide"
-      transparent
-      onRequestClose={handleSkip}
-    >
-      <View style={styles.overlay}>
-        <View style={styles.sheet}>
-          <View style={styles.header}>
-            <View style={styles.headerLeft}>
-              <MaterialIcons name="help-outline" size={20} color={Theme.colors.primary.glow} />
-              <Text style={styles.headerTitle}>Question from Agent</Text>
-            </View>
-            <View style={styles.headerRight}>
-              {question.tool && (
-                <View style={styles.toolBadge}>
-                  <Text style={styles.toolBadgeText}>{question.tool}</Text>
-                </View>
-              )}
-              {onCollapse && (
-                <TouchableOpacity
-                  onPress={onCollapse}
-                  style={styles.collapseButton}
-                  activeOpacity={0.7}
-                >
-                  <MaterialIcons name="keyboard-arrow-down" size={24} color={Theme.colors.primary.glow} />
-                </TouchableOpacity>
-              )}
-            </View>
+      title="Question from Agent"
+      icon="help-outline"
+      onClose={onCollapse}
+      maxHeight={Dimensions.get('window').height * 0.65}
+      headerRight={
+        question.tool ? (
+          <View style={styles.toolBadge}>
+            <Text style={styles.toolBadgeText}>{question.tool}</Text>
           </View>
-
-          {questionItems.length > 1 && (
-            <View style={styles.tabBarContainer}>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.tabBar}
-              >
-                {questionItems.map((item, idx) => {
-                  const isActive = activeTab === idx;
-                  const isAnswered = (initializedAnswers[idx] || []).length > 0 || (item.custom && (initializedCustomTexts[idx] || '').trim().length > 0);
-                  return (
-                    <TouchableOpacity
-                      key={idx}
-                      style={[
-                        styles.tabButton,
-                        isActive && styles.tabButtonActive,
-                      ]}
-                      onPress={() => setActiveTab(idx)}
-                      activeOpacity={0.7}
-                    >
-                      <View style={styles.tabContent}>
-                        {isAnswered && (
-                          <MaterialIcons
-                            name="check-circle"
-                            size={14}
-                            color={isActive ? Theme.colors.primary.glow : Theme.colors.secondary.default}
-                            style={{ marginRight: 4 }}
-                          />
-                        )}
-                        <Text style={[
-                          styles.tabText,
-                          isActive && styles.tabTextActive,
-                        ]}>
-                          {item.header || `Q${idx + 1}`}
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })}
+        ) : undefined
+      }
+    >
+      {questionItems.length > 1 && (
+        <View style={styles.tabBarContainer}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.tabBar}
+          >
+            {questionItems.map((item, idx) => {
+              const isActive = activeTab === idx;
+              const isAnswered = (initializedAnswers[idx] || []).length > 0 || (item.custom && (initializedCustomTexts[idx] || '').trim().length > 0);
+              return (
                 <TouchableOpacity
+                  key={idx}
                   style={[
                     styles.tabButton,
-                    activeTab === questionItems.length && styles.tabButtonActive,
-                    !isValid && styles.tabButtonDisabled,
+                    isActive && styles.tabButtonActive,
                   ]}
-                  onPress={() => isValid && setActiveTab(questionItems.length)}
-                  disabled={!isValid}
+                  onPress={() => setActiveTab(idx)}
                   activeOpacity={0.7}
                 >
                   <View style={styles.tabContent}>
-                    <MaterialIcons
-                      name="rate-review"
-                      size={14}
-                      color={activeTab === questionItems.length ? Theme.colors.primary.glow : isValid ? Theme.colors.text.secondary : 'rgba(255, 255, 255, 0.2)'}
-                      style={{ marginRight: 4 }}
-                    />
+                    {isAnswered && (
+                      <MaterialIcons
+                        name="check-circle"
+                        size={14}
+                        color={isActive ? Theme.colors.primary.glow : Theme.colors.secondary.default}
+                        style={{ marginRight: 4 }}
+                      />
+                    )}
                     <Text style={[
                       styles.tabText,
-                      activeTab === questionItems.length && styles.tabTextActive,
-                      !isValid && styles.tabTextDisabled,
+                      isActive && styles.tabTextActive,
                     ]}>
-                      Review
+                      {item.header || `Q${idx + 1}`}
                     </Text>
                   </View>
                 </TouchableOpacity>
-              </ScrollView>
-            </View>
-          )}
-
-          <ScrollView style={styles.content} contentContainerStyle={styles.contentInner}>
-            {questionItems.length > 1 ? (
-              activeTab === questionItems.length ? (
-                renderReviewStep()
-              ) : (
-                <View style={styles.questionSection}>
-                  {questionItems[activeTab].header && (
-                    <Text style={styles.questionHeader}>{questionItems[activeTab].header}</Text>
-                  )}
-                  <Text style={styles.questionText}>{questionItems[activeTab].question}</Text>
-
-                  {questionItems[activeTab].options && questionItems[activeTab].options!.length > 0 && (
-                    <View style={styles.optionsContainer}>
-                      {questionItems[activeTab].options!.map((option, oIdx) => {
-                        const isSelected = (initializedAnswers[activeTab] || []).includes(option.label);
-                        const iconName = questionItems[activeTab].multiple
-                          ? (isSelected ? 'check-box' : 'check-box-outline-blank')
-                          : (isSelected ? 'radio-button-checked' : 'radio-button-unchecked');
-
-                        return (
-                          <TouchableOpacity
-                            key={oIdx}
-                            style={[styles.optionRow, isSelected && styles.optionRowSelected]}
-                            onPress={() => toggleOption(activeTab, option.label, !!questionItems[activeTab].multiple)}
-                            activeOpacity={0.7}
-                          >
-                            <MaterialIcons
-                              name={iconName}
-                              size={20}
-                              color={isSelected ? Theme.colors.primary.glow : Theme.colors.text.muted}
-                            />
-                            <View style={styles.optionTextContainer}>
-                              <Text style={[styles.optionLabel, isSelected && styles.optionLabelSelected]}>
-                                {option.label}
-                              </Text>
-                              {option.description && (
-                                <Text style={styles.optionDescription}>{option.description}</Text>
-                              )}
-                            </View>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-                  )}
-
-                  {questionItems[activeTab].custom && (
-                    <View style={styles.customInputContainer}>
-                      <TextInput
-                        style={styles.customInput}
-                        placeholder="Type your answer..."
-                        placeholderTextColor={Theme.colors.text.muted}
-                        value={initializedCustomTexts[activeTab] || ''}
-                        onChangeText={(text) => updateCustomText(activeTab, text)}
-                        multiline
-                      />
-                    </View>
-                  )}
-                </View>
-              )
-            ) : (
-              questionItems.map((item, qIdx) => (
-                <View key={qIdx} style={styles.questionSection}>
-                  {item.header && (
-                    <Text style={styles.questionHeader}>{item.header}</Text>
-                  )}
-                  <Text style={styles.questionText}>{item.question}</Text>
-
-                  {item.options && item.options.length > 0 && (
-                    <View style={styles.optionsContainer}>
-                      {item.options.map((option, oIdx) => {
-                        const isSelected = (initializedAnswers[qIdx] || []).includes(option.label);
-                        const iconName = item.multiple
-                          ? (isSelected ? 'check-box' : 'check-box-outline-blank')
-                          : (isSelected ? 'radio-button-checked' : 'radio-button-unchecked');
-
-                        return (
-                          <TouchableOpacity
-                            key={oIdx}
-                            style={[styles.optionRow, isSelected && styles.optionRowSelected]}
-                            onPress={() => toggleOption(qIdx, option.label, !!item.multiple)}
-                            activeOpacity={0.7}
-                          >
-                            <MaterialIcons
-                              name={iconName}
-                              size={20}
-                              color={isSelected ? Theme.colors.primary.glow : Theme.colors.text.muted}
-                            />
-                            <View style={styles.optionTextContainer}>
-                              <Text style={[styles.optionLabel, isSelected && styles.optionLabelSelected]}>
-                                {option.label}
-                              </Text>
-                              {option.description && (
-                                <Text style={styles.optionDescription}>{option.description}</Text>
-                              )}
-                            </View>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-                  )}
-
-                  {item.custom && (
-                    <View style={styles.customInputContainer}>
-                      <TextInput
-                        style={styles.customInput}
-                        placeholder="Type your answer..."
-                        placeholderTextColor={Theme.colors.text.muted}
-                        value={initializedCustomTexts[qIdx] || ''}
-                        onChangeText={(text) => updateCustomText(qIdx, text)}
-                        multiline
-                      />
-                    </View>
-                  )}
-                </View>
-              ))
-            )}
-          </ScrollView>
-
-          <View style={styles.actions}>
-            <TouchableOpacity style={[styles.skipButton, questionItems.length > 1 && activeTab > 0 ? { flex: 0.3 } : { flex: 0.4 }]} onPress={handleSkip} activeOpacity={0.7}>
-              <Text style={styles.skipText}>Skip</Text>
+              );
+            })}
+            <TouchableOpacity
+              style={[
+                styles.tabButton,
+                activeTab === questionItems.length && styles.tabButtonActive,
+                !isValid && styles.tabButtonDisabled,
+              ]}
+              onPress={() => isValid && setActiveTab(questionItems.length)}
+              disabled={!isValid}
+              activeOpacity={0.7}
+            >
+              <View style={styles.tabContent}>
+                <MaterialIcons
+                  name="rate-review"
+                  size={14}
+                  color={activeTab === questionItems.length ? Theme.colors.primary.glow : isValid ? Theme.colors.text.secondary : 'rgba(255, 255, 255, 0.2)'}
+                  style={{ marginRight: 4 }}
+                />
+                <Text style={[
+                  styles.tabText,
+                  activeTab === questionItems.length && styles.tabTextActive,
+                  !isValid && styles.tabTextDisabled,
+                ]}>
+                  Review
+                </Text>
+              </View>
             </TouchableOpacity>
-
-            {questionItems.length > 1 && activeTab > 0 && (
-              <TouchableOpacity style={[styles.backButton, { flex: 0.3 }]} onPress={() => setActiveTab((prev) => prev - 1)} activeOpacity={0.7}>
-                <Text style={styles.backText}>Back</Text>
-              </TouchableOpacity>
-            )}
-
-            {questionItems.length > 1 ? (
-              activeTab === questionItems.length ? (
-                <TouchableOpacity
-                  style={[styles.submitButton, !isValid && styles.submitButtonDisabled, questionItems.length > 1 && activeTab > 0 ? { flex: 0.4 } : { flex: 0.6 }]}
-                  onPress={handleSubmit}
-                  disabled={!isValid}
-                  activeOpacity={0.7}
-                >
-                  <MaterialIcons name="send" size={16} color={isValid ? Theme.colors.text.primary : 'rgba(255,255,255,0.4)'} />
-                  <Text style={[styles.submitText, !isValid && styles.submitTextDisabled]}>Submit</Text>
-                </TouchableOpacity>
-              ) : activeTab === questionItems.length - 1 ? (
-                <TouchableOpacity
-                  style={[styles.submitButton, !isValid && styles.submitButtonDisabled, questionItems.length > 1 && activeTab > 0 ? { flex: 0.4 } : { flex: 0.6 }]}
-                  onPress={() => isValid && setActiveTab(questionItems.length)}
-                  disabled={!isValid}
-                  activeOpacity={0.7}
-                >
-                  <MaterialIcons name="rate-review" size={16} color={isValid ? Theme.colors.text.primary : 'rgba(255,255,255,0.4)'} />
-                  <Text style={[styles.submitText, !isValid && styles.submitTextDisabled]}>Review</Text>
-                </TouchableOpacity>
-              ) : (
-                <TouchableOpacity
-                  style={[styles.submitButton, !isCurrentQuestionValid && styles.submitButtonDisabled, questionItems.length > 1 && activeTab > 0 ? { flex: 0.4 } : { flex: 0.6 }]}
-                  onPress={() => isCurrentQuestionValid && setActiveTab((prev) => prev + 1)}
-                  disabled={!isCurrentQuestionValid}
-                  activeOpacity={0.7}
-                >
-                  <MaterialIcons name="arrow-forward" size={16} color={isCurrentQuestionValid ? Theme.colors.text.primary : 'rgba(255,255,255,0.4)'} />
-                  <Text style={[styles.submitText, !isCurrentQuestionValid && styles.submitTextDisabled]}>Next</Text>
-                </TouchableOpacity>
-              )
-            ) : (
-              <TouchableOpacity
-                style={[styles.submitButton, !isValid && styles.submitButtonDisabled]}
-                onPress={handleSubmit}
-                disabled={!isValid}
-                activeOpacity={0.7}
-              >
-                <MaterialIcons name="send" size={16} color={isValid ? Theme.colors.text.primary : 'rgba(255,255,255,0.4)'} />
-                <Text style={[styles.submitText, !isValid && styles.submitTextDisabled]}>Submit</Text>
-              </TouchableOpacity>
-            )}
-          </View>
+          </ScrollView>
         </View>
+      )}
+
+      <ScrollView style={styles.content} contentContainerStyle={styles.contentInner}>
+        {questionItems.length > 1 ? (
+          activeTab === questionItems.length ? (
+            renderReviewStep()
+          ) : (
+            <View style={styles.questionSection}>
+              {questionItems[activeTab].header && (
+                <Text style={styles.questionHeader}>{questionItems[activeTab].header}</Text>
+              )}
+              <Text style={styles.questionText}>{questionItems[activeTab].question}</Text>
+
+              {questionItems[activeTab].options && questionItems[activeTab].options!.length > 0 && (
+                <View style={styles.optionsContainer}>
+                  {questionItems[activeTab].options!.map((option, oIdx) => {
+                    const isSelected = (initializedAnswers[activeTab] || []).includes(option.label);
+                    const iconName = questionItems[activeTab].multiple
+                      ? (isSelected ? 'check-box' : 'check-box-outline-blank')
+                      : (isSelected ? 'radio-button-checked' : 'radio-button-unchecked');
+
+                    return (
+                      <TouchableOpacity
+                        key={oIdx}
+                        style={[styles.optionRow, isSelected && styles.optionRowSelected]}
+                        onPress={() => toggleOption(activeTab, option.label, !!questionItems[activeTab].multiple)}
+                        activeOpacity={0.7}
+                      >
+                        <MaterialIcons
+                          name={iconName}
+                          size={20}
+                          color={isSelected ? Theme.colors.primary.glow : Theme.colors.text.muted}
+                        />
+                        <View style={styles.optionTextContainer}>
+                          <Text style={[styles.optionLabel, isSelected && styles.optionLabelSelected]}>
+                            {option.label}
+                          </Text>
+                          {option.description && (
+                            <Text style={styles.optionDescription}>{option.description}</Text>
+                          )}
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+
+              {questionItems[activeTab].custom && (
+                <View style={styles.customInputContainer}>
+                  <TextInput
+                    style={styles.customInput}
+                    placeholder="Type your answer..."
+                    placeholderTextColor={Theme.colors.text.muted}
+                    value={initializedCustomTexts[activeTab] || ''}
+                    onChangeText={(text) => updateCustomText(activeTab, text)}
+                    multiline
+                  />
+                </View>
+              )}
+            </View>
+          )
+        ) : (
+          questionItems.map((item, qIdx) => (
+            <View key={qIdx} style={styles.questionSection}>
+              {item.header && (
+                <Text style={styles.questionHeader}>{item.header}</Text>
+              )}
+              <Text style={styles.questionText}>{item.question}</Text>
+
+              {item.options && item.options.length > 0 && (
+                <View style={styles.optionsContainer}>
+                  {item.options.map((option, oIdx) => {
+                    const isSelected = (initializedAnswers[qIdx] || []).includes(option.label);
+                    const iconName = item.multiple
+                      ? (isSelected ? 'check-box' : 'check-box-outline-blank')
+                      : (isSelected ? 'radio-button-checked' : 'radio-button-unchecked');
+
+                    return (
+                      <TouchableOpacity
+                        key={oIdx}
+                        style={[styles.optionRow, isSelected && styles.optionRowSelected]}
+                        onPress={() => toggleOption(qIdx, option.label, !!item.multiple)}
+                        activeOpacity={0.7}
+                      >
+                        <MaterialIcons
+                          name={iconName}
+                          size={20}
+                          color={isSelected ? Theme.colors.primary.glow : Theme.colors.text.muted}
+                        />
+                        <View style={styles.optionTextContainer}>
+                          <Text style={[styles.optionLabel, isSelected && styles.optionLabelSelected]}>
+                            {option.label}
+                          </Text>
+                          {option.description && (
+                            <Text style={styles.optionDescription}>{option.description}</Text>
+                          )}
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+
+              {item.custom && (
+                <View style={styles.customInputContainer}>
+                  <TextInput
+                    style={styles.customInput}
+                    placeholder="Type your answer..."
+                    placeholderTextColor={Theme.colors.text.muted}
+                    value={initializedCustomTexts[qIdx] || ''}
+                    onChangeText={(text) => updateCustomText(qIdx, text)}
+                    multiline
+                  />
+                </View>
+              )}
+            </View>
+          ))
+        )}
+      </ScrollView>
+
+      <View style={styles.actions}>
+        <TouchableOpacity style={[styles.skipButton, questionItems.length > 1 && activeTab > 0 ? { flex: 0.3 } : { flex: 0.4 }]} onPress={handleSkip} activeOpacity={0.7}>
+          <Text style={styles.skipText}>Skip</Text>
+        </TouchableOpacity>
+
+        {questionItems.length > 1 && activeTab > 0 && (
+          <TouchableOpacity style={[styles.backButton, { flex: 0.3 }]} onPress={() => setActiveTab((prev) => prev - 1)} activeOpacity={0.7}>
+            <Text style={styles.backText}>Back</Text>
+          </TouchableOpacity>
+        )}
+
+        {questionItems.length > 1 ? (
+          activeTab === questionItems.length ? (
+            <TouchableOpacity
+              style={[styles.submitButton, !isValid && styles.submitButtonDisabled, questionItems.length > 1 && activeTab > 0 ? { flex: 0.4 } : { flex: 0.6 }]}
+              onPress={handleSubmit}
+              disabled={!isValid}
+              activeOpacity={0.7}
+            >
+              <MaterialIcons name="send" size={16} color={isValid ? Theme.colors.text.primary : 'rgba(255,255,255,0.4)'} />
+              <Text style={[styles.submitText, !isValid && styles.submitTextDisabled]}>Submit</Text>
+            </TouchableOpacity>
+          ) : activeTab === questionItems.length - 1 ? (
+            <TouchableOpacity
+              style={[styles.submitButton, !isValid && styles.submitButtonDisabled, questionItems.length > 1 && activeTab > 0 ? { flex: 0.4 } : { flex: 0.6 }]}
+              onPress={() => isValid && setActiveTab(questionItems.length)}
+              disabled={!isValid}
+              activeOpacity={0.7}
+            >
+              <MaterialIcons name="rate-review" size={16} color={isValid ? Theme.colors.text.primary : 'rgba(255,255,255,0.4)'} />
+              <Text style={[styles.submitText, !isValid && styles.submitTextDisabled]}>Review</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={[styles.submitButton, !isCurrentQuestionValid && styles.submitButtonDisabled, questionItems.length > 1 && activeTab > 0 ? { flex: 0.4 } : { flex: 0.6 }]}
+              onPress={() => isCurrentQuestionValid && setActiveTab((prev) => prev + 1)}
+              disabled={!isCurrentQuestionValid}
+              activeOpacity={0.7}
+            >
+              <MaterialIcons name="arrow-forward" size={16} color={isCurrentQuestionValid ? Theme.colors.text.primary : 'rgba(255,255,255,0.4)'} />
+              <Text style={[styles.submitText, !isCurrentQuestionValid && styles.submitTextDisabled]}>Next</Text>
+            </TouchableOpacity>
+          )
+        ) : (
+          <TouchableOpacity
+            style={[styles.submitButton, !isValid && styles.submitButtonDisabled]}
+            onPress={handleSubmit}
+            disabled={!isValid}
+            activeOpacity={0.7}
+          >
+            <MaterialIcons name="send" size={16} color={isValid ? Theme.colors.text.primary : 'rgba(255,255,255,0.4)'} />
+            <Text style={[styles.submitText, !isValid && styles.submitTextDisabled]}>Submit</Text>
+          </TouchableOpacity>
+        )}
       </View>
-    </Modal>
+    </BottomDrawer>
   );
 };
 
 const styles = StyleSheet.create({
-  overlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    justifyContent: 'flex-end',
-  },
-  sheet: {
-    backgroundColor: Theme.colors.background,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    maxHeight: '80%',
-    borderTopWidth: 1,
-    borderColor: Theme.colors.border,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: Theme.colors.border,
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  headerRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  collapseButton: {
-    padding: 4,
-    marginRight: -4,
-  },
-  headerTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: Theme.colors.text.primary,
-  },
   toolBadge: {
     paddingHorizontal: 8,
     paddingVertical: 3,

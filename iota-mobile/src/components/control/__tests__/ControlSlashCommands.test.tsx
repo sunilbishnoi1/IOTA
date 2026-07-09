@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { render, fireEvent, screen } from '@testing-library/react-native';
-import { useSlashCommands, SlashCommandsAutocomplete } from '../ControlSlashCommands';
+import { useSlashCommands, SlashCommandsContent } from '../ControlSlashCommands';
 import { OpenCodeMessage } from '../../../types/opencode';
 import { TextInput } from 'react-native';
 
@@ -296,42 +296,34 @@ describe('useSlashCommands Hook', () => {
   });
 });
 
-describe('SlashCommandsAutocomplete Component', () => {
+describe('SlashCommandsContent Component', () => {
   it('should not render if input does not start with slash or has spaces', () => {
-    const setInputPrompt = jest.fn();
-    const textInputRef = React.createRef<TextInput>();
+    const onSelect = jest.fn();
 
     const { toJSON } = render(
-      <SlashCommandsAutocomplete
+      <SlashCommandsContent
         inputPrompt="hello"
-        setInputPrompt={setInputPrompt}
-        inputHeight={44}
-        textInputRef={textInputRef}
+        onSelect={onSelect}
       />
     );
     expect(toJSON()).toBeNull();
 
     const { toJSON: toJSON2 } = render(
-      <SlashCommandsAutocomplete
+      <SlashCommandsContent
         inputPrompt="/sessions "
-        setInputPrompt={setInputPrompt}
-        inputHeight={44}
-        textInputRef={textInputRef}
+        onSelect={onSelect}
       />
     );
     expect(toJSON2()).toBeNull();
   });
 
   it('should render suggestions filtering by input', () => {
-    const setInputPrompt = jest.fn();
-    const textInputRef = React.createRef<TextInput>();
+    const onSelect = jest.fn();
 
     render(
-      <SlashCommandsAutocomplete
+      <SlashCommandsContent
         inputPrompt="/se"
-        setInputPrompt={setInputPrompt}
-        inputHeight={44}
-        textInputRef={textInputRef}
+        onSelect={onSelect}
       />
     );
 
@@ -339,20 +331,17 @@ describe('SlashCommandsAutocomplete Component', () => {
     expect(screen.queryByText('/help')).toBeNull();
   });
 
-  it('should call setInputPrompt when an item is pressed', () => {
-    const setInputPrompt = jest.fn();
-    const textInputRef = { current: { focus: jest.fn() } } as any;
+  it('should call onSelect when an item is pressed', () => {
+    const onSelect = jest.fn();
 
     render(
-      <SlashCommandsAutocomplete
+      <SlashCommandsContent
         inputPrompt="/sessions"
-        setInputPrompt={setInputPrompt}
-        inputHeight={44}
-        textInputRef={textInputRef}
+        onSelect={onSelect}
       />
     );
 
     fireEvent.press(screen.getByText('/sessions'));
-    expect(setInputPrompt).toHaveBeenCalledWith('/sessions ');
+    expect(onSelect).toHaveBeenCalledWith('/sessions');
   });
 });

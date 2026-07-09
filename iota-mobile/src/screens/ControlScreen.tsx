@@ -32,7 +32,8 @@ import {
   emitOpenCodeDeleteConversation,
 } from '../services/opencodeSocket';
 import { HistoryDrawer } from '../components/control/HistoryDrawer';
-import { useSlashCommands, SlashCommandsAutocomplete, CredentialsModal } from '../components/control/ControlSlashCommands';
+import { useSlashCommands, SlashCommandsContent, CredentialsModal } from '../components/control/ControlSlashCommands';
+import { BottomDrawer } from '../components/control/BottomDrawer';
 import { EnvVarModal } from '../components/control/EnvVarModal';
 import { emitEnvVarsRequest, registerEnvVarsSocketHandlers } from '../services/envService';
 import { CodespaceVM } from '../types';
@@ -302,6 +303,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const [running, setRunning] = useState(false);
   const [selectedParts, setSelectedParts] = useState<Array<{ id: string; type: 'file'; mime: string; url: string; filename: string }>>([]);
   const [pendingAttachments, setPendingAttachments] = useState<Array<{ id: string; uri: string; mime: string; filename: string }>>([]);
+  const [showAttachDrawer, setShowAttachDrawer] = useState(false);
 
   useEffect(() => {
     if (pendingQuestion) {
@@ -606,6 +608,18 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const timelineItemsLength = messages.length + approvals.length + messages.reduce((acc, m) => acc + (m.parts?.length || 0), 0);
 
   const canSubmit = socketStatus === 'connected' && capability.canSubmit && !running && (inputPrompt.trim().length > 0 || selectedParts.length > 0 || pendingAttachments.length > 0);
+
+  const showSlashCommands = useMemo(() => {
+    if (pendingQuestion && !questionCollapsed) return false;
+    return inputPrompt.startsWith('/') && !inputPrompt.includes(' ');
+  }, [inputPrompt, pendingQuestion, questionCollapsed]);
+
+  const handleSlashSelect = useCallback((command: string) => {
+    setInputPrompt(`${command} `);
+    setTimeout(() => {
+      textInputRef.current?.focus();
+    }, 50);
+  }, []);
 
   // ─── Refs sync ──────────────────────────────────────────────────────────
 
@@ -1768,12 +1782,12 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   };
 
   const handleAttachFile = () => {
-    Alert.alert('Attach File', 'Choose a source', [
-      { text: 'Camera', onPress: handlePickFromCamera },
-      { text: 'Gallery', onPress: handlePickFromGallery },
-      { text: 'Document', onPress: handlePickDocument },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
+    setShowAttachDrawer(true);
+  };
+
+  const handleAttachSource = (handler: () => void) => {
+    setShowAttachDrawer(false);
+    handler();
   };
 
   const removeAttachment = (id: string) => {
@@ -2204,6 +2218,70 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               </View>
             )}
 
+            <BottomDrawer
+              visible={showSlashCommands}
+              title="Commands"
+              icon="code"
+              onClose={() => setInputPrompt('')}
+            >
+              <SlashCommandsContent
+                inputPrompt={inputPrompt}
+                onSelect={handleSlashSelect}
+              />
+            </BottomDrawer>
+
+            <BottomDrawer
+              visible={showAttachDrawer}
+              title="Attach File"
+              icon="attach-file"
+              onClose={() => setShowAttachDrawer(false)}
+              maxHeight={180}
+            >
+              <View style={styles.attachDrawerContent}>
+                <TouchableOpacity
+                  style={styles.attachCard}
+                  onPress={() => handleAttachSource(handlePickFromCamera)}
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.attachCardIcon, { backgroundColor: 'rgba(99, 102, 241, 0.15)' }]}>
+                    <MaterialIcons name="camera-alt" size={24} color={Theme.colors.primary.glow} />
+                  </View>
+                  <Text style={styles.attachCardText}>Camera</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.attachCard}
+                  onPress={() => handleAttachSource(handlePickFromGallery)}
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.attachCardIcon, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
+                    <MaterialIcons name="photo-library" size={24} color={Theme.colors.secondary.glow} />
+                  </View>
+                  <Text style={styles.attachCardText}>Gallery</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.attachCard}
+                  onPress={() => handleAttachSource(handlePickDocument)}
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.attachCardIcon, { backgroundColor: 'rgba(244, 63, 94, 0.15)' }]}>
+                    <MaterialIcons name="description" size={24} color={Theme.colors.accent.glow} />
+                  </View>
+                  <Text style={styles.attachCardText}>Document</Text>
+                </TouchableOpacity>
+              </View>
+            </BottomDrawer>
+
+            <QuestionDialog
+              question={pendingQuestion}
+              conversationId={conversationId}
+              socket={socketRef.current}
+              onDismiss={() => setPendingQuestion(null)}
+              onCollapse={() => setQuestionCollapsed(true)}
+              visible={!!pendingQuestion && !questionCollapsed}
+            />
+
             <ChatInputBar
               inputPrompt={inputPrompt}
               onChangePrompt={setInputPrompt}
@@ -2220,14 +2298,6 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               isVisible={isVisible}
               thinkingMode={thinkingMode}
               onToggleThinkingMode={() => setThinkingMode((prev) => prev === 'show' ? 'hide' : 'show')}
-              slashCommandsAutocomplete={
-                <SlashCommandsAutocomplete
-                  inputPrompt={inputPrompt}
-                  setInputPrompt={setInputPrompt}
-                  inputHeight={Math.max(48, inputHeight)}
-                  textInputRef={textInputRef}
-                />
-              }
             />
 
             </>
@@ -2260,14 +2330,6 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               onNewChat={handleNewChatPress}
             />
 
-            <QuestionDialog
-              question={pendingQuestion}
-              conversationId={conversationId}
-              socket={socketRef.current}
-              onDismiss={() => setPendingQuestion(null)}
-              onCollapse={() => setQuestionCollapsed(true)}
-              visible={!!pendingQuestion && !questionCollapsed}
-            />
           </>
         ) : (
           renderSetupPanel()
@@ -2491,5 +2553,34 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: 'rgba(255, 255, 255, 0.7)',
     maxWidth: 120,
+  },
+  attachDrawerContent: {
+    flexDirection: 'row',
+    gap: 12,
+    justifyContent: 'center',
+    paddingVertical: 8,
+  },
+  attachCard: {
+    flex: 1,
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    paddingVertical: 16,
+    paddingHorizontal: 8,
+    gap: 10,
+  },
+  attachCardIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  attachCardText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Theme.colors.text.primary,
   },
 });

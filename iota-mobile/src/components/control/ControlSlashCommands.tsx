@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import {
-  FlatList,
   Platform,
   StyleSheet,
   Text,
@@ -254,40 +253,21 @@ export function useSlashCommands({
   return handleSlashCommand;
 }
 
-interface SlashCommandsAutocompleteProps {
+interface SlashCommandsContentProps {
   inputPrompt: string;
-  setInputPrompt: (text: string) => void;
-  inputHeight: number;
-  textInputRef: React.RefObject<TextInput>;
+  onSelect: (command: string) => void;
 }
 
-export const SlashCommandsAutocomplete: React.FC<SlashCommandsAutocompleteProps> = ({
+export const SlashCommandsContent: React.FC<SlashCommandsContentProps> = ({
   inputPrompt,
-  setInputPrompt,
-  inputHeight,
-  textInputRef,
+  onSelect,
 }) => {
-  if (!inputPrompt.startsWith('/') || inputPrompt.includes(' ')) {
-    return null;
-  }
-
   const query = inputPrompt.toLowerCase();
   const filtered = ALL_COMMANDS.filter(
     (c) =>
       c.command.toLowerCase().startsWith(query) ||
       (c.aliases && c.aliases.some((a) => a.toLowerCase().startsWith(query)))
   );
-
-  if (filtered.length === 0) {
-    return null;
-  }
-
-  const handleSelect = (command: string) => {
-    setInputPrompt(`${command} `);
-    setTimeout(() => {
-      textInputRef.current?.focus();
-    }, 50);
-  };
 
   const getCommandIcon = (cmd: string): keyof typeof MaterialIcons.glyphMap => {
     switch (cmd) {
@@ -320,61 +300,47 @@ export const SlashCommandsAutocomplete: React.FC<SlashCommandsAutocompleteProps>
     }
   };
 
+  if (filtered.length === 0) {
+    return null;
+  }
+
   return (
-    <View style={[styles.overlayContainer, { bottom: inputHeight + 16 }]}>
-      <FlatList
-        data={filtered}
-        keyExtractor={(item) => item.command}
-        initialNumToRender={13}
-        keyboardShouldPersistTaps="always"
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.row}
-            onPress={() => handleSelect(item.command)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.iconContainer}>
-              <MaterialIcons name={getCommandIcon(item.command)} size={16} color={Theme.colors.primary.glow} />
-            </View>
-            <View style={styles.textContainer}>
-              <Text style={styles.commandText}>{item.command}</Text>
-              <Text style={styles.descriptionText} numberOfLines={1}>
-                {item.description}
-              </Text>
-            </View>
-            <Text style={styles.usageText}>{item.usage}</Text>
-          </TouchableOpacity>
-        )}
-      />
+    <View style={contentStyles.list}>
+      {filtered.map((item) => (
+        <TouchableOpacity
+          key={item.command}
+          style={contentStyles.row}
+          onPress={() => onSelect(item.command)}
+          activeOpacity={0.7}
+        >
+          <View style={contentStyles.iconContainer}>
+            <MaterialIcons name={getCommandIcon(item.command)} size={16} color={Theme.colors.primary.glow} />
+          </View>
+          <View style={contentStyles.textContainer}>
+            <Text style={contentStyles.commandText}>{item.command}</Text>
+            <Text style={contentStyles.descriptionText} numberOfLines={1}>
+              {item.description}
+            </Text>
+          </View>
+          <Text style={contentStyles.usageText}>{item.usage}</Text>
+        </TouchableOpacity>
+      ))}
     </View>
   );
 };
 
-const styles = StyleSheet.create({
-  overlayContainer: {
-    position: 'absolute',
-    left: 12,
-    right: 12,
-    maxHeight: 220,
-    backgroundColor: 'rgba(11, 15, 25, 0.95)',
-    borderColor: 'rgba(99, 102, 241, 0.35)',
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingVertical: 4,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 6,
-    elevation: 8,
-    zIndex: 9999,
+const contentStyles = StyleSheet.create({
+  list: {
+    gap: 2,
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 10,
     paddingHorizontal: 12,
+    borderRadius: 8,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
+    borderBottomColor: 'rgba(255, 255, 255, 0.04)',
   },
   iconContainer: {
     marginRight: 10,
@@ -399,7 +365,7 @@ const styles = StyleSheet.create({
     color: Theme.colors.text.secondary,
     marginTop: 2,
   },
-   usageText: {
+  usageText: {
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
     fontSize: 11,
     color: Theme.colors.text.muted,
