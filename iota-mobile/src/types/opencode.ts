@@ -128,8 +128,27 @@ export interface OpenCodeConversation {
   activeRequestId?: string;
   lastError?: string;
   activeModel?: string;
+  activeVariant?: string;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface ModelVariant {
+  id: string;
+  description: string;
+}
+
+export interface ModelInfo {
+  providerID: string;
+  modelID: string;
+  name: string;
+  variants: ModelVariant[];
+}
+
+export interface AvailableModels {
+  models: ModelInfo[];
+  activeModel?: string;
+  activeVariant?: string;
 }
 
 export interface OpenCodeTimelineState {

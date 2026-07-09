@@ -17,6 +17,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import Markdown from 'react-native-markdown-display';
 import { ShaderGradient } from '../components/ShaderGradient';
 import { Theme } from '../styles/theme';
 import { secureStoreService } from '../services/secureStore';
@@ -35,6 +36,47 @@ interface SettingsScreenProps {
   onLogout: () => void;
   onBack: () => void;
 }
+
+const markdownStyles = {
+  body: {
+    color: Theme.colors.text.secondary,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  heading1: { color: Theme.colors.text.primary, fontSize: 17, fontWeight: '700', marginBottom: 8 },
+  heading2: { color: Theme.colors.text.primary, fontSize: 15, fontWeight: '700', marginBottom: 6 },
+  heading3: { color: Theme.colors.text.primary, fontSize: 14, fontWeight: '600', marginBottom: 4 },
+  bullet_list: { marginBottom: 4 },
+  ordered_list: { marginBottom: 4 },
+  list_item: { color: Theme.colors.text.secondary, fontSize: 13, lineHeight: 20 },
+  code_inline: {
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    color: Theme.colors.primary.glow,
+    paddingHorizontal: 4,
+    borderRadius: 4,
+    fontSize: 12,
+  },
+  fence: {
+    backgroundColor: 'rgba(0,0,0,0.3)',
+    padding: 10,
+    borderRadius: 6,
+    marginVertical: 6,
+  },
+  blockquote: {
+    borderLeftColor: Theme.colors.primary.glow,
+    borderLeftWidth: 3,
+    paddingLeft: 10,
+    marginVertical: 6,
+    opacity: 0.8,
+  },
+  link: {
+    color: Theme.colors.primary.glow,
+    textDecorationLine: 'underline',
+  },
+  paragraph: {
+    marginBottom: 6,
+  },
+} as const;
 
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   user,
@@ -289,8 +331,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             {updateState.status === 'available' && (
               <View style={styles.updateCard}>
                 <Text style={styles.updateVersionText}>New Version Available: {updateState.release.name}</Text>
-                <ScrollView style={{ maxHeight: 100, marginVertical: 10 }}>
-                  <Text style={styles.updateChangelog}>{updateState.release.body}</Text>
+                <ScrollView style={styles.changelogContainer} nestedScrollEnabled>
+                  <Markdown style={markdownStyles as any}>{updateState.release.body}</Markdown>
                 </ScrollView>
                 <TouchableOpacity style={styles.updateButton} onPress={() => handleDownloadUpdate(updateState.release)}>
                   <Text style={styles.updateButtonText}>Download Update</Text>
@@ -846,10 +888,9 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
   },
-  updateChangelog: {
-    color: Theme.colors.text.secondary,
-    fontSize: 13,
-    lineHeight: 18,
+  changelogContainer: {
+    maxHeight: 250,
+    marginVertical: 10,
   },
   progressBarBg: {
     height: 8,

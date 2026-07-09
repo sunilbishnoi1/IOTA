@@ -145,6 +145,7 @@ export interface OpenCodeConversation {
   lastRunPhase?: OpenCodeRunPhase;
   lastError?: string;
   activeModel?: string;
+  activeVariant?: string;
   tokenUsage?: OpenCodeTokenUsage;
 }
 

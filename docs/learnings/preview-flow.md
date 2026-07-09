@@ -76,3 +76,7 @@
 ## FetchPreviewConfig Uses bridgeUrl Instead of Codespace ConnectionUrl
 - **Root cause:** PreviewScreen's `fetchPreviewConfig()` HTTP calls used the raw `bridgeUrl` prop instead of `activeCodespace.connectionUrl`. In the dev build, `bridgeUrl` is `http://localhost:3000` while the codespace bridge is at the forwarded domain (`.app.github.dev`), causing 404s.
 - **Fix:** Replace `bridgeUrl` with `activeCodespace.connectionUrl || bridgeUrl` in both the initial load effect and the visibility-change HTTP fallback in PreviewScreen.
+
+## App Update Shows Current Version as Available
+- **Root cause:** `Constants.expoConfig` can be `null` on Android (Expo SDK 51 known bug), causing `getCurrentAppVersion()` fallback to `'0.0.0'` and making `compareVersions('0.6.1', '0.0.0')` > 0, falsely showing update.
+- **Fix:** Added `getCurrentAppVersion()` helper that falls back to `Constants.nativeAppVersion` before `'0.0.0'`, since native versionName is reliably set during build.

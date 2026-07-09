@@ -35,6 +35,9 @@ interface ChatInputBarProps {
   isVisible: boolean;
   thinkingMode: 'show' | 'hide';
   onToggleThinkingMode: () => void;
+  activeModel?: string;
+  activeVariant?: string;
+  onOpenModelPicker?: () => void;
 }
 
 // ─── Main component ─────────────────────────────────────────────────────────
@@ -55,6 +58,9 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
   isVisible,
   thinkingMode,
   onToggleThinkingMode,
+  activeModel,
+  activeVariant,
+  onOpenModelPicker,
 }) => {
   // Voice STT states
   const [groqApiKey, setGroqApiKey] = useState<string | null>(null);
@@ -240,6 +246,25 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
               >
                 <MaterialIcons name="add" size={28} color="rgba(255, 255, 255, 0.9)" />
               </TouchableOpacity>
+              {onOpenModelPicker && (
+                <TouchableOpacity
+                  style={styles.modelBadge}
+                  onPress={onOpenModelPicker}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.modelBadgeContent}>
+                    <Text style={styles.modelBadgeText} numberOfLines={1} ellipsizeMode="tail">
+                      {activeModel ? activeModel.split('/').pop() || 'Model' : 'Model'}
+                    </Text>
+                    {activeVariant && (
+                      <Text style={styles.modelBadgeVariantText}>
+                        {` (${activeVariant})`}
+                      </Text>
+                    )}
+                  </View>
+                  <MaterialIcons name="arrow-drop-down" size={16} color={Theme.colors.primary.glow} />
+                </TouchableOpacity>
+              )}
             </View>
 
             <View style={styles.rightActions}>
@@ -338,6 +363,7 @@ const styles = StyleSheet.create({
   leftActions: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexShrink: 1,
   },
   rightActions: {
     flexDirection: 'row',
@@ -349,6 +375,7 @@ const styles = StyleSheet.create({
     height: 44,
     justifyContent: 'center',
     alignItems: 'flex-start',
+    flexShrink: 0,
   },
   actionButton: {
     width: 44,
@@ -363,6 +390,34 @@ const styles = StyleSheet.create({
   },
   actionButtonDisabled: {
     backgroundColor: 'rgba(255, 255, 255, 0.04)',
+  },
+  modelBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    backgroundColor: 'rgba(99, 102, 241, 0.12)',
+    marginRight: 4,
+    maxWidth: 200,
+  },
+  modelBadgeContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 1,
+  },
+  modelBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Theme.colors.primary.glow,
+    flexShrink: 1,
+  },
+  modelBadgeVariantText: {
+    fontSize: 10,
+    fontWeight: '400',
+    color: Theme.colors.text.secondary,
+    flexShrink: 0,
   },
   wavesContainer: {
     flexDirection: 'row',

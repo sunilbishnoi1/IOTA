@@ -2,7 +2,7 @@ import { Server, Socket } from 'socket.io';
 import { Server as HttpServer } from 'http';
 import { validateCodespaceOwner } from './github';
 import { relayEvent } from './opencodeEvents';
-import { opencodeServerClient, PromptHandle } from './opencode';
+import { opencodeServerClient, PromptHandle, ModelInfo } from './opencode';
 import { opencodeStore } from './opencodeStore';
 import { logInfo, logError, getWorkspaceRoot } from './logger';
 import { registerSelfKeepAlive, pokeSelfKeepAlive } from './codespaceService';
@@ -89,14 +89,81 @@ export const initSocketIO = (server: HttpServer) => {
 
     opencodeServerClient
       .checkCapability()
-      .then((capability) => socket.emit('opencode:capability', capability))
-      .catch(() => socket.emit('opencode:capability', {
-        status: 'unavailable',
-        details: 'OpenCode capability could not be checked',
-        canSubmit: false,
-        canInstall: false,
-        lastCheckedAt: now(),
-      }));
+      .then((capability) => {
+        socket.emit('opencode:capability', capability);
+
+        if (capability.status === 'available') {
+          opencodeServerClient.listModels().then((result) => {
+            const conversation = opencodeStore.getConversation();
+            if (conversation) {
+              socket.emit('opencode:model_list', {
+                models: result.models,
+                activeModel: conversation.activeModel,
+                activeVariant: conversation.activeVariant,
+              });
+            } else {
+              socket.emit('opencode:model_list', {
+                models: result.models,
+              });
+            }
+          }).catch((err) => {
+            logError(`[Socket] Failed to fetch model list on connect: ${err.message}`);
+          });
+        }
+      })
+      .catch(() => {
+        socket.emit('opencode:capability', {
+          status: 'unavailable',
+          details: 'OpenCode capability could not be checked',
+          canSubmit: false,
+          canInstall: false,
+          lastCheckedAt: now(),
+        });
+      });
+
+    socket.on('opencode:set_model', async (payload: { modelID: string; variant?: string }) => {
+      pokeSelfKeepAlive();
+      const conversation = opencodeStore.getConversation();
+      if (!conversation) {
+        logError(`[Socket] set_model: no active conversation`);
+        return;
+      }
+
+      try {
+        const result = await opencodeServerClient.listModels();
+        const matched = result.models.find(m =>
+          `${m.providerID}/${m.modelID}` === payload.modelID ||
+          m.modelID === payload.modelID
+        );
+        if (!matched) {
+          logError(`[Socket] set_model: model ${payload.modelID} not found`);
+          socket.emit('opencode:error', {
+            code: 'OPENCODE_MODEL_NOT_FOUND',
+            message: `Model "${payload.modelID}" is not available.`,
+            retryable: true,
+          });
+          return;
+        }
+        const fullModel = `${matched.providerID}/${matched.modelID}`;
+        conversation.activeModel = fullModel;
+        conversation.activeVariant = payload.variant;
+        opencodeStore.saveConversation(conversation);
+        logInfo(`[Socket] Model set to ${fullModel}${payload.variant ? ` variant=${payload.variant}` : ''}`);
+        socket.emit('opencode:model_selected', {
+          modelID: fullModel,
+          variant: payload.variant,
+        });
+        const snapshot = opencodeStore.getSnapshot(conversation.id);
+        if (snapshot) io.emit('opencode:snapshot', { conversation: snapshot });
+      } catch (err: any) {
+        logError(`[Socket] set_model failed: ${err.message}`);
+        socket.emit('opencode:error', {
+          code: 'OPENCODE_MODEL_SET_FAILED',
+          message: `Failed to set model: ${err.message}`,
+          retryable: true,
+        });
+      }
+    });
 
     socket.on('opencode:install', async () => {
       pokeSelfKeepAlive();
@@ -198,24 +265,7 @@ export const initSocketIO = (server: HttpServer) => {
         let failed = false;
 
         try {
-          if (command === '/models') {
-            const sub = parts[1];
-            if (sub) {
-              const rawModels = await opencodeServerClient.runModelsQuery();
-              const modelsList = rawModels.split(/\r?\n/).map(m => m.trim()).filter(Boolean);
-              const found = modelsList.find(m => m.toLowerCase() === sub.toLowerCase());
-              if (found) {
-                conversation.activeModel = found;
-                assistantContent = `Active model successfully switched to \`${found}\`.`;
-              } else {
-                failed = true;
-                assistantContent = `Invalid model name: \`${sub}\`.\n\nChoose from the available models: ${modelsList.map(m => `\n- \`${m}\``).join('')}`;
-              }
-            } else {
-              const rawModels = await opencodeServerClient.runModelsQuery();
-              assistantContent = `### Available Models\n\n\`\`\`text\n${rawModels}\n\`\`\``;
-            }
-          } else if (command === '/stats') {
+          if (command === '/stats') {
             const stats = await opencodeServerClient.runStatsQuery();
             assistantContent = `### Session Stats\n\n\`\`\`text\n${stats}\n\`\`\``;
           } else if (command === '/sessions') {

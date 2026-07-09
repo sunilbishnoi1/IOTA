@@ -110,3 +110,4 @@ for a in data['assets']:
 - The APK asset is renamed from `app-release.apk` to `iota-<VERSION>.apk` during upload
 - If the android folder is untracked but present on disk, the APK must be built locally before running this workflow
 - This creates a **prerelease** by default (`"prerelease": true`). Set to `false` for full releases.
+- If executing this skill on Windows via PowerShell instead of bash, ensure you properly handle string encoding for emojis when constructing the API payload. Default PowerShell string manipulation (like `Invoke-RestMethod` with inline JSON) can corrupt emojis. Workaround: Enforce `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` and build the payload carefully, or use native `curl.exe` with a UTF-8 encoded JSON file.

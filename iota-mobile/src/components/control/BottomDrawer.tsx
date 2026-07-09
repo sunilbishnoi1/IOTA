@@ -32,12 +32,12 @@ export const BottomDrawer: React.FC<BottomDrawerProps> = ({
   children,
   maxHeight = SCREEN_HEIGHT * 0.35,
 }) => {
-  const slideAnim = useRef(new Animated.Value(0)).current;
+  const slideAnim = useRef(new Animated.Value(visible ? 1 : 0)).current;
 
   useEffect(() => {
     Animated.timing(slideAnim, {
       toValue: visible ? 1 : 0,
-      duration: 250,
+      duration: 200,
       useNativeDriver: false,
     }).start();
   }, [visible]);
@@ -47,18 +47,25 @@ export const BottomDrawer: React.FC<BottomDrawerProps> = ({
     outputRange: [0, maxHeight],
   });
 
+  const animatedBorderWidth = slideAnim.interpolate({
+    inputRange: [0, 0.01, 1],
+    outputRange: [0, 1, 1],
+  });
+
   const animatedOpacity = slideAnim.interpolate({
-    inputRange: [0, 0.4, 1],
-    outputRange: [0, 0, 1],
+    inputRange: [0, 0.01, 1],
+    outputRange: [0, 1, 1],
   });
 
   return (
     <Animated.View
       style={[
         styles.container,
-        {
+        { 
           maxHeight: animatedMaxHeight,
-          opacity: slideAnim,
+          borderWidth: animatedBorderWidth,
+          borderBottomWidth: 0,
+          opacity: animatedOpacity,
         },
       ]}
       pointerEvents={visible ? 'auto' : 'none'}
@@ -85,9 +92,7 @@ export const BottomDrawer: React.FC<BottomDrawerProps> = ({
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <Animated.View style={{ opacity: animatedOpacity }}>
-          {children}
-        </Animated.View>
+        {children}
       </ScrollView>
     </Animated.View>
   );

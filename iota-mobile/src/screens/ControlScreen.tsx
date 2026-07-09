@@ -30,6 +30,7 @@ import {
   registerOpenCodeSocketHandlers,
   emitOpenCodeListConversations,
   emitOpenCodeDeleteConversation,
+  emitOpenCodeSetModel,
 } from '../services/opencodeSocket';
 import { HistoryDrawer } from '../components/control/HistoryDrawer';
 import { useSlashCommands, SlashCommandsContent, CredentialsModal } from '../components/control/ControlSlashCommands';
@@ -50,6 +51,8 @@ import {
   ThinkingMode,
   SubtaskSession,
   Message,
+  ModelInfo,
+  AvailableModels,
 } from '../types/opencode';
 import { Theme } from '../styles/theme';
 import { getReasoningSummary } from '../utils/opencodeParser';
@@ -73,6 +76,7 @@ import { ChatTimeline } from '../components/control/ChatTimeline';
 import { ChatInputBar } from '../components/control/ChatInputBar';
 import { SubtaskView } from '../components/control/SubtaskView';
 import { QuestionDialog } from '../components/control/QuestionDialog';
+import { ModelPicker } from '../components/control/ModelPicker';
 
 // ─── Props ──────────────────────────────────────────────────────────────────
 
@@ -304,6 +308,24 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const [selectedParts, setSelectedParts] = useState<Array<{ id: string; type: 'file'; mime: string; url: string; filename: string }>>([]);
   const [pendingAttachments, setPendingAttachments] = useState<Array<{ id: string; uri: string; mime: string; filename: string }>>([]);
   const [showAttachDrawer, setShowAttachDrawer] = useState(false);
+  const [showModelPicker, setShowModelPicker] = useState(false);
+  const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
+  const [activeModel, setActiveModel] = useState<string | undefined>();
+  const [activeVariant, setActiveVariant] = useState<string | undefined>();
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const modelsLoadingRef = useRef(modelsLoading);
+  modelsLoadingRef.current = modelsLoading;
+
+  // Fallback: reset modelsLoading after 15s if onModelList never fires
+  useEffect(() => {
+    if (!modelsLoading) return;
+    const timer = setTimeout(() => {
+      if (modelsLoadingRef.current) {
+        setModelsLoading(false);
+      }
+    }, 15000);
+    return () => clearTimeout(timer);
+  }, [modelsLoading]);
 
   useEffect(() => {
     if (pendingQuestion) {
@@ -836,6 +858,8 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             setFileChanges(conversation.fileChanges || []);
             setApprovals(conversation.approvals || []);
             setRunning(Boolean(conversation.activeRequestId) || conversation.status === 'running');
+            if (conversation.activeModel) setActiveModel(conversation.activeModel);
+            if (conversation.activeVariant) setActiveVariant(conversation.activeVariant);
             setIsSyncing(false);
 
             // Recreate subtask sessions from snapshot so history subtasks are viewable
@@ -1608,7 +1632,17 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               sseTimer = setTimeout(processQueue, 150) as any;
             }
           },
-
+          onModelList: (payload: AvailableModels) => {
+            const models = payload?.models || [];
+            setAvailableModels(models);
+            setModelsLoading(false);
+            if (payload?.activeModel) setActiveModel(payload.activeModel);
+            if (payload?.activeVariant) setActiveVariant(payload.activeVariant);
+          },
+          onModelSelected: (payload: { modelID?: string; variant?: string }) => {
+            if (payload.modelID) setActiveModel(payload.modelID);
+            if (payload.variant !== undefined) setActiveVariant(payload.variant);
+          },
         });
 
         registerEnvVarsSocketHandlers(socket, (updatedEnv) => {
@@ -2273,6 +2307,19 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               </View>
             </BottomDrawer>
 
+            <ModelPicker
+              visible={showModelPicker}
+              models={availableModels}
+              activeModel={activeModel}
+              activeVariant={activeVariant}
+              loading={modelsLoading}
+              onSelectModel={(modelID, variant) => {
+                emitOpenCodeSetModel(socketRef.current, { modelID, variant });
+                setShowModelPicker(false);
+              }}
+              onClose={() => setShowModelPicker(false)}
+            />
+
             <QuestionDialog
               question={pendingQuestion}
               conversationId={conversationId}
@@ -2298,6 +2345,9 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
               isVisible={isVisible}
               thinkingMode={thinkingMode}
               onToggleThinkingMode={() => setThinkingMode((prev) => prev === 'show' ? 'hide' : 'show')}
+              activeModel={activeModel}
+              activeVariant={activeVariant}
+              onOpenModelPicker={() => setShowModelPicker(true)}
             />
 
             </>

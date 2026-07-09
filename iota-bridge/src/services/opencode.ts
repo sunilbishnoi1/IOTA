@@ -9,6 +9,22 @@ import { opencodeStore } from './opencodeStore';
 import { EnvService } from './envService';
 import { logInfo, logError, getWorkspaceRoot } from './logger';
 
+export interface ModelVariant {
+  id: string;
+  description: string;
+}
+
+export interface ModelInfo {
+  providerID: string;
+  modelID: string;
+  name: string;
+  variants: ModelVariant[];
+}
+
+export interface ListModelsResult {
+  models: ModelInfo[];
+}
+
 
 const OPENCODE_PORT = 4096;
 const OPENCODE_URL = `http://localhost:${OPENCODE_PORT}`;
@@ -506,19 +522,35 @@ class OpenCodeServerClient {
     });
   }
 
-  private async postPromptAsync(sessionId: string, prompt: string, conversationId: string, parts?: FilePartInput[]): Promise<void> {
-    const password = process.env.OPENCODE_SERVER_PASSWORD || EnvService.getInstance().getEnvVars().OPENCODE_SERVER_PASSWORD;
-    const username = process.env.OPENCODE_SERVER_USERNAME || EnvService.getInstance().getEnvVars().OPENCODE_SERVER_USERNAME || 'opencode';
+  private async postPromptAsync(sessionId: string, prompt: string, conversationId: string, options?: FilePartInput[]): Promise<void> {
     const conversation = conversationId ? opencodeStore.getConversation(conversationId) : undefined;
     const modelStr = conversation?.activeModel || 'opencode/deepseek-v4-flash-free';
+    const variant = conversation?.activeVariant;
     const slashIdx = modelStr.indexOf('/');
-    const modelObj = slashIdx !== -1 ? {
-      providerID: modelStr.substring(0, slashIdx),
-      modelID: modelStr.substring(slashIdx + 1),
-    } : {
-      providerID: 'opencode',
-      modelID: modelStr,
-    };
+    const providerID = slashIdx !== -1 ? modelStr.substring(0, slashIdx) : 'opencode';
+    const modelID = slashIdx !== -1 ? modelStr.substring(slashIdx + 1) : modelStr;
+
+    if (variant) {
+      try {
+        const client = await this.getV2Client();
+        const bodyParts: Array<{ type: string; text?: string; mime?: string; url?: string; filename?: string }> = [];
+        if (prompt) bodyParts.push({ type: 'text', text: prompt });
+        if (options) bodyParts.push(...options);
+        await client.session.prompt({
+          sessionID: sessionId,
+          model: { providerID, modelID },
+          variant,
+          parts: bodyParts,
+        });
+        return;
+      } catch (err: any) {
+        logError(`[OpenCodeServerClient] postPromptAsync v2 failed for variant, falling back to v1: ${err.message}`);
+      }
+    }
+
+    const password = process.env.OPENCODE_SERVER_PASSWORD || EnvService.getInstance().getEnvVars().OPENCODE_SERVER_PASSWORD;
+    const username = process.env.OPENCODE_SERVER_USERNAME || EnvService.getInstance().getEnvVars().OPENCODE_SERVER_USERNAME || 'opencode';
+    const modelObj = { providerID, modelID };
 
     return new Promise((resolve, reject) => {
       const headers: Record<string, string> = {
@@ -549,7 +581,7 @@ class OpenCodeServerClient {
       req.on('error', (err) => reject(err));
       const bodyParts: Array<{ type: string; text?: string; mime?: string; url?: string; filename?: string }> = [];
       if (prompt) bodyParts.push({ type: 'text', text: prompt });
-      if (parts) bodyParts.push(...parts);
+      if (options) bodyParts.push(...options);
       req.write(JSON.stringify({
         parts: bodyParts,
         model: modelObj,
@@ -1275,6 +1307,92 @@ class OpenCodeServerClient {
     return 'Conversation summarized successfully.';
   }
 
+
+  private v2Client: any = null;
+
+  private async getV2Client(): Promise<any> {
+    if (this.v2Client) return this.v2Client;
+    try {
+      const mod = await (Function('return import("@opencode-ai/sdk/v2/client")')()) as any;
+      const { OpencodeClient } = mod;
+      const password = process.env.OPENCODE_SERVER_PASSWORD || EnvService.getInstance().getEnvVars().OPENCODE_SERVER_PASSWORD;
+      const username = process.env.OPENCODE_SERVER_USERNAME || EnvService.getInstance().getEnvVars().OPENCODE_SERVER_USERNAME || 'opencode';
+      const headers: Record<string, string> = {};
+      if (password) {
+        headers['Authorization'] = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+      }
+      this.v2Client = new OpencodeClient({
+        baseUrl: `http://127.0.0.1:${OPENCODE_PORT}`,
+        headers,
+      });
+      logInfo('[OpenCodeServerClient] v2 SDK client initialized');
+    } catch (err: any) {
+      logError(`[OpenCodeServerClient] Failed to initialize v2 SDK client: ${err.message}`);
+      throw err;
+    }
+    return this.v2Client;
+  }
+
+public async listModels(): Promise<ListModelsResult> {
+    logInfo(`[OpenCodeServerClient] listModels: querying providers with variants`);
+    const serverReady = await this.ensureServer();
+    if (!serverReady.ready) {
+      logError(`[OpenCodeServerClient] listModels: server not ready — ${serverReady.details}`);
+      return { models: [] };
+    }
+    logInfo(`[OpenCodeServerClient] listModels: server ready, querying via v2 SDK`);
+    const client = await this.getV2Client();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const { data } = await client.config.providers();
+        const providers = data?.providers || [];
+        if (providers.length > 0) {
+          const models = this.buildModelsFromProviders(providers);
+          logInfo(`[OpenCodeServerClient] listModels: found ${models.length} models on attempt ${attempt + 1}`);
+          return { models };
+        } else if (attempt < 2) {
+          logInfo(`[OpenCodeServerClient] listModels: empty providers on attempt ${attempt + 1}, retrying in ${(attempt + 1) * 1000}ms`);
+          await new Promise(r => setTimeout(r, (attempt + 1) * 1000));
+        }
+      } catch (err: any) {
+        if (attempt < 2) {
+          logError(`[OpenCodeServerClient] listModels: attempt ${attempt + 1} failed: ${err.message}, retrying`);
+          await new Promise(r => setTimeout(r, (attempt + 1) * 1000));
+        } else {
+          throw err;
+        }
+      }
+    }
+    logError(`[OpenCodeServerClient] listModels: all 3 attempts exhausted, returning empty`);
+    return { models: [] };
+  }
+
+  private buildModelsFromProviders(providers: any[]): ModelInfo[] {
+    const models: ModelInfo[] = [];
+    for (const prov of providers) {
+      if (!prov.models) continue;
+      for (const [modelId, modelData] of Object.entries(prov.models) as any) {
+        const model = modelData as { id?: string; name?: string; variants?: Record<string, any> };
+        const variants: ModelVariant[] = [];
+        if (model.variants) {
+          for (const [variantId, variantOptions] of Object.entries(model.variants)) {
+            const opts = variantOptions as Record<string, unknown>;
+            variants.push({
+              id: variantId,
+              description: String(opts?.description || opts?.label || variantId),
+            });
+          }
+        }
+        models.push({
+          providerID: prov.id,
+          modelID: modelId,
+          name: model.name || model.id || modelId,
+          variants,
+        });
+      }
+    }
+    return models;
+  }
 
   public async runSkillsQuery(): Promise<string> {
     logInfo(`[OpenCodeServerClient] runSkillsQuery: reading local skills directory`);

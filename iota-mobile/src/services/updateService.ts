@@ -14,6 +14,11 @@ const REPO_OWNER = 'sunilbishnoi1';
 const REPO_NAME = 'IOTA';
 const GITHUB_API_URL = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases`;
 
+// Resolve current app version: try expoConfig first (build-time), fall back to native versionName
+export const getCurrentAppVersion = (): string => {
+  return Constants.expoConfig?.version || Constants.nativeAppVersion || '0.0.0';
+};
+
 // Helper to extract "0.5.0" from "v0.5.0" or similar
 export const parseVersionFromTag = (tag: string): string => {
   return tag.replace(/^v/i, '').trim();
@@ -57,7 +62,7 @@ export const updateService = {
         // No releases found in the repository yet
         return {
           hasUpdate: false,
-          currentVersion: Constants.expoConfig?.version || '0.0.0',
+          currentVersion: getCurrentAppVersion(),
           remoteVersion: null,
           release: null,
           error: null, // Don't treat it as an error, just no updates
@@ -73,7 +78,7 @@ export const updateService = {
       if (!releases || releases.length === 0) {
         return {
           hasUpdate: false,
-          currentVersion: Constants.expoConfig?.version || '0.0.0',
+          currentVersion: getCurrentAppVersion(),
           remoteVersion: null,
           release: null,
           error: null,
@@ -83,7 +88,7 @@ export const updateService = {
       const release = releases[0];
       
       const remoteVersion = parseVersionFromTag(release.tag_name);
-      const currentVersion = Constants.expoConfig?.version || '0.0.0';
+      const currentVersion = getCurrentAppVersion();
 
       const hasUpdate = compareVersions(remoteVersion, currentVersion) > 0;
 
@@ -97,7 +102,7 @@ export const updateService = {
     } catch (error: any) {
       return {
         hasUpdate: false,
-        currentVersion: Constants.expoConfig?.version || '0.0.0',
+        currentVersion: getCurrentAppVersion(),
         remoteVersion: null,
         release: null,
         error: error.message || 'Failed to check for updates',

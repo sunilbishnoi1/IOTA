@@ -169,8 +169,6 @@ A concise summary the user can use to decide next steps:
 ### Estimated Effort
 {rough estimate: days/weeks, or S/M/L/XL}
 
-### Suggested Next Step
-{recommended first action — create design doc? start implementing? spike?}
 ```
 
 ## Operating Principles

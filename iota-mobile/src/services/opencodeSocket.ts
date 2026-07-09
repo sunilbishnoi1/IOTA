@@ -1,5 +1,5 @@
 import { Socket } from 'socket.io-client';
-import { FilePart, GlobalEvent, OpenCodeApprovalRequest, OpenCodeConversation, OpenCodeFileChange, OpenCodeMessage, OpenCodeQuestionRequest, OpenCodeToolActivity, Part } from '../types/opencode';
+import { AvailableModels, FilePart, GlobalEvent, OpenCodeApprovalRequest, OpenCodeConversation, OpenCodeFileChange, OpenCodeMessage, OpenCodeQuestionRequest, OpenCodeToolActivity, Part } from '../types/opencode';
 
 export interface OpenCodeSocketHandlers {
   onCapability?: (payload: unknown) => void;
@@ -14,6 +14,8 @@ export interface OpenCodeSocketHandlers {
   onError?: (payload: { conversationId?: string; code: string; message: string; retryable: boolean }) => void;
   onConversationsList?: (payload: { conversations: any[] }) => void;
   onSSEEvent?: (event: GlobalEvent) => void;
+  onModelList?: (payload: AvailableModels) => void;
+  onModelSelected?: (payload: { modelID?: string; variant?: string }) => void;
 }
 
 export function registerOpenCodeSocketHandlers(socket: Socket, handlers: OpenCodeSocketHandlers) {
@@ -66,6 +68,14 @@ export function registerOpenCodeSocketHandlers(socket: Socket, handlers: OpenCod
   socket.on('opencode:sse_event', (event: GlobalEvent) => {
     // console.log('[SocketClient] Received opencode:sse_event type:', event?.payload?.type);
     handlers.onSSEEvent?.(event);
+  });
+  socket.on('opencode:model_list', (payload: AvailableModels) => {
+    console.log('[SocketClient] Received opencode:model_list models:', payload?.models?.length || 0);
+    handlers.onModelList?.(payload);
+  });
+  socket.on('opencode:model_selected', (payload: { modelID?: string; variant?: string }) => {
+    console.log('[SocketClient] Received opencode:model_selected:', payload?.modelID);
+    handlers.onModelSelected?.(payload);
   });
 }
 
@@ -132,6 +142,14 @@ export const emitOpenCodeNewSession = (socket: Socket | null | undefined) => {
 export const emitOpenCodeListConversations = (socket: Socket | null | undefined) => {
   console.log('[SocketClient] Emitting opencode:list_conversations');
   socket?.emit('opencode:list_conversations', {});
+};
+
+export const emitOpenCodeSetModel = (
+  socket: Socket | null | undefined,
+  payload: { modelID: string; variant?: string }
+) => {
+  console.log('[SocketClient] Emitting opencode:set_model:', JSON.stringify(payload));
+  socket?.emit('opencode:set_model', payload);
 };
 
 export const emitOpenCodeDeleteConversation = (
