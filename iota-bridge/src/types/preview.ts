@@ -3,7 +3,8 @@ export interface PreviewServerConfig {
   cwd?: string;
   command: string;
   port: number;
-  type: 'expo-go' | 'web';
+  type: 'expo-go' | 'web' | 'api';
+  env?: Record<string, string>;
 }
 
 export interface PreviewWorkspaceConfig {

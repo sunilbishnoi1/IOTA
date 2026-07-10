@@ -26,7 +26,7 @@ export interface ListModelsResult {
 }
 
 
-const OPENCODE_PORT = 4096;
+const OPENCODE_PORT = Number(process.env.OPENCODE_PORT) || 4096;
 const OPENCODE_URL = `http://localhost:${OPENCODE_PORT}`;
 
 const checkPortReady = (port: number, host = '127.0.0.1', timeout = 3000): Promise<boolean> => {

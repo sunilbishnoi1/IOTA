@@ -242,6 +242,7 @@ export class PreviewService {
       WORKSPACE_ROOT: workspaceRoot,
       IOTA_WORKSPACE_ROOT: workspaceRoot,
       PORT: String(port),
+      ...(config.env || {}),
     };
 
     if (codespaceName) {
@@ -444,7 +445,25 @@ export class PreviewService {
       return s;
     });
 
-    return { servers: mappedServers, isPlaceholder };
+    // Interpolate ${PORT:X} in env using the mapped ports
+    const portMap = new Map<number, number>();
+    servers.forEach((original, index) => {
+      portMap.set(original.port, mappedServers[index].port);
+    });
+
+    const finalServers = mappedServers.map(s => {
+      if (!s.env) return s;
+      const resolvedEnv: Record<string, string> = {};
+      for (const [k, v] of Object.entries(s.env)) {
+        resolvedEnv[k] = v.replace(/\$\{PORT:(\d+)\}/g, (match, p1) => {
+          const targetPort = parseInt(p1, 10);
+          return portMap.has(targetPort) ? String(portMap.get(targetPort)) : match;
+        });
+      }
+      return { ...s, env: resolvedEnv };
+    });
+
+    return { servers: finalServers, isPlaceholder };
   }
 
   private async findFreePort(startPort: number): Promise<number> {

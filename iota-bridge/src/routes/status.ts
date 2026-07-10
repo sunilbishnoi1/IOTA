@@ -66,6 +66,56 @@ router.post('/local-workspace/select', (req, res) => {
   }
 });
 
+// POST /api/local-workspace/clone - Clone a repository into the local workspaces directory
+router.post('/local-workspace/clone', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { repository, branch } = req.body;
+    if (!repository) {
+      return res.status(400).json({ error: 'repository parameter is required' });
+    }
+    const currentRoot = getWorkspaceRoot();
+    const parentDir = path.dirname(currentRoot);
+    
+    // Determine the folder name from repository (e.g. owner/repo -> repo)
+    const folderName = repository.split('/').pop();
+    if (!folderName) {
+      return res.status(400).json({ error: 'Invalid repository format' });
+    }
+    
+    const targetPath = path.join(parentDir, folderName);
+    if (fs.existsSync(targetPath)) {
+      return res.status(400).json({ error: `Directory ${folderName} already exists` });
+    }
+    
+    // We can rely on the codespace git credentials helper, or use the token directly for private repos if needed.
+    // To be safe and support private repos out of the box using the provided token:
+    const token = req.userToken!;
+    const cloneUrl = `https://${token}@github.com/${repository}.git`;
+    
+    const branchArgs = branch ? ['-b', branch] : [];
+    
+    // Spawn git clone synchronously or wrapped in a promise
+    const { spawn } = require('child_process');
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn('git', ['clone', ...branchArgs, cloneUrl, targetPath], { stdio: 'ignore' });
+      child.on('close', (code: number) => {
+        if (code === 0) resolve();
+        else reject(new Error(`git clone exited with code ${code}`));
+      });
+      child.on('error', (err: Error) => reject(err));
+    });
+    
+    res.json({
+      success: true,
+      folderName,
+      message: `Successfully cloned ${repository}`
+    });
+  } catch (err: any) {
+    console.error('Failed to clone repository:', err);
+    res.status(500).json({ error: err.message || 'Failed to clone repository' });
+  }
+});
+
 // GET /api/status - Retrieve bridge/workspace status and OpenCode capability.
 router.get('/status', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
