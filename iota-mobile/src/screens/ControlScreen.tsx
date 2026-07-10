@@ -1941,6 +1941,8 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const handleDeleteConversation = (targetId: string) => {
     if (socketStatus === 'connected' && socketRef.current) {
       emitOpenCodeDeleteConversation(socketRef.current, { conversationId: targetId });
+      if (targetId !== conversationIdRef.current) return;
+      performResetConversation();
     }
   };
 
@@ -2032,7 +2034,29 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   // ─── New chat handler ─────────────────────────────────────────────────
 
   const handleNewChatPress = () => {
-    performResetConversation();
+    const emptyChat = conversations.find(c => c.messages.length === 0);
+    if (emptyChat) {
+      if (inputPrompt.trim().length > 0) {
+        Alert.alert(
+          'Discard draft?',
+          'You have unsent text. Discard draft and create a new session?',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Discard',
+              style: 'destructive',
+              onPress: () => performResetConversation(),
+            },
+          ]
+        );
+      } else {
+        if (emptyChat.id !== conversationId) {
+          handleSelectConversation(emptyChat.id);
+        }
+      }
+    } else {
+      performResetConversation();
+    }
   };
 
   const performResetConversation = async () => {
@@ -2372,7 +2396,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
 
             <HistoryDrawer
               visible={showHistory}
-              conversations={conversations}
+              conversations={conversations.filter(c => c.messages.length > 0 || c.id === conversationId)}
               activeConversationId={conversationId}
               onSelectConversation={handleSelectConversation}
               onDeleteConversation={handleDeleteConversation}

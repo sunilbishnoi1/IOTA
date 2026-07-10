@@ -1,1 +1,3 @@
-{"feature_directory":"specs/012-migrate-to-opencode-serve"}
+{
+  "feature_directory": "specs/013-fix-chat-deletion-behavior"
+}

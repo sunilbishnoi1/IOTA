@@ -1,7 +1,7 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-specs/012-migrate-to-opencode-serve/plan.md
+specs/013-fix-chat-deletion-behavior/plan.md
 <!-- SPECKIT END -->
 
 ------------------------------------------------

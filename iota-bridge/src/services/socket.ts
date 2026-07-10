@@ -1056,11 +1056,17 @@ export const initSocketIO = (server: HttpServer) => {
     socket.on('opencode:delete_conversation', (payload: { conversationId: string }) => {
       pokeSelfKeepAlive();
       if (payload?.conversationId) {
+        const activeConvo = opencodeStore.getConversation();
+        const wasActive = activeConvo?.id === payload.conversationId;
+
         opencodeStore.deleteConversation(payload.conversationId);
         io.emit('opencode:conversations_list', { conversations: opencodeStore.getAllConversations() });
-        const activeConvo = opencodeStore.getSnapshot();
-        if (activeConvo) {
-          io.emit('opencode:snapshot', { conversation: activeConvo });
+
+        if (!wasActive) {
+          const snapshot = opencodeStore.getSnapshot();
+          if (snapshot) {
+            io.emit('opencode:snapshot', { conversation: snapshot });
+          }
         }
       }
     });

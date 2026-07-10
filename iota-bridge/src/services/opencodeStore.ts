@@ -204,8 +204,7 @@ class OpenCodeStore {
     }
 
     if (this.defaultConversationId === conversationId) {
-      const sorted = this.getAllConversations();
-      this.defaultConversationId = sorted.length > 0 ? sorted[0].id : undefined;
+      this.defaultConversationId = undefined;
     }
   }
 

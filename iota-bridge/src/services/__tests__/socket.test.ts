@@ -3,6 +3,8 @@ import { initSocketIO } from '../socket';
 import { opencodeServerClient } from '../opencode';
 import { opencodeStore } from '../opencodeStore';
 import * as http from 'http';
+import * as fs from 'fs';
+import * as path from 'path';
 
 jest.mock('../opencode', () => {
   return {
@@ -15,6 +17,12 @@ jest.mock('../opencode', () => {
     },
   };
 });
+
+jest.mock('../logger', () => ({
+  getWorkspaceRoot: jest.fn(() => path.join(__dirname, 'mock_workspace')),
+  logInfo: jest.fn(),
+  logError: jest.fn(),
+}));
 
 jest.mock('socket.io', () => {
   return {
@@ -114,5 +122,56 @@ describe('Socket Message Handling Unit Tests', () => {
     const msgEmit = emitCalls.find((call: any) => call[0] === 'opencode:message' && call[1].message.role === 'assistant');
     expect(msgEmit).toBeDefined();
     expect(msgEmit[1].message.content).toContain('Session deleted successfully.');
+  });
+
+  test('delete_conversation should not emit snapshot when deleting active conversation', () => {
+    const convo = opencodeStore.getOrCreateConversation('test-active-convo');
+    expect(convo).toBeDefined();
+
+    // Verify getConversation returns this conversation as the active one
+    const activeConvo = opencodeStore.getConversation();
+    expect(activeConvo?.id).toBe('test-active-convo');
+
+    const deleteHandler = socketListeners['opencode:delete_conversation'];
+    expect(deleteHandler).toBeDefined();
+
+    deleteHandler({ conversationId: 'test-active-convo' });
+
+    const emitCalls = ioInstance.emit.mock.calls;
+
+    // Should emit conversations_list
+    const listEmit = emitCalls.find((call: any) => call[0] === 'opencode:conversations_list');
+    expect(listEmit).toBeDefined();
+
+    // Should NOT emit snapshot (active conversation was deleted)
+    const snapshotEmit = emitCalls.find((call: any) => call[0] === 'opencode:snapshot');
+    expect(snapshotEmit).toBeUndefined();
+  });
+
+  test('delete_conversation should emit snapshot when deleting non-active conversation', () => {
+    const convo1 = opencodeStore.getOrCreateConversation('test-nonactive-convo-1');
+    const convo2 = opencodeStore.getOrCreateConversation('test-nonactive-convo-2');
+    expect(convo1).toBeDefined();
+    expect(convo2).toBeDefined();
+
+    // convo2 is now the active one (last created), delete convo1
+    const activeConvo = opencodeStore.getConversation();
+    expect(activeConvo?.id).toBe('test-nonactive-convo-2');
+
+    const deleteHandler = socketListeners['opencode:delete_conversation'];
+    expect(deleteHandler).toBeDefined();
+
+    deleteHandler({ conversationId: 'test-nonactive-convo-1' });
+
+    const emitCalls = ioInstance.emit.mock.calls;
+
+    // Should emit conversations_list
+    const listEmit = emitCalls.find((call: any) => call[0] === 'opencode:conversations_list');
+    expect(listEmit).toBeDefined();
+
+    // Should also emit snapshot (non-active conversation was deleted, active remains)
+    const snapshotEmit = emitCalls.find((call: any) => call[0] === 'opencode:snapshot');
+    expect(snapshotEmit).toBeDefined();
+    expect(snapshotEmit[1]?.conversation?.id).toBe('test-nonactive-convo-2');
   });
 });
