@@ -661,7 +661,7 @@ export interface PreviewServerConfig {
   cwd?: string;
   command: string;
   port: number;
-  type: 'expo-go' | 'web';
+  type: 'expo-go' | 'web' | 'api';
 }
 
 export interface PreviewWorkspaceConfig {
@@ -680,4 +680,30 @@ export async function fetchPreviewConfig(bridgeUrl: string, token: string): Prom
     return await response.json();
   }
   throw new Error(`Failed to fetch preview configuration: status ${response.status}`);
+}
+
+export async function cloneRepositoryToLocalWorkspace(
+  bridgeUrl: string,
+  token: string,
+  repository: string,
+  branch?: string
+): Promise<{ success: boolean; folderName?: string; error?: string }> {
+  try {
+    const response = await fetchWithTimeout(`${bridgeUrl}/api/local-workspace/clone`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ repository, branch }),
+    }, 60000); // 60s timeout for cloning
+
+    const data = await response.json();
+    if (response.ok && data.success) {
+      return { success: true, folderName: data.folderName };
+    }
+    return { success: false, error: data.error || 'Failed to clone repository' };
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Failed to clone repository' };
+  }
 }

@@ -26,11 +26,13 @@ import { Socket } from 'socket.io-client';
 
 type TabType = 'dashboard' | 'terminal' | 'preview' | 'ship' | 'settings';
 
+const BRIDGE_PORT = process.env.EXPO_PUBLIC_BRIDGE_PORT || '3000';
+
 const DEFAULT_BRIDGE_URL = Platform.select({
-  android: 'http://10.0.2.2:3000',
-  ios: 'http://localhost:3000',
-  default: 'http://localhost:3000',
-}) || 'http://localhost:3000';
+  android: `http://10.0.2.2:${BRIDGE_PORT}`,
+  ios: `http://localhost:${BRIDGE_PORT}`,
+  default: `http://localhost:${BRIDGE_PORT}`,
+}) || `http://localhost:${BRIDGE_PORT}`;
 
 const getLocalBridgeUrlFromBundle = (): string | null => {
   try {
@@ -40,9 +42,9 @@ const getLocalBridgeUrlFromBundle = (): string | null => {
       if (match && match[1]) {
         let baseHost = match[1];
         if (baseHost.includes('.app.github.dev')) {
-           return baseHost.replace(/-[0-9]+\.app\.github\.dev$/, '-3000.app.github.dev');
+           return baseHost.replace(/-[0-9]+\.app\.github\.dev$/, `-${BRIDGE_PORT}.app.github.dev`);
         }
-        return `${baseHost}:3000`;
+        return `${baseHost}:${BRIDGE_PORT}`;
       }
     }
   } catch (e) {

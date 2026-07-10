@@ -31,6 +31,7 @@ import {
   stopUserCodespace,
   deleteUserCodespace,
   createUserCodespace,
+  cloneRepositoryToLocalWorkspace,
 } from '../services/apiService';
 
 interface DashboardScreenProps {
@@ -77,6 +78,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   const [repositories, setRepositories] = useState<GitHubRepository[]>([]);
   const [reposLoading, setReposLoading] = useState<boolean>(false);
   const [repoModalVisible, setRepoModalVisible] = useState<boolean>(false);
+  const [repoModalContext, setRepoModalContext] = useState<'create_codespace' | 'clone_repo'>('create_codespace');
 
   const [localFoldersModalVisible, setLocalFoldersModalVisible] = useState<boolean>(false);
   const [localFolders, setLocalFolders] = useState<string[]>([]);
@@ -101,6 +103,14 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   }, [bridgeUrl, user.token, isBridgeActive]);
 
   const handleOpenRepoModal = () => {
+    setRepoModalContext('create_codespace');
+    setRepoModalVisible(true);
+    fetchRepositories();
+  };
+
+  const handleOpenCloneRepoModal = () => {
+    setLocalFoldersModalVisible(false);
+    setRepoModalContext('clone_repo');
     setRepoModalVisible(true);
     fetchRepositories();
   };
@@ -233,6 +243,25 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
       console.warn('Error checking repository setup:', err);
       setLoading(false);
       Alert.alert('Connection Error', 'Could not verify repository devcontainer configuration. Make sure you are connected to the network or bridge.');
+    }
+  };
+
+  const handleCloneRepository = async (repo: GitHubRepository) => {
+    setRepoModalVisible(false);
+    setLoading(true);
+    
+    try {
+      const res = await cloneRepositoryToLocalWorkspace(bridgeUrl, user.token, repo.fullName, repo.defaultBranch);
+      if (res.success && res.folderName) {
+        // Automatically switch to the newly cloned folder
+        handleSelectLocalFolder(res.folderName);
+      } else {
+        setLoading(false);
+        Alert.alert('Clone Failed', res.error || 'Failed to clone repository.');
+      }
+    } catch (err: any) {
+      setLoading(false);
+      Alert.alert('Error', err.message || 'Failed to clone repository.');
     }
   };
 
@@ -626,7 +655,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
             <RepositoryList
               repositories={repositories}
               loading={reposLoading}
-              onSelectRepository={handleCreateCodespace}
+              onSelectRepository={repoModalContext === 'clone_repo' ? handleCloneRepository : handleCreateCodespace}
               onClose={() => setRepoModalVisible(false)}
             />
           </View>
@@ -648,9 +677,17 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
           <View style={styles.modalContent} onStartShouldSetResponder={() => true}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Select Local Workspace</Text>
-              <TouchableOpacity onPress={() => setLocalFoldersModalVisible(false)}>
-                <MaterialIcons name="close" size={24} color={Theme.colors.text.primary} />
-              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <TouchableOpacity 
+                  onPress={handleOpenCloneRepoModal}
+                  style={{ marginRight: 16, backgroundColor: Theme.colors.primary.default, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6 }}
+                >
+                  <Text style={{ color: '#fff', fontSize: 13, fontWeight: '600' }}>Clone Repo</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setLocalFoldersModalVisible(false)}>
+                  <MaterialIcons name="close" size={24} color={Theme.colors.text.primary} />
+                </TouchableOpacity>
+              </View>
             </View>
 
             {foldersLoading ? (

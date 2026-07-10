@@ -290,7 +290,7 @@ export const PreviewScreen: React.FC<PreviewScreenProps> = ({
   };
 
   const handleCopyPrompt = async () => {
-    const prompt = `Analyze the repository, identify the development servers and application types (e.g. React Native/Expo, Vite, Next.js, Flask/Django Python, Flutter Web, or static HTML), and configure the workspace preview configuration file at \`.iota/preview.json\`.
+    const prompt = `Analyze the repository, identify the development servers and application types (e.g. React Native/Expo, Vite, Next.js, Flask/Django Python, Flutter Web, Node API, or static HTML), and configure the workspace preview configuration file at \`.iota/preview.json\`.
 
 Before finalizing the configuration, perform the following setup steps:
 1. Dependency Verification: Check if dependencies are installed (e.g. node_modules, python packages). If missing, run the appropriate setup/install command (e.g. 'npm install', 'pip install -r requirements.txt').
@@ -298,7 +298,7 @@ Before finalizing the configuration, perform the following setup steps:
    - Next.js with Turbopack: Ensure Turbopack does not fail due to workspace root inference. If running next dev, either configure \`turbopack.root\` in \`next.config.js\` or add the \`--no-turbo\` flag to the command.
    - Python / Flask: Ensure virtual environments are activated or invoke the python interpreter module launcher (\`python -m flask run\` instead of \`flask run\`).
 3. Codespaces Port Constraints: You MUST configure the preview server to use:
-   - Web Apps: Port 3001 or 3002.
+   - Web Apps/APIs: Port 3001 or 3002.
    - Expo Go Apps: Port 8082 or 8083.
    These ports are pre-forwarded as public in devcontainer.json. Do NOT use other ports.
 
@@ -310,10 +310,17 @@ The \`.iota/preview.json\` file expects this format:
       "cwd": "subdirectory relative to workspace root (e.g. '.' or 'frontend')",
       "command": "command to start dev server (e.g. 'npm run dev')",
       "port": 3001,
-      "type": "web"
+      "type": "web",
+      "env": {
+        "OPTIONAL_CUSTOM_VAR": "value",
+        "DYNAMIC_PORT_VAR": "\${PORT:3000}" 
+      }
     }
   ]
 }
+Note: 
+- \`type\` can be "web" or "expo-go" (or "api" for backend servers without a frontend UI).
+- \`env\` is optional. You can use \`\${PORT:X}\` syntax to dynamically inject the mapped port if another server's port gets shifted.
 
 Once you have completed all setup and configuration steps, write the final configuration to \`.iota/preview.json\` and make sure to remove the "isPlaceholder": true field from the JSON root.`;
 
@@ -435,7 +442,7 @@ Once you have completed all setup and configuration steps, write the final confi
               
               <View style={styles.promptBox}>
                 <Text style={styles.promptText} selectable={true}>
-                  {`Analyze the repository, identify the development servers and application types (e.g. React Native/Expo, Vite, Next.js, Flask/Django Python, Flutter Web, or static HTML), and configure the workspace preview configuration file at \`.iota/preview.json\`.
+                  {`Analyze the repository, identify the development servers and application types (e.g. React Native/Expo, Vite, Next.js, Flask/Django Python, Flutter Web, Node API, or static HTML), and configure the workspace preview configuration file at \`.iota/preview.json\`.
 
 Before finalizing the configuration, perform the following setup steps:
 1. Dependency Verification: Check if dependencies are installed (e.g. node_modules, python packages). If missing, run the appropriate setup/install command (e.g. 'npm install', 'pip install -r requirements.txt').
@@ -443,7 +450,7 @@ Before finalizing the configuration, perform the following setup steps:
    - Next.js with Turbopack: Ensure Turbopack does not fail due to workspace root inference. If running next dev, either configure \`turbopack.root\` in \`next.config.js\` or add the \`--no-turbo\` flag to the command.
    - Python / Flask: Ensure virtual environments are activated or invoke the python interpreter module launcher (\`python -m flask run\` instead of \`flask run\`).
 3. Codespaces Port Constraints: You MUST configure the preview server to use:
-   - Web Apps: Port 3001 or 3002.
+   - Web Apps/APIs: Port 3001 or 3002.
    - Expo Go Apps: Port 8082 or 8083.
    These ports are pre-forwarded as public in devcontainer.json. Do NOT use other ports.
 
@@ -455,10 +462,17 @@ The \`.iota/preview.json\` file expects this format:
       "cwd": "subdirectory relative to workspace root (e.g. '.' or 'frontend')",
       "command": "command to start dev server (e.g. 'npm run dev')",
       "port": 3001,
-      "type": "web"
+      "type": "web",
+      "env": {
+        "OPTIONAL_CUSTOM_VAR": "value",
+        "DYNAMIC_PORT_VAR": "\${PORT:3000}" 
+      }
     }
   ]
 }
+Note: 
+- \`type\` can be "web" or "expo-go" (or "api" for backend servers without a frontend UI).
+- \`env\` is optional. You can use \`\${PORT:X}\` syntax to dynamically inject the mapped port if another server's port gets shifted.
 
 Once you have completed all setup and configuration steps, write the final configuration to \`.iota/preview.json\` and make sure to remove the "isPlaceholder": true field from the JSON root.`}
                 </Text>
@@ -515,6 +529,23 @@ Once you have completed all setup and configuration steps, write the final confi
           <View style={{ flex: 1 }}>
             {selectedServer?.type === 'expo-go' ? (
               <PreviewExpoGo url={url} port={selectedServer.port} />
+            ) : selectedServer?.type === 'api' ? (
+              <View style={styles.emptyState}>
+                <MaterialIcons name="dns" size={48} color={Theme.colors.secondary.default} />
+                <Text style={styles.emptyTitle}>Backend API is Running</Text>
+                <Text style={styles.emptySubtitle}>
+                  The API is listening on port {selectedServer.port}.{'\n'}
+                  Check the terminal logs for activity.
+                </Text>
+                <TouchableOpacity style={styles.startCTA} onPress={() => {
+                  if (url) {
+                    Clipboard.setStringAsync(url);
+                  }
+                }}>
+                  <MaterialIcons name="content-copy" size={18} color="#fff" />
+                  <Text style={styles.startCTAText}>Copy API URL</Text>
+                </TouchableOpacity>
+              </View>
             ) : (
               <PreviewWebView
                 url={url}
@@ -523,8 +554,8 @@ Once you have completed all setup and configuration steps, write the final confi
               />
             )}
 
-            {/* Custom deep link fallback for non-web types */}
-            {selectedServer?.type !== 'web' && (
+            {/* Custom deep link fallback for expo-go types */}
+            {selectedServer?.type === 'expo-go' && (
               <View style={styles.fallbackCard}>
                 <Text style={styles.fallbackLabel}>Custom URL Launcher</Text>
                 <View style={styles.fallbackRow}>
