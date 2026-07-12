@@ -9,6 +9,7 @@ specs/012-migrate-to-opencode-serve/plan.md
 - never push any changes (or commit changes) to remote github repo without asking the user and gettting confirmation from user.
 - If the fix for any problem/issue is not obvious or clear even after reading all the relevant code files and you are not confident about the fix. then you must first only add logs wherever needed (and not make any code changes) and then ask user to test and provide logs so that you can get better idea about the issue repeat it untill your not confident about the fix.
 
+- Never kill, stop, or interfere with any process running on port 3000. This is critical infrastructure that must remain running at all times.
 - Make sure to not add any unnecessary comments which are obvious or not needed as per swe standards
 ------------------------------------------------
 

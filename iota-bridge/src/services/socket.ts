@@ -70,6 +70,15 @@ export const initSocketIO = (server: HttpServer) => {
     logInfo(`Socket client credentials received for ${socket.id} (keys: ${JSON.stringify(Object.keys(credentials))})`);
     opencodeStore.setCredentials(socket.id, credentials);
 
+    // Emit debug info on connect
+    try {
+      const wsRoot = getWorkspaceRoot();
+      const ocPort = process.env.OPENCODE_PORT || '3000';
+      socket.emit('opencode:debug', { msg: `workspaceRoot=${wsRoot} opencodePort=${ocPort} apiKeys=${Object.keys(credentials).length}` });
+    } catch (dbgErr) {
+      logError(`[Socket] Failed to emit debug info: ${dbgErr}`);
+    }
+
     const emitRunStatus = (status: OpenCodePromptStatusEvent) => {
       opencodeStore.setRunPhase(status.conversationId, status.phase);
       logInfo(`[Socket] Run status transition: conversationId=${status.conversationId}, phase=${status.phase}, message="${status.message}"`);
@@ -91,6 +100,7 @@ export const initSocketIO = (server: HttpServer) => {
       .checkCapability()
       .then((capability) => {
         socket.emit('opencode:capability', capability);
+        socket.emit('opencode:debug', { msg: `checkCapability on connect result: status=${capability.status} canSubmit=${capability.canSubmit} canInstall=${capability.canInstall}` });
 
         if (capability.status === 'available') {
           opencodeServerClient.listModels().then((result) => {
@@ -188,7 +198,7 @@ export const initSocketIO = (server: HttpServer) => {
     });
 
     socket.on('opencode:message', async (payload: OpenCodeMessageRequest) => {
-      pokeSelfKeepAlive();
+      try {
       const content = payload?.content?.trim() || '';
       const hasParts = payload?.parts && payload.parts.length > 0;
       if (!content && !hasParts) {
@@ -201,10 +211,12 @@ export const initSocketIO = (server: HttpServer) => {
         return;
       }
 
+      socket.emit('opencode:debug', { msg: `Received prompt: convId=${payload.conversationId} sessionId=${payload.sessionId} contentLen=${content.length} hasParts=${hasParts}` });
       logInfo(`[Socket] Received prompt from socket ${socket.id}: "${content.slice(0, 60)}${content.length > 60 ? '...' : ''}"`);
 
       logInfo(`[Socket] Checking OpenCode capability before processing prompt...`);
       const capability = await opencodeServerClient.checkCapability();
+      socket.emit('opencode:debug', { msg: `checkCapability: status=${capability.status} canSubmit=${capability.canSubmit} canInstall=${capability.canInstall} details=${capability.details}` });
       logInfo(`[Socket] Capability result: status=${capability.status}, canSubmit=${capability.canSubmit}, details="${capability.details}"`);
       if (capability.status !== 'available') {
         logError(`[Socket] OpenCode capability not ready: ${capability.status} - ${capability.details}`);
@@ -632,6 +644,7 @@ export const initSocketIO = (server: HttpServer) => {
 
       try {
         logInfo(`[Socket] Calling opencodeServerClient.executePrompt() for request ${request.requestId}...`);
+        socket.emit('opencode:debug', { msg: `executePrompt: convId=${conversation.id} sessionId=${conversation.opencodeSessionId || payload.sessionId} promptLen=${runPrompt.length}` });
 
         handle = await opencodeServerClient.executePrompt({
           conversationId: conversation.id,
@@ -670,6 +683,7 @@ export const initSocketIO = (server: HttpServer) => {
             const props = (rawEvent.properties || {}) as Record<string, unknown>;
             const part = (props.part || (rawEvent as any)?.part || {}) as Record<string, any>;
             const rawType = String(rawEvent.type || rawEvent.event || rawEvent.kind || part.type || 'unknown');
+            logInfo(`[SSEClientDebug] handleJson entered: type=${rawType} sessionId=${rawEvent.sessionID || rawEvent.sessionId || 'none'}`);
 
             // Track active tools and session status for watchdog
             if (rawType === 'session.status') {
@@ -869,6 +883,7 @@ export const initSocketIO = (server: HttpServer) => {
                 console.log('🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢\n\n');
               }
             }
+            logInfo(`[SSEClientDebug] handleJson: about to relayEvent type=${rawType}`);
             relayEvent(socket, rawEvent);
 
             // Persist event to local store
@@ -910,6 +925,7 @@ export const initSocketIO = (server: HttpServer) => {
       logInfo(`[Socket] handle.done resolved for request ${request.requestId}: completed=${result.completed}, error=${result.error || 'none'}, finalized=${finalized}`);
       if (finalized) return;
 
+      socket.emit('opencode:debug', { msg: `executePrompt result: completed=${result.completed} error=${result.error || 'none'}` });
       if (!result.completed) {
         const message = result.error || 'OpenCode exited before completing the task.';
         logError(`[Socket] Request ${request.requestId} ended in failure: ${message}`);
@@ -931,6 +947,19 @@ export const initSocketIO = (server: HttpServer) => {
         });
       }
       finalize(!result.completed, { errorSummary: result.error });
+    } catch (error: any) {
+      const errMsg = error?.message || 'An unexpected error occurred';
+      logError(`[Socket] Unhandled error in opencode:message handler: ${errMsg}`, { error });
+      socket.emit('opencode:debug', { msg: `Unhandled error in opencode:message: ${errMsg}` });
+      try {
+        socket.emit('opencode:error', {
+          conversationId: payload?.conversationId,
+          code: 'OPENCODE_INTERNAL_ERROR',
+          message: errMsg,
+          retryable: true,
+        });
+      } catch { /* socket may be closed */ }
+    }
     });
 
     socket.on('opencode:approval', async (payload: OpenCodeApprovalDecision) => {
@@ -1117,16 +1146,29 @@ export const initSocketIO = (server: HttpServer) => {
     });
 
     // Preview Event Listeners
-    socket.on('preview:start', async (payload: { port: number; command: string; cwd?: string; type: 'expo-go' | 'web' }) => {
+    socket.on('preview:start', async (payload: { port: number; command: string; cwd?: string; type: 'expo-go' | 'web' | 'api'; env?: Record<string, string> }) => {
       pokeSelfKeepAlive();
       logInfo(`[Socket] Received preview:start for port ${payload.port}`);
       try {
         const previewService = PreviewService.getInstance();
 
+        // Resolve env vars from original config to ensure ${PORT:X} interpolation
+        // (e.g. EXPO_PUBLIC_BRIDGE_PORT=${PORT:3000} → "3001" when Bridge Server shifts to port 3001)
+        const resolvedPayload: typeof payload = { ...payload };
+        try {
+          const fullConfig = previewService.getPreviewConfigPayload();
+          const serverConfig = fullConfig.servers.find(s => s.port === payload.port);
+          if (serverConfig?.env) {
+            resolvedPayload.env = serverConfig.env;
+          }
+        } catch (e) {
+          logError(`[Socket] Failed to resolve preview env vars: ${e}`);
+        }
+
         await previewService.startPreview(
           {
             name: `Preview:${payload.port}`,
-            ...payload
+            ...resolvedPayload
           },
           (actualPort: number, text: string) => {
             io.emit('preview:log', { port: actualPort, text });
@@ -1213,7 +1255,26 @@ export const initSocketIO = (server: HttpServer) => {
 
 export const getSocketIO = () => ioInstance;
 
+// Track active watcher instances so they can be recreated when the workspace root changes
+let previewWatcher: fs.FSWatcher | null = null;
+let envWatcher: fs.FSWatcher | null = null;
+
+// Single module-level SIGINT/SIGTERM handlers that close whatever watchers are active.
+// Registered once to avoid handler accumulation across recreateWatchers() calls.
+const handleShutdown = () => {
+  if (previewWatcher) { try { previewWatcher.close(); } catch { /* ignore */ } }
+  if (envWatcher) { try { envWatcher.close(); } catch { /* ignore */ } }
+};
+process.on('SIGINT', handleShutdown);
+process.on('SIGTERM', handleShutdown);
+
 const startPreviewConfigWatcher = (io: Server) => {
+  // Close previous watcher if any
+  if (previewWatcher) {
+    try { previewWatcher.close(); } catch { /* ignore */ }
+    previewWatcher = null;
+  }
+
   const rootDir = getWorkspaceRoot();
   const configDir = path.join(rootDir, '.iota');
   const configPath = path.join(configDir, 'preview.json');
@@ -1232,7 +1293,7 @@ const startPreviewConfigWatcher = (io: Server) => {
   logInfo(`[Watcher] Starting file watcher for ${configPath}`);
 
   try {
-    const watcher = fs.watch(configDir, (eventType, filename) => {
+    previewWatcher = fs.watch(configDir, (eventType, filename) => {
       if (filename === 'preview.json') {
         logInfo(`[Watcher] Detected ${eventType} change in ${filename}`);
 
@@ -1252,15 +1313,18 @@ const startPreviewConfigWatcher = (io: Server) => {
         }, 300);
       }
     });
-
-    process.on('SIGINT', () => watcher.close());
-    process.on('SIGTERM', () => watcher.close());
   } catch (err: any) {
     logError(`Failed to initialize fs.watch on ${configDir}: ${err.message}`);
   }
 };
 
 const startEnvWatcher = (io: Server) => {
+  // Close previous watcher if any
+  if (envWatcher) {
+    try { envWatcher.close(); } catch { /* ignore */ }
+    envWatcher = null;
+  }
+
   const rootDir = getWorkspaceRoot();
   const configDir = path.join(rootDir, '.iota');
   const envPath = path.join(configDir, 'env.json');
@@ -1279,7 +1343,7 @@ const startEnvWatcher = (io: Server) => {
   logInfo(`[Watcher] Starting file watcher for ${envPath}`);
 
   try {
-    const watcher = fs.watch(configDir, (eventType, filename) => {
+    envWatcher = fs.watch(configDir, (eventType, filename) => {
       if (filename === 'env.json') {
         logInfo(`[Watcher] Detected ${eventType} change in ${filename}`);
 
@@ -1299,10 +1363,22 @@ const startEnvWatcher = (io: Server) => {
         }, 300);
       }
     });
-
-    process.on('SIGINT', () => watcher.close());
-    process.on('SIGTERM', () => watcher.close());
   } catch (err: any) {
     logError(`Failed to initialize fs.watch on ${configDir} for env.json: ${err.message}`);
   }
 };
+
+/**
+ * Recreates file watchers to point at the current workspace root.
+ * Should be called after the workspace root is changed dynamically.
+ */
+export function recreateWatchers() {
+  const io = getSocketIO();
+  if (!io) {
+    logError('[Watcher] Cannot recreate watchers — Socket.IO not initialized');
+    return;
+  }
+  logInfo('[Watcher] Recreating file watchers for new workspace root');
+  startPreviewConfigWatcher(io);
+  startEnvWatcher(io);
+}

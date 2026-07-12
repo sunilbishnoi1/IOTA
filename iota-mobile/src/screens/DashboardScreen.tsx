@@ -38,6 +38,7 @@ interface DashboardScreenProps {
   user: { token: string; username?: string; avatarUrl?: string };
   bridgeUrl: string;
   isBridgeActive: boolean;
+  isInnerApp: boolean;
   activeLocalFolder: string;
   developerModeEnabled: boolean;
   onSelectCodespace: (vm: CodespaceVM) => void;
@@ -61,6 +62,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   user,
   bridgeUrl,
   isBridgeActive,
+  isInnerApp,
   activeLocalFolder,
   developerModeEnabled,
   onSelectCodespace,
@@ -123,7 +125,11 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   const fetchLocalFolders = async () => {
     setFoldersLoading(true);
     try {
-      const response = await fetch(`${bridgeUrl}/api/local-workspaces`);
+      const response = await fetch(`${bridgeUrl}/api/local-workspaces`, {
+        headers: {
+          'X-IOTA-Source': isInnerApp ? 'inner' : 'outer',
+        },
+      });
       if (response.ok) {
         const data = await response.json();
         if (data && data.folders) {
@@ -146,6 +152,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-IOTA-Source': isInnerApp ? 'inner' : 'outer',
         },
         body: JSON.stringify({ folderName }),
       });
@@ -297,9 +304,9 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
       fetchError = error;
     }
 
-    // 3. Prepend local workspace virtual item only if active
+    // 3. Prepend local workspace virtual item only if active AND running as inner app
     let finalCodespaces = fetchedCodespaces;
-    if (isLocalBridgeActive) {
+    if (isLocalBridgeActive && isInnerApp) {
       const localWorkspace: CodespaceVM = {
         id: 'local-workspace',
         repositoryName: localFolder,
@@ -620,18 +627,36 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
               />
             }
             ListEmptyComponent={
-              <View style={styles.emptyContainer}>
-                <MaterialIcons name="layers-clear" size={48} color={Theme.colors.text.muted} />
-                <Text style={styles.emptyText}>No active or sleeping containers found.</Text>
-                <Text style={styles.emptySubText}>Create a codespace on GitHub to get started.</Text>
-              </View>
+              isInnerApp ? (
+                <View style={styles.emptyContainer}>
+                  <MaterialIcons name="folder-open" size={48} color={Theme.colors.primary.glow} />
+                  <Text style={styles.emptyTitle}>Welcome to Local Preview</Text>
+                  <Text style={styles.emptySubText}>
+                    Clone a repository to get started with local development.
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.clonePromptButton}
+                    onPress={handleOpenCloneRepoModal}
+                    activeOpacity={0.8}
+                  >
+                    <MaterialIcons name="cloud-download" size={20} color="#fff" style={{ marginRight: 8 }} />
+                    <Text style={styles.clonePromptButtonText}>Clone a Repository</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <View style={styles.emptyContainer}>
+                  <MaterialIcons name="layers-clear" size={48} color={Theme.colors.text.muted} />
+                  <Text style={styles.emptyText}>No active or sleeping containers found.</Text>
+                  <Text style={styles.emptySubText}>Create a codespace on GitHub to get started.</Text>
+                </View>
+              )
             }
           />
 
           {/* Floating Action Button (FAB) */}
           <TouchableOpacity
             style={styles.fab}
-            onPress={handleOpenRepoModal}
+            onPress={isInnerApp ? handleOpenCloneRepoModal : handleOpenRepoModal}
             activeOpacity={0.8}
           >
             <MaterialIcons name="add" size={28} color="#fff" />
@@ -887,9 +912,33 @@ const styles = StyleSheet.create({
     marginTop: 16,
     marginBottom: 4,
   },
+  emptyTitle: {
+    fontSize: 18,
+    color: Theme.colors.text.primary,
+    fontWeight: '700',
+    marginTop: 16,
+    marginBottom: 8,
+  },
   emptySubText: {
     fontSize: 13,
     color: Theme.colors.text.muted,
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  clonePromptButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Theme.colors.primary.default,
+    paddingVertical: 14,
+    paddingHorizontal: 28,
+    borderRadius: 10,
+    marginTop: 8,
+  },
+  clonePromptButtonText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '600',
   },
   fab: {
     position: 'absolute',

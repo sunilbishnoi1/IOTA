@@ -1,6 +1,16 @@
 import { Platform } from 'react-native';
 import { CodespaceVM, GitHubRepository, CodespaceStatus } from '../types';
 
+let _iotaSource: 'outer' | 'inner' = 'outer';
+
+export function setIotaSource(source: 'outer' | 'inner') {
+  _iotaSource = source;
+}
+
+function addIotaHeaders(headers: Record<string, string> = {}): Record<string, string> {
+  return { ...headers, 'X-IOTA-Source': _iotaSource };
+}
+
 // Helper to determine if an error is a network connectivity issue
 function isNetworkError(err: any): boolean {
   const msg = String(err.message || err).toLowerCase();
@@ -119,10 +129,10 @@ export async function listUserRepos(bridgeUrl: string, token: string, isBridgeAc
       throw new Error('bridge unreachable');
     }
     const response = await fetchWithTimeout(`${bridgeUrl}/api/repos`, {
-      headers: {
+      headers: addIotaHeaders({
         'Authorization': `Bearer ${token}`,
         'Accept': 'application/json',
-      },
+      }),
     });
     if (response.ok) {
       return await response.json();
@@ -167,10 +177,10 @@ export async function checkDevcontainer(
       throw new Error('bridge unreachable');
     }
     const response = await fetchWithTimeout(`${bridgeUrl}/api/repos/${owner}/${repo}/check-devcontainer`, {
-      headers: {
+      headers: addIotaHeaders({
         'Authorization': `Bearer ${token}`,
         'Accept': 'application/json',
-      },
+      }),
     });
     if (response.ok) {
       return await response.json();
@@ -214,11 +224,11 @@ export async function setupDevcontainer(
     }
     const response = await fetchWithTimeout(`${bridgeUrl}/api/repos/setup-devcontainer`, {
       method: 'POST',
-      headers: {
+      headers: addIotaHeaders({
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-      },
+      }),
       body: JSON.stringify({ repository, branch }),
     });
     if (response.ok) {
@@ -308,10 +318,10 @@ export async function listUserCodespaces(bridgeUrl: string, token: string, isBri
       throw new Error('bridge unreachable');
     }
     const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces`, {
-      headers: {
+      headers: addIotaHeaders({
         'Authorization': `Bearer ${token}`,
         'Accept': 'application/json',
-      },
+      }),
     });
     if (response.ok) {
       return await response.json();
@@ -371,10 +381,10 @@ export async function getUserCodespace(
       throw new Error('bridge unreachable');
     }
     const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces/${id}`, {
-      headers: {
+      headers: addIotaHeaders({
         'Authorization': `Bearer ${token}`,
         'Accept': 'application/json',
-      },
+      }),
     });
     if (response.ok) {
       return await response.json();
@@ -429,10 +439,10 @@ export async function startUserCodespace(
     }
     const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces/${id}/start`, {
       method: 'POST',
-      headers: {
+      headers: addIotaHeaders({
         'Authorization': `Bearer ${token}`,
         'Accept': 'application/json',
-      },
+      }),
     });
     if (response.ok) {
       return await response.json();
@@ -493,10 +503,10 @@ export async function stopUserCodespace(
     }
     const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces/${id}/stop`, {
       method: 'POST',
-      headers: {
+      headers: addIotaHeaders({
         'Authorization': `Bearer ${token}`,
         'Accept': 'application/json',
-      },
+      }),
     });
     if (response.ok) {
       return;
@@ -535,10 +545,10 @@ export async function deleteUserCodespace(
     }
     const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces/${id}`, {
       method: 'DELETE',
-      headers: {
+      headers: addIotaHeaders({
         'Authorization': `Bearer ${token}`,
         'Accept': 'application/json',
-      },
+      }),
     });
     if (response.ok) {
       return;
@@ -578,11 +588,11 @@ export async function createUserCodespace(
     }
     const response = await fetchWithTimeout(`${bridgeUrl}/api/codespaces`, {
       method: 'POST',
-      headers: {
+      headers: addIotaHeaders({
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-      },
+      }),
       body: JSON.stringify({ repository, branch }),
     });
     if (response.ok) {
@@ -662,6 +672,7 @@ export interface PreviewServerConfig {
   command: string;
   port: number;
   type: 'expo-go' | 'web' | 'api';
+  env?: Record<string, string>;
 }
 
 export interface PreviewWorkspaceConfig {
@@ -671,10 +682,10 @@ export interface PreviewWorkspaceConfig {
 
 export async function fetchPreviewConfig(bridgeUrl: string, token: string): Promise<PreviewWorkspaceConfig> {
   const response = await fetchWithTimeout(`${bridgeUrl}/api/preview/config`, {
-    headers: {
+    headers: addIotaHeaders({
       'Authorization': `Bearer ${token}`,
       'Accept': 'application/json',
-    },
+    }),
   });
   if (response.ok) {
     return await response.json();
@@ -691,10 +702,10 @@ export async function cloneRepositoryToLocalWorkspace(
   try {
     const response = await fetchWithTimeout(`${bridgeUrl}/api/local-workspace/clone`, {
       method: 'POST',
-      headers: {
+      headers: addIotaHeaders({
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
-      },
+      }),
       body: JSON.stringify({ repository, branch }),
     }, 60000); // 60s timeout for cloning
 

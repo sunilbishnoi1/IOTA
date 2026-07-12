@@ -269,6 +269,7 @@ export const PreviewScreen: React.FC<PreviewScreenProps> = ({
       command: selectedServer.command,
       cwd: selectedServer.cwd,
       type: selectedServer.type,
+      env: selectedServer.env,
     });
     closeMenu();
   };

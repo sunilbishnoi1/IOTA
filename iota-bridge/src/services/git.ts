@@ -1,14 +1,39 @@
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
+import * as fs from 'fs';
 import * as path from 'path';
-import { getWorkspaceRoot } from './logger';
+import { getWorkspaceRoot, logInfo, logError } from './logger';
 
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Resolves a valid git working directory. Walks up from getWorkspaceRoot()
+ * until it finds a .git directory. Falls back to getWorkspaceRoot() if none found.
+ */
+function resolveGitRoot(): string {
+  let dir = getWorkspaceRoot();
+  if (!dir || !fs.existsSync(dir)) {
+    dir = process.cwd();
+  }
+  // Walk up to find a .git directory
+  let current = path.resolve(dir);
+  const root = path.parse(current).root;
+  while (current !== root) {
+    if (fs.existsSync(path.join(current, '.git'))) {
+      return current;
+    }
+    current = path.dirname(current);
+  }
+  // Fallback: use workspace root even without .git (will fail gracefully with git error)
+  logInfo(`[git] No .git found walking up from "${dir}" — using workspace root`);
+  return dir;
+}
+
 async function git(args: string[]): Promise<{ stdout: string; stderr: string }> {
+  const cwd = resolveGitRoot();
   return await execFileAsync('git', args, {
-    cwd: getWorkspaceRoot(),
+    cwd,
     maxBuffer: 20 * 1024 * 1024,
   });
 }

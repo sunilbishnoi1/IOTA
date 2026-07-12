@@ -62,7 +62,7 @@ export function registerPreviewSocketHandlers(socket: Socket, handlers: PreviewS
 
 export const emitPreviewStart = (
   socket: Socket | null | undefined,
-  payload: { port: number; command: string; cwd?: string; type: 'expo-go' | 'web' | 'api' }
+  payload: { port: number; command: string; cwd?: string; type: 'expo-go' | 'web' | 'api'; env?: Record<string, string> }
 ) => {
   console.log('[PreviewSocket] Emitting preview:start:', JSON.stringify(payload));
   socket?.emit('preview:start', payload);

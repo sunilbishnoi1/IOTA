@@ -90,32 +90,41 @@ class OpenCodeStore {
   private ensureLoaded() {
     const rootDir = getWorkspaceRoot();
     if (this.lastWorkspaceRoot !== rootDir) {
+      const prevRoot = this.lastWorkspaceRoot;
       this.lastWorkspaceRoot = rootDir;
-      this.conversations.clear();
-      this.defaultConversationId = undefined;
-      this.loadConversationsFromDisk();
+      const convoDir = path.join(rootDir, '.iota', 'conversations');
+      const hasExistingConvos = fs.existsSync(convoDir) && fs.readdirSync(convoDir).some(f => f.endsWith('.json'));
+
+      if (hasExistingConvos) {
+        // Load conversations from the new root — this is a genuine workspace switch
+        logInfo(`[OpenCodeStore] Workspace root changed from "${prevRoot}" to "${rootDir}" — loading conversations from new location`);
+        this.conversations.clear();
+        this.defaultConversationId = undefined;
+        this.loadConversationsFromDisk(convoDir);
+      } else {
+        // New root has no conversations on disk. Keep existing in-memory conversations
+        // to prevent data loss from root resolution fluctuation.
+        logInfo(`[OpenCodeStore] Workspace root changed to "${rootDir}" but no existing conversations found — keeping current in-memory conversations`);
+      }
     }
   }
 
-  public loadConversationsFromDisk() {
-    const rootDir = getWorkspaceRoot();
-    const convoDir = path.join(rootDir, '.iota', 'conversations');
-    if (!fs.existsSync(convoDir)) {
-      try {
-        fs.mkdirSync(convoDir, { recursive: true });
-      } catch (err) {
-        logError(`[OpenCodeStore] Failed to create conversations directory: ${err}`);
-        return;
-      }
+  public loadConversationsFromDisk(convoDir?: string) {
+    const rootDir = convoDir ? undefined : getWorkspaceRoot();
+    const resolvedConvoDir = convoDir || path.join(rootDir!, '.iota', 'conversations');
+    if (!fs.existsSync(resolvedConvoDir)) {
+      // Don't auto-create the directory during load — only create when saving
+      logInfo(`[OpenCodeStore] No conversations directory at ${resolvedConvoDir}, starting fresh`);
+      return;
     }
 
     try {
-      const files = fs.readdirSync(convoDir);
+      const files = fs.readdirSync(resolvedConvoDir);
       let latestConvo: OpenCodeConversation | undefined = undefined;
 
       for (const file of files) {
         if (!file.endsWith('.json')) continue;
-        const filePath = path.join(convoDir, file);
+        const filePath = path.join(resolvedConvoDir, file);
         try {
           const content = fs.readFileSync(filePath, 'utf8');
           const convo = JSON.parse(content) as OpenCodeConversation;

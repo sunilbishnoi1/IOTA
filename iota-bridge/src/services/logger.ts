@@ -3,39 +3,52 @@ import * as path from 'path';
 
 let logStream: fs.WriteStream | null = null;
 let activeWorkspaceRoot: string | null = null;
+let lastResolvedRoot: string | null = null;
+let cachedResolvedRoot: string | null = null;
+let cachedResolvedRootTime = 0;
+const ROOT_CACHE_TTL_MS = 5000;
 
 export function setWorkspaceRoot(newRoot: string) {
   if (fs.existsSync(newRoot)) {
     activeWorkspaceRoot = newRoot;
+    lastResolvedRoot = newRoot;
     initLogger(true);
   }
 }
 
 export function getWorkspaceRoot(): string {
-  // If a workspace root has been dynamically selected, prefer it!
   if (activeWorkspaceRoot) {
     return activeWorkspaceRoot;
   }
 
+  // Use cached result if recent enough to avoid repeated fs.existsSync calls
+  const now = Date.now();
+  if (cachedResolvedRoot && (now - cachedResolvedRootTime) < ROOT_CACHE_TTL_MS) {
+    return cachedResolvedRoot;
+  }
+
+  const candidates: string[] = [];
+
   // 0. Check for custom environment variable overrides (local testing)
   if (process.env.IOTA_WORKSPACE_ROOT && fs.existsSync(process.env.IOTA_WORKSPACE_ROOT)) {
-    return process.env.IOTA_WORKSPACE_ROOT;
+    candidates.push(process.env.IOTA_WORKSPACE_ROOT);
   }
   if (process.env.WORKSPACE_ROOT && fs.existsSync(process.env.WORKSPACE_ROOT)) {
-    return process.env.WORKSPACE_ROOT;
+    candidates.push(process.env.WORKSPACE_ROOT);
   }
 
   // 1. Check CODESPACE_VSCODE_FOLDER environment variable
   if (process.env.CODESPACE_VSCODE_FOLDER && fs.existsSync(process.env.CODESPACE_VSCODE_FOLDER)) {
-    return process.env.CODESPACE_VSCODE_FOLDER;
+    candidates.push(process.env.CODESPACE_VSCODE_FOLDER);
   }
 
   // 2. Check CONTAINER_WORKSPACE_FOLDER environment variable
   if (process.env.CONTAINER_WORKSPACE_FOLDER && fs.existsSync(process.env.CONTAINER_WORKSPACE_FOLDER)) {
-    return process.env.CONTAINER_WORKSPACE_FOLDER;
+    candidates.push(process.env.CONTAINER_WORKSPACE_FOLDER);
   }
 
-  // 3. Scan /workspaces directory if running inside a Devcontainer / Codespace
+  // 3. Scan /workspaces directory if running inside a Devcontainer / Codespace.
+  //    When scanning, prefer the IOTA directory over other workspaces.
   if (fs.existsSync('/workspaces')) {
     try {
       const dirs = fs.readdirSync('/workspaces')
@@ -47,35 +60,43 @@ export function getWorkspaceRoot(): string {
             return false;
           }
         });
-      
-      // Find the first directory that is not hidden and is not 'iota' (cloned bridge)
-      const workspaceDir = dirs.find(dir => {
-        const base = path.basename(dir).toLowerCase();
-        return !base.startsWith('.') && base !== 'iota';
-      });
-      if (workspaceDir) {
-        return workspaceDir;
+
+      const iotaDir = dirs.find(dir => path.basename(dir).toLowerCase() === 'iota');
+      if (iotaDir) {
+        candidates.push(iotaDir);
       }
-      
-      // Fallback to any non-hidden directory
-      const anyDir = dirs.find(dir => !path.basename(dir).startsWith('.'));
-      if (anyDir) {
-        return anyDir;
-      }
-    } catch (err) {
-      // ignore
+      const otherDirs = dirs
+        .filter(dir => path.basename(dir).toLowerCase() !== 'iota' && !path.basename(dir).startsWith('.'))
+        .sort();
+      candidates.push(...otherDirs);
+    } catch (err: any) {
+      console.error(`[logger] Failed to scan /workspaces directory: ${err?.message || err}`);
     }
   }
 
   // 4. Default fallback: resolve relative to current file (__dirname) to get the IOTA root project directory.
-  // Relative to iota-bridge/src/services/logger.ts, the project root is 3 levels up.
   const relativeRoot = path.resolve(__dirname, '..', '..', '..');
   if (fs.existsSync(relativeRoot)) {
-    return relativeRoot;
+    candidates.push(relativeRoot);
   }
 
-  // Final fallback: parent of process.cwd()
-  return path.resolve(process.cwd(), '..');
+  const finalFallback = path.resolve(process.cwd(), '..');
+  if (fs.existsSync(finalFallback)) {
+    candidates.push(finalFallback);
+  }
+
+  // Resolve best candidate: prefer one with .iota directory
+  const iotaWorkspace = candidates.find(c => fs.existsSync(path.join(c, '.iota')));
+  const result = iotaWorkspace || candidates[0] || finalFallback;
+
+  if (lastResolvedRoot !== result) {
+    console.log(`[logger] Workspace root resolved: ${result}`);
+    lastResolvedRoot = result;
+  }
+
+  cachedResolvedRoot = result;
+  cachedResolvedRootTime = now;
+  return result;
 }
 
 

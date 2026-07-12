@@ -387,6 +387,24 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const shouldScrollToBottomRef = useRef(true);
 
+  // ─── Debug logging (temporary: shows in a collapsible panel at top, with copy) ───
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const [showDebugLogs, setShowDebugLogs] = useState(false);
+  const debugLogsRef = useRef<string[]>([]);
+  const addDebugLog = useCallback((msg: string) => {
+    const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    debugLogsRef.current.push(line);
+    if (debugLogsRef.current.length > 500) {
+      debugLogsRef.current = debugLogsRef.current.slice(-500);
+    }
+    setDebugLogs(debugLogsRef.current);
+  }, []);
+  const clearDebugLogs = useCallback(() => {
+    debugLogsRef.current = [];
+    setDebugLogs([]);
+  }, []);
+  const sseEventCountRef = useRef(0);
+
   const scrollToBottom = useCallback((animated = true) => {
     shouldScrollToBottomRef.current = true;
     flatListRef.current?.scrollToEnd({ animated });
@@ -766,7 +784,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
 
         socket.on('connect', () => {
           if (!active) return;
-          console.log('[ControlScreen] Socket connected to:', targetUrl);
+          addDebugLog(`Socket connected to: ${targetUrl}`);
           setSocketStatus('connected');
           if (socket) {
             emitOpenCodeSync(socket, conversationIdRef.current || defaultConversationId);
@@ -775,30 +793,35 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             emitEnvVarsRequest(socket);
           }
         });
- 
+
         socket.on('disconnect', () => {
           if (!active) return;
-          console.log('[ControlScreen] Socket disconnected from:', targetUrl);
+          addDebugLog(`Socket disconnected from: ${targetUrl}`);
           setSocketStatus('disconnected');
           setRunning(false);
           setRunStatusText(null);
         });
 
- 
         socket.on('connect_error', (err: Error) => {
           if (!active) return;
-          console.error('[ControlScreen] Socket connection error:', err.message);
+          addDebugLog(`Socket connect error: ${err.message}`);
           setSocketStatus('disconnected');
           setCapability({ status: 'unavailable', details: `Connection error: ${err.message}`, canSubmit: false, canInstall: false });
         });
 
         registerOpenCodeSocketHandlers(socket, {
-          onCapability: (payload) => setCapability(payload as OpenCodeCapabilityState),
+          onCapability: (payload) => {
+            const cap = payload as OpenCodeCapabilityState;
+            addDebugLog(`Capability: status=${cap.status} canSubmit=${cap.canSubmit} canInstall=${cap.canInstall}`);
+            setCapability(cap);
+          },
           onSnapshot: ({ conversation }) => {
             if (!conversation) {
+              addDebugLog('Snapshot: null/empty conversation — sync complete');
               setIsSyncing(false);
               return;
             }
+            addDebugLog(`Snapshot: convId=${conversation.id} msgs=${conversation.messages?.length || 0} running=${conversation.status === 'running' || !!conversation.activeRequestId}`);
             const isNewConvo = conversationIdRef.current !== conversation.id;
             setConversationId(conversation.id);
             conversationIdRef.current = conversation.id;
@@ -983,6 +1006,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           },
           onMessageDelta: () => {},
           onRunStatus: (status) => {
+            addDebugLog(`RunStatus: convId=${status.conversationId} phase=${status.phase} msg=${status.message}`);
             setConversationId(status.conversationId);
             conversationIdRef.current = status.conversationId;
             secureStoreService.saveOpenCodeConversationId(conversationScope, status.conversationId).catch(() => undefined);
@@ -1003,7 +1027,8 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           onApprovalRequest: ({ approval }) => {
             setApprovals((prev) => [...prev.filter((item) => item.id !== approval.id), approval]);
           },
-          onError: ({ conversationId: nextConversationId, message }) => {
+          onError: ({ conversationId: nextConversationId, message, code }) => {
+            addDebugLog(`Error: convId=${nextConversationId} code=${code} msg=${message}`);
             const targetConversationId = nextConversationId || conversationIdRef.current || `conversation-${Date.now()}`;
             setConversationId(targetConversationId);
             setRunning(false);
@@ -1023,6 +1048,12 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
             }
           },
           onSSEEvent: (event) => {
+            const eventType = event?.payload?.type || 'unknown';
+            sseEventCountRef.current++;
+            // Log every 15th SSE event or important types
+            if (sseEventCountRef.current % 15 === 0 || !eventType.includes('.delta')) {
+              addDebugLog(`SSE (total=${sseEventCountRef.current}): ${eventType}`);
+            }
             sseQueue.push(event);
             if (!sseTimer) {
               const processQueue = () => {
@@ -1645,6 +1676,10 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           },
         });
 
+        socket.on('opencode:debug', (payload: any) => {
+          addDebugLog(`[Bridge] ${payload?.msg || JSON.stringify(payload)}`);
+        });
+
         registerEnvVarsSocketHandlers(socket, (updatedEnv) => {
           setEnvVars(updatedEnv);
           secureStoreService.saveEnvVars(activeCodespace.id, updatedEnv);
@@ -1831,21 +1866,24 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
   };
 
   const handleSubmitPrompt = () => {
-    if (submittingRef.current) return;
+    addDebugLog(`handleSubmitPrompt: submitting prompt (length=${inputPrompt.trim().length}) socket=${!!socketRef.current} canSubmit=${capability.canSubmit}`);
+    if (submittingRef.current) { addDebugLog('handleSubmitPrompt: already submitting, blocked'); return; }
     submittingRef.current = true;
 
     const content = inputPrompt.trim();
     const hasAttachments = selectedParts.length > 0;
-    if (!content && !hasAttachments) { submittingRef.current = false; return; }
+    if (!content && !hasAttachments) { submittingRef.current = false; addDebugLog('handleSubmitPrompt: empty prompt, cancelled'); return; }
 
     if (handleSlashCommand(content)) {
       setInputPrompt('');
       submittingRef.current = false;
+      addDebugLog('handleSubmitPrompt: slash command handled');
       return;
     }
 
-    if (!socketRef.current) { submittingRef.current = false; return; }
+    if (!socketRef.current) { submittingRef.current = false; addDebugLog('handleSubmitPrompt: no socket, abort'); return; }
     if (!capability.canSubmit) {
+      addDebugLog(`handleSubmitPrompt: canSubmit=false, details=${capability.details}`);
       Alert.alert('OpenCode unavailable', capability.details);
       submittingRef.current = false;
       return;
@@ -1894,8 +1932,10 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
     }, 50);
 
     try {
+      addDebugLog(`emitOpenCodeMessage: convId=${targetConversationId} sessionId=${sessionId} contentLen=${content.length} hasParts=${!!parts && parts.length > 0}`);
       emitOpenCodeMessage(socketRef.current, { conversationId: targetConversationId, sessionId, content, parts });
-    } catch {
+    } catch (err) {
+      addDebugLog(`emitOpenCodeMessage threw: ${err}`);
       submittingRef.current = false;
       return;
     }
@@ -2154,6 +2194,7 @@ export const ControlScreen: React.FC<ControlScreenProps> = ({
           </TouchableOpacity>
         </View>
 
+        {/* ─── Debug Console (disabled, kept for future debugging) ─── */}
 
 
         {isOpenCodeReady ? (
@@ -2632,5 +2673,38 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: Theme.colors.text.primary,
+  },
+  debugConsoleContainer: {
+    borderBottomWidth: 1,
+    borderBottomColor: Theme.colors.border,
+  },
+  debugConsoleToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+  },
+  debugConsoleToggleText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Theme.colors.primary.glow,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  debugLogsContainer: {
+    maxHeight: 200,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  debugLogsScrollContainer: {
+    paddingBottom: 4,
+  },
+  debugLogLine: {
+    fontSize: 9,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    color: '#a0a0a0',
+    lineHeight: 13,
   },
 });

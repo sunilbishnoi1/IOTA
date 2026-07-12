@@ -23,6 +23,31 @@ import { PreviewProcessState, PreviewServerConfig, PreviewStatus, PreviewWorkspa
 import { getWorkspaceRoot, logInfo, logError } from './logger';
 import { EnvService } from './envService';
 
+function applyPortToCommand(command: string, port: number, type: string): string {
+  if (command.includes('--port') || command.includes('-p') || command.includes('--web-port')) {
+    return command
+      .replace(/--port\s+\d+/, `--port ${port}`)
+      .replace(/-p\s+\d+/, `-p ${port}`)
+      .replace(/--web-port\s+\d+/, `--web-port ${port}`);
+  }
+  if (command.startsWith('npx expo start') || command.startsWith('expo start')) {
+    return `${command} --port ${port}`;
+  }
+  if (type === 'expo-go') {
+    if (command.startsWith('npm')) {
+      return `${command} -- --port ${port}`;
+    }
+    return `${command} --port ${port}`;
+  }
+  if (command.startsWith('npx next dev') || command.startsWith('next dev')) {
+    return `${command} -p ${port}`;
+  }
+  if (command.startsWith('npx vite') || command.startsWith('vite')) {
+    return `${command} --port ${port}`;
+  }
+  return command;
+}
+
 const execAsync = promisify(exec);
 
 export class PreviewService {
@@ -186,20 +211,7 @@ export class PreviewService {
     // Parse command and replace/append ports if shifted
     let finalCommand = config.command;
     if (port !== config.port) {
-      if (finalCommand.includes('--port') || finalCommand.includes('-p') || finalCommand.includes('--web-port')) {
-        finalCommand = finalCommand
-          .replace(/--port\s+\d+/, `--port ${port}`)
-          .replace(/-p\s+\d+/, `-p ${port}`)
-          .replace(/--web-port\s+\d+/, `--web-port ${port}`);
-      } else {
-        if (finalCommand.startsWith('npx expo start') || finalCommand.startsWith('expo start')) {
-          finalCommand = `${finalCommand} --port ${port}`;
-        } else if (finalCommand.startsWith('npx next dev') || finalCommand.startsWith('next dev')) {
-          finalCommand = `${finalCommand} -p ${port}`;
-        } else if (finalCommand.startsWith('npx vite') || finalCommand.startsWith('vite')) {
-          finalCommand = `${finalCommand} --port ${port}`;
-        }
-      }
+      finalCommand = applyPortToCommand(finalCommand, port, config.type);
     }
     const state: PreviewProcessState = {
       port,
@@ -242,6 +254,7 @@ export class PreviewService {
       WORKSPACE_ROOT: workspaceRoot,
       IOTA_WORKSPACE_ROOT: workspaceRoot,
       PORT: String(port),
+      EXPO_PORT: String(port),
       ...(config.env || {}),
     };
 
@@ -421,21 +434,7 @@ export class PreviewService {
     const mappedServers = servers.map(s => {
       if (reservedPorts.includes(s.port)) {
         const shiftedPort = s.port + 1;
-        let shiftedCommand = s.command;
-        if (shiftedCommand.includes('--port') || shiftedCommand.includes('-p') || shiftedCommand.includes('--web-port')) {
-          shiftedCommand = shiftedCommand
-            .replace(/--port\s+\d+/, `--port ${shiftedPort}`)
-            .replace(/-p\s+\d+/, `-p ${shiftedPort}`)
-            .replace(/--web-port\s+\d+/, `--web-port ${shiftedPort}`);
-        } else {
-          if (shiftedCommand.startsWith('npx expo start') || shiftedCommand.startsWith('expo start')) {
-            shiftedCommand = `${shiftedCommand} --port ${shiftedPort}`;
-          } else if (shiftedCommand.startsWith('npx next dev') || shiftedCommand.startsWith('next dev')) {
-            shiftedCommand = `${shiftedCommand} -p ${shiftedPort}`;
-          } else if (shiftedCommand.startsWith('npx vite') || shiftedCommand.startsWith('vite')) {
-            shiftedCommand = `${shiftedCommand} --port ${shiftedPort}`;
-          }
-        }
+        let shiftedCommand = applyPortToCommand(s.command, shiftedPort, s.type);
         return {
           ...s,
           port: shiftedPort,

@@ -77,6 +77,10 @@
 - **Root cause:** PreviewScreen's `fetchPreviewConfig()` HTTP calls used the raw `bridgeUrl` prop instead of `activeCodespace.connectionUrl`. In the dev build, `bridgeUrl` is `http://localhost:3000` while the codespace bridge is at the forwarded domain (`.app.github.dev`), causing 404s.
 - **Fix:** Replace `bridgeUrl` with `activeCodespace.connectionUrl || bridgeUrl` in both the initial load effect and the visibility-change HTTP fallback in PreviewScreen.
 
+## EXPO_PUBLIC_BRIDGE_PORT Not Passed to Spawned Expo Preview Process
+- **Root cause:** The `preview:start` socket handler didn't resolve `${PORT:X}` env vars from the original preview config before spawning. The UI received interpolated env (e.g., `EXPO_PUBLIC_BRIDGE_PORT=3001`) but didn't send it back in `preview:start`. The spawned Expo process lacked the env var, causing `BRIDGE_PORT` to default to `3000` while the bridge was on `3001`.
+- **Fix:** In the `preview:start` socket handler, call `getPreviewConfigPayload()` to look up the matching server's env with interpolated `${PORT:X}` values and merge them into the config passed to `startPreview()`. Also pass `env` from the UI side for defense-in-depth.
+
 ## App Update Shows Current Version as Available
 - **Root cause:** `Constants.expoConfig` can be `null` on Android (Expo SDK 51 known bug), causing `getCurrentAppVersion()` fallback to `'0.0.0'` and making `compareVersions('0.6.1', '0.0.0')` > 0, falsely showing update.
 - **Fix:** Added `getCurrentAppVersion()` helper that falls back to `Constants.nativeAppVersion` before `'0.0.0'`, since native versionName is reliably set during build.

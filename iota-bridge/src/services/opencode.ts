@@ -264,7 +264,7 @@ class OpenCodeSSEClient extends EventEmitter {
     const sessionId = event.sessionID || event.sessionId || event.session_id ||
       (event.payload && (event.payload.sessionID || event.payload.sessionId || event.payload.session_id));
 
-    // logInfo(`[OpenCodeSSEClient] Dispatching event: type=${type}, sessionId=${sessionId}, raw=${JSON.stringify(event).slice(0, 300)}`);
+    logInfo(`[SSEClientDebug] dispatchEvent: type=${type} sessionId=${sessionId} hasOnEvent=${!!this.onEvent} listenersCount=${this.sessionListeners.size} hasSessionListener=${this.sessionListeners.has(sessionId)}`);
 
     if (this.onEvent && type) {
       this.onEvent(String(type), event);
@@ -273,6 +273,7 @@ class OpenCodeSSEClient extends EventEmitter {
     if (sessionId) {
       const listener = this.sessionListeners.get(sessionId);
       if (listener) {
+        logInfo(`[SSEClientDebug] dispatchEvent: invoking session listener for sessionId=${sessionId} type=${type}`);
         listener(event);
       }
     }
@@ -663,6 +664,9 @@ class OpenCodeServerClient {
         this.activeSessions.set(options.conversationId, activeSessionId);
 
         openCodeSSEClient.registerSessionListener(activeSessionId, (event) => {
+          const evType = event?.type || event?.event || event?.kind || 'unknown';
+          const evSessionId = event?.sessionID || event?.sessionId || event?.session_id || '';
+          logInfo(`[SSEClientDebug] sessionListener received: type=${evType} sessionId=${evSessionId} for registeredSession=${activeSessionId}`);
           options.onActivity?.();
 
           options.onJson(event);
@@ -784,9 +788,21 @@ class OpenCodeServerClient {
 
       try {
         const corsArgs = this.getCorsArgs();
+        const workspaceRoot = await this.getWorkspaceRoot();
+        // Validate CWD — warn if the resolved root doesn't look like the IOTA workspace
+        if (workspaceRoot && fs.existsSync(workspaceRoot)) {
+          const hasIotaDir = fs.existsSync(path.join(workspaceRoot, '.iota'));
+          const hasBridgePackage = fs.existsSync(path.join(workspaceRoot, 'iota-bridge', 'package.json'));
+          if (!hasIotaDir && !hasBridgePackage) {
+            logInfo(`[OpenCodeServerClient] ensureServer: workspace root "${workspaceRoot}" lacks .iota/ directory — verified path exists, proceeding`);
+          }
+        } else {
+          logError(`[OpenCodeServerClient] ensureServer: workspace root "${workspaceRoot}" does not exist — falling back to process.cwd()`);
+        }
+        const resolvedCwd = (workspaceRoot && fs.existsSync(workspaceRoot)) ? workspaceRoot : process.cwd();
         logInfo(`[OpenCodeServerClient] ensureServer: spawning opencode serve --port ${OPENCODE_PORT} --hostname 127.0.0.1${corsArgs.length ? ' ' + corsArgs.join(' ') : ''}`);
         const child = this.spawnProcess('opencode', ['serve', '--port', String(OPENCODE_PORT), '--hostname', '127.0.0.1', ...corsArgs], {
-          cwd: await this.getWorkspaceRoot(),
+          cwd: resolvedCwd,
           stdio: 'ignore',
           detached: true,
         });

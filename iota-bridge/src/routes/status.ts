@@ -6,16 +6,19 @@ import { getRepoPath, getBranch } from '../services/git';
 import { opencodeServerClient } from '../services/opencode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { getWorkspaceRoot, setWorkspaceRoot } from '../services/logger';
+import { getWorkspaceRoot, setWorkspaceRoot, logInfo } from '../services/logger';
 import { PreviewService } from '../services/previewService';
+import { recreateWatchers, getSocketIO } from '../services/socket';
 
 const router = Router();
 
 // GET /api/ping - Simple public health check to verify bridge reachability
 router.get('/ping', (req, res) => {
+  const source = String((req.query.source as string) || req.headers['x-iota-source'] || 'unknown');
   res.json({
     status: 'ok',
-    activeLocalFolder: path.basename(getWorkspaceRoot())
+    activeLocalFolder: path.basename(getWorkspaceRoot()),
+    sourceRecognized: source === 'inner' || source === 'outer' ? source : 'unknown'
   });
 });
 
@@ -55,6 +58,25 @@ router.post('/local-workspace/select', (req, res) => {
       return res.status(404).json({ error: `Directory not found: ${newRoot}` });
     }
     setWorkspaceRoot(newRoot);
+    logInfo(`Workspace root changed to: ${newRoot}`);
+
+    // Recreate file watchers to monitor the new .iota directory
+    try {
+      recreateWatchers();
+    } catch (err: any) {
+      console.error('Failed to recreate watchers after workspace switch:', err?.message || err);
+    }
+
+    // Broadcast workspace change to all connected Socket.IO clients
+    try {
+      const io = getSocketIO();
+      if (io) {
+        io.emit('opencode:workspace_changed', { workspaceRoot: newRoot, folderName });
+      }
+    } catch (err: any) {
+      console.error('Failed to broadcast workspace change:', err?.message || err);
+    }
+
     res.json({
       success: true,
       activeFolder: folderName,
@@ -73,6 +95,18 @@ router.post('/local-workspace/clone', requireAuth, async (req: AuthenticatedRequ
     if (!repository) {
       return res.status(400).json({ error: 'repository parameter is required' });
     }
+
+    // Prevent cloning IOTA itself to avoid infinite nesting
+    const currentRepo = process.env.GITHUB_REPOSITORY || '';
+    if (currentRepo && repository.toLowerCase() === currentRepo.toLowerCase()) {
+      return res.status(400).json({ error: 'Cannot clone IOTA itself - IOTA is already the host application.' });
+    }
+    // Also check by folder name if env var is not set
+    const repoFolderName = path.basename(getWorkspaceRoot()).toLowerCase();
+    if (repoFolderName === 'iota' && repository.toLowerCase().endsWith('/iota')) {
+      return res.status(400).json({ error: 'Cannot clone IOTA itself - IOTA is already the host application.' });
+    }
+
     const currentRoot = getWorkspaceRoot();
     const parentDir = path.dirname(currentRoot);
     

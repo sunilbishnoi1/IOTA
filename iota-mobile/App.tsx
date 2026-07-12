@@ -19,6 +19,7 @@ import { PreviewScreen } from './src/screens/PreviewScreen';
 import { ShipScreen } from './src/screens/ShipScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
 import { secureStoreService } from './src/services/secureStore';
+import { setIotaSource } from './src/services/apiService';
 import { Theme } from './src/styles/theme';
 import { CodespaceVM } from './src/types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -34,10 +35,28 @@ const DEFAULT_BRIDGE_URL = Platform.select({
   default: `http://localhost:${BRIDGE_PORT}`,
 }) || `http://localhost:${BRIDGE_PORT}`;
 
+const isRunningAsPreview = (): boolean => {
+  try {
+    const scriptURL = NativeModules.SourceCode?.scriptURL;
+    if (scriptURL) {
+      if (scriptURL.includes(':8082') || scriptURL.includes(':8083')) return true;
+      if (scriptURL.includes('.app.github.dev')) {
+        const portMatch = scriptURL.match(/-(\d+)\.app\.github\.dev/);
+        if (portMatch) {
+          const port = parseInt(portMatch[1], 10);
+          if (port === 8082 || port === 8083) return true;
+        }
+      }
+    }
+  } catch (e) {}
+  return false;
+};
+
 const getLocalBridgeUrlFromBundle = (): string | null => {
   try {
     const scriptURL = NativeModules.SourceCode?.scriptURL;
-    if (scriptURL && (scriptURL.startsWith('http://') || scriptURL.startsWith('https://'))) {
+    if (!scriptURL) return null;
+    if (scriptURL.startsWith('http://') || scriptURL.startsWith('https://')) {
       const match = scriptURL.match(/^(https?:\/\/[^\/:]+)/);
       if (match && match[1]) {
         let baseHost = match[1];
@@ -47,8 +66,19 @@ const getLocalBridgeUrlFromBundle = (): string | null => {
         return `${baseHost}:${BRIDGE_PORT}`;
       }
     }
+    if (scriptURL.startsWith('exps://') || scriptURL.startsWith('exp://')) {
+      const scheme = scriptURL.startsWith('exps://') ? 'exps' : 'exp';
+      const rest = scriptURL.substring(scheme.length + 3);
+      const hostMatch = rest.match(/^([^\/:]+)/);
+      if (hostMatch && hostMatch[1]) {
+        let baseHost = hostMatch[1];
+        if (baseHost.includes('.app.github.dev')) {
+          return `https://${baseHost.replace(/-[0-9]+\.app\.github\.dev$/, `-${BRIDGE_PORT}.app.github.dev`)}`;
+        }
+        return `http://${baseHost}:${BRIDGE_PORT}`;
+      }
+    }
   } catch (e) {
-    // ignore
   }
   return null;
 };
@@ -133,17 +163,22 @@ async function ensureMaterialIconsLoaded() {
   }
 }
 
-const checkLocalBridgeActive = async (url: string): Promise<{ active: boolean; activeLocalFolder?: string }> => {
+const checkLocalBridgeActive = async (url: string, isInner?: boolean): Promise<{ active: boolean; activeLocalFolder?: string; sourceRecognized?: string }> => {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 2000);
-    const response = await fetch(`${url}/api/ping`, {
+    const query = isInner ? '?source=inner' : '?source=outer';
+    const response = await fetch(`${url}/api/ping${query}`, {
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
     if (response.ok) {
       const data = await response.json();
-      return { active: true, activeLocalFolder: data?.activeLocalFolder };
+      return {
+        active: true,
+        activeLocalFolder: data?.activeLocalFolder,
+        sourceRecognized: data?.sourceRecognized,
+      };
     }
   } catch (e) {
     // ignore
@@ -167,14 +202,15 @@ export default function App() {
   // Developer Mode States
   const [developerModeEnabled, setDeveloperModeEnabled] = useState<boolean>(false);
   const [isBridgeActive, setIsBridgeActive] = useState<boolean>(false);
+  const [isInnerApp, setIsInnerApp] = useState<boolean>(false);
   const [activeLocalFolder, setActiveLocalFolder] = useState<string>('Local Dev Workspace');
 
-  const verifyBridge = useCallback(async (url: string, devEnabled: boolean) => {
+  const verifyBridge = useCallback(async (url: string, devEnabled: boolean, inner?: boolean) => {
     if (!devEnabled) {
       setIsBridgeActive(false);
       return { active: false };
     }
-    const res = await checkLocalBridgeActive(url);
+    const res = await checkLocalBridgeActive(url, inner);
     setIsBridgeActive(res.active);
     if (res.active && res.activeLocalFolder) {
       setActiveLocalFolder(res.activeLocalFolder);
@@ -183,8 +219,8 @@ export default function App() {
   }, []);
 
   const handleRefreshBridge = useCallback(() => {
-    return verifyBridge(bridgeUrl, developerModeEnabled);
-  }, [bridgeUrl, developerModeEnabled, verifyBridge]);
+    return verifyBridge(bridgeUrl, developerModeEnabled, isInnerApp);
+  }, [bridgeUrl, developerModeEnabled, isInnerApp, verifyBridge]);
 
   const handleChangeDeveloperMode = useCallback(async (enabled: boolean) => {
     setDeveloperModeEnabled(enabled);
@@ -216,7 +252,7 @@ export default function App() {
         if (isMounted) setIsBridgeActive(false);
         return;
       }
-      const res = await checkLocalBridgeActive(bridgeUrl);
+      const res = await checkLocalBridgeActive(bridgeUrl, isInnerApp);
       if (isMounted) {
         setIsBridgeActive(res.active);
         if (res.active && res.activeLocalFolder) {
@@ -230,7 +266,7 @@ export default function App() {
     return () => {
       isMounted = false;
     };
-  }, [bridgeUrl, developerModeEnabled, isLoading]);
+  }, [bridgeUrl, developerModeEnabled, isInnerApp, isLoading]);
 
   useEffect(() => {
     async function init() {
@@ -258,6 +294,11 @@ export default function App() {
           setBridgeUrl(savedUrl);
         }
 
+        // Detect if this app instance is running as a preview (inner IOTA)
+        const detectedAsInner = isRunningAsPreview();
+        setIsInnerApp(detectedAsInner);
+        setIotaSource(detectedAsInner ? 'inner' : 'outer');
+
         // Initialize Developer Mode settings
         const savedDevMode = await secureStoreService.getDeveloperModeEnabled();
         const defaultDevMode = !!(typeof __DEV__ !== 'undefined' ? __DEV__ : false || detectedUrl);
@@ -266,7 +307,7 @@ export default function App() {
 
         // Verify bridge status initially
         if (devMode) {
-          const res = await checkLocalBridgeActive(resolvedUrl);
+          const res = await checkLocalBridgeActive(resolvedUrl, detectedAsInner);
           setIsBridgeActive(res.active);
           if (res.active && res.activeLocalFolder) {
             setActiveLocalFolder(res.activeLocalFolder);
@@ -425,6 +466,7 @@ export default function App() {
           user={user}
           bridgeUrl={bridgeUrl}
           isBridgeActive={isBridgeActive}
+          isInnerApp={isInnerApp}
           activeLocalFolder={activeLocalFolder}
           developerModeEnabled={developerModeEnabled}
           onSelectCodespace={handleSelectCodespace}

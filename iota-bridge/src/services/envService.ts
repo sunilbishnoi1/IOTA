@@ -5,12 +5,15 @@ import { logInfo, logError, getWorkspaceRoot } from './logger';
 export class EnvService {
   private static instance: EnvService | null = null;
   private envCache: Record<string, string> = {};
-  private configPath: string;
+  private lastConfigRoot: string | null = null;
 
   private constructor() {
+    // Defer loading — loadEnvVarsFromDisk is called lazily on first access
+  }
+
+  private getConfigPath(): string {
     const rootDir = getWorkspaceRoot();
-    this.configPath = path.join(rootDir, '.iota', 'env.json');
-    this.loadEnvVarsFromDisk();
+    return path.join(rootDir, '.iota', 'env.json');
   }
 
   public static getInstance(): EnvService {
@@ -22,35 +25,41 @@ export class EnvService {
 
   /**
    * Loads environment variables from `.iota/env.json` into memory.
+   * Re-reads from disk if the workspace root has changed since last load.
    */
-  private loadEnvVarsFromDisk() {
-    try {
-      const configDir = path.dirname(this.configPath);
-      if (!fs.existsSync(configDir)) {
-        fs.mkdirSync(configDir, { recursive: true });
-      }
-
-      if (fs.existsSync(this.configPath)) {
-        const content = fs.readFileSync(this.configPath, 'utf8');
-        const parsed = JSON.parse(content);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          this.envCache = {};
-          for (const [key, val] of Object.entries(parsed)) {
-            if (this.isValidKey(key)) {
-              this.envCache[key] = String(val);
-            }
-          }
-          logInfo(`Loaded ${Object.keys(this.envCache).length} workspace environment variables from disk.`);
-          return;
-        }
-      }
-      
-      // If file doesn't exist or is invalid, write an empty JSON object
+  private ensureLoaded() {
+    const currentRoot = getWorkspaceRoot();
+    if (this.lastConfigRoot !== currentRoot) {
+      this.lastConfigRoot = currentRoot;
       this.envCache = {};
-      fs.writeFileSync(this.configPath, JSON.stringify({}, null, 2), 'utf8');
-      logInfo('Initialized empty workspace environment variable file.');
-    } catch (err: any) {
-      logError(`Failed to load environment variables from disk: ${err.message}. Using in-memory fallback.`);
+      const configPath = this.getConfigPath();
+      const configDir = path.dirname(configPath);
+
+      try {
+        if (!fs.existsSync(configDir)) {
+          fs.mkdirSync(configDir, { recursive: true });
+        }
+
+        if (fs.existsSync(configPath)) {
+          const content = fs.readFileSync(configPath, 'utf8');
+          const parsed = JSON.parse(content);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            for (const [key, val] of Object.entries(parsed)) {
+              if (this.isValidKey(key)) {
+                this.envCache[key] = String(val);
+              }
+            }
+            logInfo(`Loaded ${Object.keys(this.envCache).length} workspace environment variables from disk.`);
+            return;
+          }
+        }
+        
+        // If file doesn't exist or is invalid, write an empty JSON object
+        fs.writeFileSync(configPath, JSON.stringify({}, null, 2), 'utf8');
+        logInfo('Initialized empty workspace environment variable file.');
+      } catch (err: any) {
+        logError(`Failed to load environment variables from disk: ${err.message}. Using in-memory fallback.`);
+      }
     }
   }
 
@@ -58,12 +67,13 @@ export class EnvService {
    * Persists the in-memory environment variables back to disk.
    */
   private persistToDisk(): boolean {
+    const configPath = this.getConfigPath();
     try {
-      const configDir = path.dirname(this.configPath);
+      const configDir = path.dirname(configPath);
       if (!fs.existsSync(configDir)) {
         fs.mkdirSync(configDir, { recursive: true });
       }
-      fs.writeFileSync(this.configPath, JSON.stringify(this.envCache, null, 2), 'utf8');
+      fs.writeFileSync(configPath, JSON.stringify(this.envCache, null, 2), 'utf8');
       return true;
     } catch (err: any) {
       logError(`Failed to persist environment variables to disk: ${err.message}`);
@@ -82,6 +92,7 @@ export class EnvService {
    * Returns all current environment variables.
    */
   public getEnvVars(): Record<string, string> {
+    this.ensureLoaded();
     // Return a copy to prevent accidental mutation of the cache
     return { ...this.envCache };
   }
@@ -90,6 +101,7 @@ export class EnvService {
    * Adds or updates a single environment variable.
    */
   public setEnvVar(key: string, value: string): void {
+    this.ensureLoaded();
     if (!this.isValidKey(key)) {
       throw new Error(`Invalid environment variable key: "${key}". Keys must start with a letter or underscore and contain only alphanumeric characters or underscores.`);
     }
@@ -104,6 +116,7 @@ export class EnvService {
    * Saves/replaces the entire set of environment variables.
    */
   public saveEnvVars(env: Record<string, string>): void {
+    this.ensureLoaded();
     const nextEnv: Record<string, string> = {};
     for (const [key, val] of Object.entries(env)) {
       if (!this.isValidKey(key)) {
@@ -121,6 +134,7 @@ export class EnvService {
    * Deletes a single environment variable by key.
    */
   public deleteEnvVar(key: string): void {
+    this.ensureLoaded();
     if (key in this.envCache) {
       delete this.envCache[key];
       logInfo(`Environment variable deleted: key=${key}`);
@@ -132,7 +146,9 @@ export class EnvService {
    * Reloads env vars from disk (useful when watched file changes).
    */
   public reload(): Record<string, string> {
-    this.loadEnvVarsFromDisk();
+    // Force reload by resetting lastConfigRoot
+    this.lastConfigRoot = null;
+    this.ensureLoaded();
     return this.getEnvVars();
   }
 }
